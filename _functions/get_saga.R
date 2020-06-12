@@ -66,7 +66,7 @@ get_saga <- function() {
       }
       
       unzip(temp_dir, exdir = file.path(paste0(sys_drive, "/SAGA-GIS")))
-      saga_cmd <- file.path(paste0(sys_drive, "/SAGA/saga-7.3.0_x64/saga_cmd.exe"))
+      saga_cmd <- file.path(paste0(sys_drive, "/SAGA-GIS/saga-7.3.0_x64/saga_cmd.exe"))
     }
     
     ###########################################################################
