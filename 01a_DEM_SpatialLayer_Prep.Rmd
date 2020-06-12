@@ -40,7 +40,7 @@ Before getting started, the first thing to do is to load the required packages. 
 
 ```{r Load Packages, include=FALSE}
 
-ls <- c("tidyverse", "raster", "xml2", "sf", "lubridate", "foreach", "rvest", "httr")
+ls <- c("tidyverse", "raster", "xml2", "sf", "lubridate", "foreach", "rvest", "httr", "tools")
 new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new_packages)) install.packages(new_packages)
 lapply(ls, library, character.only = TRUE)[0]  # load the required packages
@@ -85,7 +85,8 @@ chm_raw <- raster(file.path(AOI.dir, "_original_files", "chm", "w001001.adf"))
 
 # Want to use BC Albers projection, so transform that. Also, the resolution and
 # extent for both the dem and chm are not the same so they will both need to be 
-# reset to have the correct resolution, crs, and extents
+# reset to have the correct resolution, crs, and extents. Want to reproject the
+# smaller raster to the larger one so that no data is accidentally lost
 if(ncell(dem_raw) > ncell(chm_raw)) {
   dem <- projectRaster(
     dem_raw, crs = paste0("+init=epsg:", epsg), res = 1, 
@@ -93,15 +94,24 @@ if(ncell(dem_raw) > ncell(chm_raw)) {
   chm <- projectRaster(
     chm_raw, dem, filename = file.path(cov_1m, "chm.tif"), overwrite = TRUE)
   
-} else if(ncell(dem_raw) < ncell(chm_raw)) {
+} else if(ncell(dem_raw) < ncell(chm_raw) || any(
+  ncol(chm_raw) != ncol(dem_raw), 
+  nrow(chm_raw) != nrow(dem_raw),
+  res(chm_raw) != res(dem_raw), 
+  res(chm_raw) != c(1, 1),
+  !compareCRS(chm_raw, dem_raw), 
+  !compareCRS(chm_raw, CRS(paste0("+init=epsg:", epsg))))) {
+  
   chm <- projectRaster(
     chm_raw, crs = paste0("+init=epsg:", epsg), res = 1, 
     filename = file.path(cov_1m, "chm.tif"), overwrite = TRUE)
   dem <- projectRaster(
     dem_raw, chm, filename = file.path(cov_1m, "dem.tif"), overwrite = TRUE)
-  
-} else {
-  NULL # Placeholder for now
+}
+
+lidar <- try(stack(chm_raw, dem_raw))
+if(class(lidar) %in% "try-error") {
+  stop("There is something wrong, please check the rasters to ensure they may be stacked")
 }
 
 lidar_layers <- list.files(cov_1m, pattern = "chm.tif|dem.tif", full.names = TRUE)
@@ -132,6 +142,7 @@ The resulting DEM finally cropped to the data in case there was any shrinkage oc
 The XML code is processed and written to the "<SAGA_PATH>/tools/toolchains" folder. Each time it loops through for a different resolution, some of the parameters are recalculated based on the desired resolution and the XML file gets re-written. SAGA is called after the XML file is written to process the toolchain XML, and all output DEM's will be located in the DEM folder.
 
 ```{r Derive Lower Resolutions, include=FALSE}
+
 lower_resolutions <- function(
   grid_1m = NULL, 
   out_path = NULL, 
@@ -176,8 +187,7 @@ lower_resolutions <- function(
         "<tool library='statistics_grid' tool='1' name='Focal Statistics/Residual Analysis'>
            <input id='GRID'>", basename(file_path_sans_ext(grid_1m)), "</input>
            <output id='MEAN'>grid_smooth</output>
-           <option id='BCENTER'>true</option>
-        <option id='DW_WEIGHTING'>0</option>",
+           <option id='BCENTER'>true</option>",
         ifelse(
           compareVersion(saga_ver, "7.3.0") <= 0, 
           paste0("<option id='MODE'>0</option>
@@ -221,14 +231,14 @@ lower_resolutions <- function(
            <option id='MULTIPLE'>0</option>
            <option id='GRID_TYPE'>7</option>
            <option id='TARGET_DEFINITION'>0</option>
-           <option id='TARGET_USER_SIZE'>", i, "</option>
+           <option id='TARGET_USER_SIZE'>", r, "</option>
            <option id='TARGET_USER_FITS'>0</option>
            <input id='INPUT'>points_filled</input>
          </tool>"
       ), 
       crop_grid = paste0(
         "<tool library='grid_tools' tool='17' name='Crop to Data'>
-           <output id='OUTPUT'>", basename(file_path_sans_ext(grid_1m)), "</output>
+           <output id='OUTPUT'>", toupper(basename(file_path_sans_ext(grid_1m))), "</output>
            <input id='INPUT'>grid_downscaled</input>
          </tool>"
       )
@@ -317,7 +327,7 @@ lower_resolutions <- function(
         "<?xml version='1.0' encoding='UTF-8'?>
           <toolchain saga-version='", saga_ver, "'>
           <group>toolchains</group>
-          <identifier>Derived</identifier>
+          <identifier>Downscale</identifier>
           <name>Derived Layers (one step)</name>
           <description>
             Common DEM derivatives in SAGA GIS
@@ -362,7 +372,7 @@ lower_resolutions <- function(
     # Process SAGA toolchains in the list
     for(p in 1:length(xml_layout)) {
       write_xml(read_xml(xml_layout[[p]]$call), lower_res_xml)
-      sys_cmd <- paste(saga_cmd, "toolchains Derived", cmd_text[[p]])
+      sys_cmd <- paste(saga_cmd, "toolchains Downscale", cmd_text[[p]])
       system(sys_cmd)
     }
     
@@ -913,7 +923,7 @@ low_res <- foreach(grid = lidar_layers, .combine = paste) %do% {
   lower_resolutions(
     grid_1m = grid, 
     out_path = covariate_file_path, 
-    res_choices = c(2, 4, 10, 25), 
+    res_choices = c(4, 25), 
     saga_cmd = saga_cmd
   )
 }
