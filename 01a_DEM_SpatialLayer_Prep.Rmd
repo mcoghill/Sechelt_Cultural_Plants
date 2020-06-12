@@ -355,6 +355,8 @@ lower_resolutions <- function(
       foreach(k = unlist(x$inputs), .combine = paste) %do% {
         if(startsWith(k, "points")) {
           paste0("-", k, " ", file.path(covariate_out_path, paste0(k, ".shp")), collapse = " ")
+        } else if(startsWith(k, basename(file_path_sans_ext(grid_1m)))) {
+          paste0("-", k, " ", grid_1m, collapse = " ")
         } else {
           paste0("-", k, " ", file.path(covariate_out_path, paste0(k, ".tif")), collapse = " ")
         }
