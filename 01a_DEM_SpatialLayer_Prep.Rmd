@@ -105,8 +105,7 @@ if(ncell(dem_raw) > ncell(chm_raw)) {
   NULL # Placeholder for now
 }
 
-dem_files <- list.files(covariate_file_path, pattern = "dem.tif$", full.names = TRUE, recursive = TRUE, ignore.case = TRUE)
-dem_1m <- list.files(file.path(covariate_file_path, "1m"), pattern = "dem.tif", full.names = TRUE)
+lidar_layers <- list.files(cov_1m, pattern = "chm.tif|dem.tif", full.names = TRUE)
 
 ```
 
@@ -114,7 +113,6 @@ The next chunk is a function written to transform rasters using SAGA. Since SAGA
 
 ```{r Grid Transformation Function}
 
-# Small edit to test github
 
 ```
 
@@ -134,124 +132,252 @@ The resulting DEM finally cropped to the data in case there was any shrinkage oc
 
 The XML code is processed and written to the "<SAGA_PATH>/tools/toolchains" folder. Each time it loops through for a different resolution, some of the parameters are recalculated based on the desired resolution and the XML file gets re-written. SAGA is called after the XML file is written to process the toolchain XML, and all output DEM's will be located in the DEM folder.
 
-```{r Derive DEM Resolutions, include=FALSE}
+```{r Derive Lower Resolutions, include=FALSE}
 lower_resolutions <- function(
-  grid_1m, 
-  out_path, 
-  res_choices
-  ) {
+  grid_1m = NULL, 
+  out_path = NULL, 
+  res_choices = NULL,
+  saga_cmd = NULL
+) {
   
-  tool_list <- list(
-    fill_sinks = paste0(
-      "<tool library='ta_preprocessor' tool='1' name='Sink Drainage Route Detection'>
-        <input  id='ELEVATION'>dem</input>
-        <output id='SINKROUTE'>sinkroute</output>
-    </tool>
-    <tool library='ta_preprocessor' tool='2' name='Sink Removal'>
-        <input  id='DEM'>dem</input>
-        <input  id='SINKROUTE'>sinkroute</input>
-        <output id='DEM_PREPROC'>dem_preproc</output>
-        <option id='METHOD'>1</option>
-        <option id='THRESHOLD'>0</option>
-    </tool>"
-    ),
-    
-    #    Can script more output curvature types, see:
-    # http://www.saga-gis.org/saga_tool_doc/7.3.0/ta_morphometry_0.html
-    slope = paste0(
-      "<tool library='ta_morphometry' tool='0' name='Slope, Aspect, Curvature'>
-        <input id='ELEVATION'>dem_preproc</input>
-        <output id='SLOPE'>slope</output>
-        <output id='ASPECT'>aspect</output>
-        <output id='C_GENE'>gencurve</output>
-        <output id='C_TOTA'>totcurve</output>
-        <option id='METHOD'>6</option>
-        <option id='UNIT_SLOPE'>0</option>
-        <option id='UNIT_ASPECT'>0</option>
-    </tool>"
-    ),
+  # Data input checks
+  if(class(grid_1m) %in% "RasterLayer") {
+    reference <- grid_1m
+    grid_1m <- reference@file@name
+  } else if(is.character(grid_1m) && length(grid_1m) == 1) {
+    reference <- raster(grid_1m)
+  } else {
+    stop(paste(
+      "\rError: 'grid_1m' must either be a character string to a valid raster 
+      \rfile, or a valid raster layer brought in by the 'raster' package"
+    ))
+  }
   
+  if(is.null(out_path))
+    out_path <- dirname(dirname(grid_1m))
   
+  if(!is.character(out_path) && length(out_path) != 1)
+    stop(
+      "\r'out_path' must be a character string to a folder on your system"
+    )
   
-  function_output <- NULL
-  for(i in res_choices) {
-     derive_dem_resolutions_xml <- paste(deparse(substitute(paste0("<?xml version='1.0' encoding='UTF-8'?>
-     <toolchain saga-version='7.3.0'>
-       <group>toolchains</group>
-       <identifier>Rescale</identifier>
-       <name>Rescale</name>
-       <description>Rescale DEM for PEM BC</description>
-
-      <parameters>
-        <option varname='GRID_SYSTEM' type='grid_system'>
-            <name>Grid System</name>
-           </option>
-         <input varname='DEM_in' type='grid' parent='GRID_SYSTEM'>
-           <name>DEM Input</name>
-         </input>
-       </parameters>
-        <tools>
-         <tool library='statistics_grid' tool='1' name='Focal Statistics/Residual Analysis'>
-           <input id='GRID'>DEM_in</input>
-           <output id='MEAN'>DEM_Smooth</output>
+  if(!dir.exists(out_path)) dir.create(out_path)
+  
+  if(!file.exists(saga_cmd)) 
+    stop("\rPlease provide a valid path to 'saga_cmd'")
+  
+  saga_ver <- system(paste(saga_cmd, "-v"), intern = TRUE)
+  saga_ver <- unlist(regmatches(saga_ver, regexec("Version:\\s*(.*?)\\s*\\(", saga_ver)))[2]
+  
+  out_grids <- foreach(r = res_choices, .combine = c) %do% {
+    covariate_out_path <- file.path(out_path, paste0(r, "m"))
+    tool_list <- list(
+      # Different option names for this tool based on SAGA version
+      focal_stats = paste0(
+        "<tool library='statistics_grid' tool='1' name='Focal Statistics/Residual Analysis'>
+           <input id='GRID'>", basename(file_path_sans_ext(grid_1m)), "</input>
+           <output id='MEAN'>grid_smooth</output>
            <option id='BCENTER'>true</option>
-           <option id='MODE'>0</option>
-       	  <option id='RADIUS'>", round(i/2),"</option>
-           <option id='DW_WEIGHTING'>0</option>
-         </tool>
-     	  <tool library='grid_tools' tool='23' name='Create Grid System'>
-           <output id='GRID'>DEM_Empty</output>
+        <option id='DW_WEIGHTING'>0</option>",
+        ifelse(
+          compareVersion(saga_ver, "7.3.0") <= 0, 
+          paste0("<option id='MODE'>0</option>
+       	   <option id='RADIUS'>", round(r / 2), "</option>"), 
+          paste0("<option id='KERNEL_TYPE'>0</option>
+       	   <option id='KERNEL_RADIUS'>", round(r / 2), "</option>")),
+        "</tool>"
+      ),
+      create_grid = paste0(
+        "<tool library='grid_tools' tool='23' name='Create Grid System'>
+           <output id='GRID'>grid_empty</output>
            <option id='INIT'>-99999.000000</option>
            <option id='M_EXTENT'>3</option>
            <option id='ADJUST'>0</option>
            <option id='USEOFF'>false</option>
-    	    <option id='CELLSIZE'>", i, "</option>
-           <input id='GRIDLIST'>DEM_Smooth</input>
-         </tool>
-         <tool library='shapes_grid' tool='3' name='Grid Values to Points'>
-           <output id='SHAPES'>DEM_Points_Empty</output>
+    	     <option id='CELLSIZE'>", r, "</option>
+           <input id='GRIDLIST'>grid_smooth</input>
+         </tool>"
+      ), 
+      grid_to_points = paste0(
+        "<tool library='shapes_grid' tool='3' name='Grid Values to Points'>
+           <output id='SHAPES'>points_empty</output>
            <option id='NODATA'>false</option>
            <option id='TYPE'>0</option>
-           <input id='GRIDS'>DEM_Empty</input>
-         </tool>
-         <tool library='shapes_grid' tool='1' name='Add Grid Values to Shapes'>
-          <output id='RESULT'>DEM_Points_Filled</output>
+           <input id='GRIDS'>grid_empty</input>
+         </tool>"
+      ), 
+      smooth_values_to_points = paste0(
+        "<tool library='shapes_grid' tool='1' name='Add Grid Values to Shapes'>
+          <output id='RESULT'>points_filled</output>
            <option id='RESAMPLING'>3</option>
-           <input id='SHAPES'>DEM_Points_Empty</input>
-           <input id='GRIDS'>DEM_Smooth</input>
-         </tool>
-         <tool library='grid_gridding' tool='0' name='Shapes to Grid'>
-           <output id='GRID'>DEM_out</output>
-           <option id='FIELD'>", paste(basename(file_path_sans_ext(dem_1m)), "[Mean Value]"), "</option>
+           <input id='SHAPES'>points_empty</input>
+           <input id='GRIDS'>grid_smooth</input>
+         </tool>"
+      ),
+      points_to_grid = paste0(
+        "<tool library='grid_gridding' tool='0' name='Shapes to Grid'>
+           <output id='GRID'>grid_downscaled</output>
+           <option id='FIELD'>", paste(basename(file_path_sans_ext(grid_1m)), "[Mean Value]"), "</option>
            <option id='OUTPUT'>2</option>
            <option id='MULTIPLE'>0</option>
            <option id='GRID_TYPE'>7</option>
            <option id='TARGET_DEFINITION'>0</option>
            <option id='TARGET_USER_SIZE'>", i, "</option>
            <option id='TARGET_USER_FITS'>0</option>
-           <input id='INPUT'>DEM_Points_Filled</input>
-         </tool>
-         <tool library='grid_tools' tool='17' name='Crop to Data'>
-           <output id='OUTPUT'>DEM_out</output>
-           <input id='INPUT'>DEM_out</input>
-         </tool>
-
-         <tool library='io_gdal' tool='2' name='Export GeoTIFF'>
-            <input id='GRIDS'>DEM_out</input>
-            <option id='FILE'>", normalizePath(file.path(out_path, "dem.tif")), "</option>
-          </tool>
-       </tools>
-     </toolchain>"))), collapse = '')
-
-     write_xml(read_xml(eval(parse(text = derive_dem_resolutions_xml))), file.path(dirname(saga_path), "tools", "toolchains", "DeriveDEMs.xml"))
-
-     sys_cmd <- paste(saga_cmd, "toolchains Rescale",
-                    "-DEM_in", dem_1m)
-     system(sys_cmd)
-     function_output <- c(function_output, file.path(out_path, "dem.tif"))
+           <input id='INPUT'>points_filled</input>
+         </tool>"
+      ), 
+      crop_grid = paste0(
+        "<tool library='grid_tools' tool='17' name='Crop to Data'>
+           <output id='OUTPUT'>", basename(file_path_sans_ext(grid_1m)), "</output>
+           <input id='INPUT'>grid_downscaled</input>
+         </tool>"
+      )
+    )
+    
+    # End list of tools, don't adjust code after here
+    #############################################################################
+    
+    tools <- lapply(tool_list, function(x) {
+      inputs = gsub(".*>", "", regmatches(
+        x, gregexpr("(?<=<input).*?(?=</input>)", x, perl = TRUE))[[1]])
+      outputs = unique(gsub(".*>", "", regmatches(
+        x, gregexpr("(?<=<output).*?(?=</output>)", x, perl = TRUE))[[1]]))
+      tc = sum(length(outputs))
+      
+      tibble(tool = x, inputs = list(inputs), outputs = list(outputs), tc = tc)
+    })
+    
+    # Dynamically split processing based on the amount of available RAM a PC has.
+    # The following code will determine the best way to process the rasters
+    # based on the amount of RAM on a users machine. It does this by summing the
+    # number of inputs and outputs and comparing them to the maximum number of 
+    # files your system can hold based on the size of the input DEM.
+    raster_size <- file.info(grid_1m)$size / 1024 ^ 2 
+    raster_size_deriv <- raster_size / (r ^ 2)
+    raster_memory <- (raster_size * 2) + (raster_size_deriv * 3)
+    memory <- memory.limit() - raster_memory - 1024 # Leave ~1GB of RAM available?
+    if(memory > (memory.limit() - 1024)) {
+      n_files <- floor(memory.limit() - 1024 / raster_size)
+    } else n_files <- Inf
+    
+    # Adjust tools list
+    for(i in 1:length(tools)) {
+      try({
+        if(tools[[i]]$tc < n_files) {
+          while(sum(tools[[i]]$tc, tools[[i + 1]]$tc) < n_files) {
+            y <- rbind(tools[[i]], tools[[i + 1]])
+            y[1, "tc"] <- sum(y$tc)
+            y[1, "tool"] <- paste(y$tool, collapse = "\n")
+            y[1, "inputs"][[1]] <- list(unlist(y$inputs))
+            y[1, "outputs"][[1]] <- list(unlist(y$outputs))
+            y <- y[1, ]
+            tools[[i]] <- y
+            tools[[i + 1]] <- NULL
+          }
+        }
+      }, silent = TRUE)
+    }
+    
+    # Fix inputs and outputs columns, add function to call the whole thing in cmd
+    xml_layout <- lapply(tools, function(x) {
+      x$inputs <- list(
+        unique(unlist(x$inputs)[!unlist(x$inputs) %in% unlist(x$outputs)])
+      )
+      
+      x$input_xml <- foreach(i = unlist(x$inputs), .combine = paste) %do% {
+        if(startsWith(i, "points")) {
+          paste0("<input varname='", i, "' type='shapes' parent='GRID_SYSTEM'>
+          <name>", i, "</name>
+      </input>\n", collapse = " ")
+        } else {
+          paste0("<input varname='", i, "' type='grid' parent='GRID_SYSTEM'>
+          <name>", i, "</name>
+      </input>\n", collapse = " ")
+        }
+      }
+      
+      x$outputs <- foreach(k = unlist(x$outputs), .combine = paste) %do% {
+        if(startsWith(k, "points")) {
+          paste0(
+            "<tool library='io_gdal' tool='4' name='Export Shapes'>
+              <input id='SHAPES'>", k, "</input>
+              <option id='FILE'>", file.path(covariate_out_path, paste0(k, ".shp")), "</option>
+              <option id='FORMAT'>8</option>
+            </tool>\n", collapse = " ")
+        } else {
+          paste0(
+            "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
+              <input id='GRIDS'>", k, "</input>
+              <option id='FILE'>", file.path(covariate_out_path, paste0(k, ".tif")), "</option>
+            </tool>\n", collapse = " ")
+        }
+      }
+      
+      x$header <- paste0(
+        "<?xml version='1.0' encoding='UTF-8'?>
+          <toolchain saga-version='", saga_ver, "'>
+          <group>toolchains</group>
+          <identifier>Derived</identifier>
+          <name>Derived Layers (one step)</name>
+          <description>
+            Common DEM derivatives in SAGA GIS
+          </description>
+        
+          <parameters>
+            <option varname='GRID_SYSTEM' type='grid_system'>
+              <name>Grid System</name>
+            </option>
+            ", x$input_xml,
+          "</parameters>
+          <tools>", sep = "\n")
+      
+      x$footer <- paste0(
+        "</tools>
+      </toolchain>"
+      )
+      
+      x$call <- paste(x$header, x$tool, x$outputs, x$footer, sep = "\n")
+      return(x)
+    })
+    
+    # Define text for cmd input
+    cmd_text <- lapply(xml_layout, function(x) {
+      foreach(k = unlist(x$inputs), .combine = paste) %do% {
+        if(startsWith(k, "points")) {
+          paste0("-", k, " ", file.path(covariate_out_path, paste0(k, ".shp")), collapse = " ")
+        } else {
+          paste0("-", k, " ", file.path(covariate_out_path, paste0(k, ".tif")), collapse = " ")
+        }
+      }
+    })
+    
+    # Determine the toolchain directory based on your system
+    lower_res_xml <- ifelse(
+      Sys.info()[["sysname"]] == "Windows", 
+      file.path(dirname(saga_cmd), "tools", "toolchains", "raster_downscale.xml"), 
+      file.path(dirname(dirname(saga_cmd)), "share", "saga", 
+                "toolchains", "raster_downscale.xml")
+    )
+    
+    # Process SAGA toolchains in the list
+    for(p in 1:length(xml_layout)) {
+      write_xml(read_xml(xml_layout[[p]]$call), lower_res_xml)
+      sys_cmd <- paste(saga_cmd, "toolchains Derived", cmd_text[[p]])
+      system(sys_cmd)
+    }
+    
+    # Remove intermediate files
+    unlink(list.files(
+      covariate_out_path, pattern = "grid_smooth|grid_empty|points_empty|points_filled|grid_downscaled",
+      full.names = TRUE)
+    )
+    
+    list.files(covariate_out_path, pattern = basename(grid_1m), full.names = TRUE)
   }
-  return(function_output)
+  return(out_grids)
 }
+
 ```
 
 Below is the function which generates all SAGA covariate layers used in the PEM project. The first part of this chunk is the XML code for creating the tool chain. Within the function, this only needs to be ran once since it gets changed based on resolution with a much simpler function below it.
@@ -780,16 +906,23 @@ dem_derived_layers <- function(
 
 ```
 
-
-
 All that is left to do now is run the functions!
 
 ```{r Run Functions, echo=TRUE}
-#transformed_raster <- saga_transform(dem_files[1], epsg_code = epsg)
-#rescaled_dems <- dem_resolutions(dem_1m, res_choice)
-covariate_list <- NULL
-for(i in dem_files){
-   dem_derivatives <- dem_derived_layers(i, individual_rasters = TRUE)
-   covariate_list <- c(covariate_list, dem_derivatives)
+
+low_res <- foreach(grid = lidar_layers, .combine = paste) %do% {
+  lower_resolutions(
+    grid_1m = grid, 
+    out_path = covariate_file_path, 
+    res_choices = c(2, 4, 10, 25), 
+    saga_cmd = saga_cmd
+  )
 }
+
+dem_files <- grep("dem.tif", low_res, value = TRUE)
+
+covariate_list <- foreach(i = dem_files) %do% {
+  dem_derived_layers(i, individual_rasters = TRUE)
+}
+
 ```
