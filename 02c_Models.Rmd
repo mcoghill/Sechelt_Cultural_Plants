@@ -1,0 +1,213 @@
+---
+title: "02c_Models"
+author: "Matthew Coghill"
+date: "2/19/2020"
+output: html_document
+---
+
+This document is meant to generate models of either binary classification of presence / absence, or regression models of plant cover. This script should be the last script ran in the whole process as it depends on:
+
+1. Covariate layers generated in 01 scripts;
+2. Proper datasets generated in the 02a script; and
+3. The site series raster generated in the 02b script.
+
+This script uses the mlr package (machine learning R) in order to make models. It's very powerful and can evaluate a lot of different models at the same time. I'll attempt to explain things each step of the way. First, we will load the packages used in this script.
+
+```{r Load Packages}
+ls <- c("tidyverse", "tools", "raster", "sf", "ranger", "mlr", "parallel", "parallelMap", "randomForest", "ModelMap")
+new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+if(length(new.packages))
+  install.packages(new.packages)
+lapply(ls, library, character.only = TRUE)
+rm(ls, new.packages)
+```
+
+Next, directories and certain files are defined.
+
+```{r}
+AOI <- "Sechelt"
+AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
+map_res <- 4
+
+input_dir <- file.path("./Sechelt_AOI/1_map_inputs/field_data/processed")
+covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
+output_dir <- file.path(AOI_dir, "2_map_predictions")
+
+res_folder <- paste0(map_res, "m")
+all_covariates <- list.files(file.path(covariate_dir, res_folder), full.names = TRUE)
+anc_dat <- raster::stack(all_covariates)
+anc_dat$site_series <- asFactor(anc_dat$site_series)
+dsmart_lookup <- read.table(file.path(AOI_dir, "1_map_inputs", "dsmart", "output", "lookup.txt"), sep = ",", header = TRUE)
+levels(anc_dat$site_series) <- data.frame(ID = dsmart_lookup$code, MapUnit = dsmart_lookup$name)
+in_data_list <- list.files(input_dir, pattern = ".gpkg$", full.names = TRUE)
+site_series <- subset(anc_dat, "site_series")
+```
+
+It is highly anticipated that a site series layer will have a high degree of importance in predicting the locations of these culturally sensitive plants. We will let the models decide whether that is true or not, but it will always be kept in the model regardless.
+
+The only step in this script that requires you changing anything is the first line, model_run. Change this parameter to be whatever model you want to generate results for. Cover models will be a regression and presence / absence models will be a classification.
+
+The mlr package creates models using building blocks called "tasks" and "learners". Tasks are essentially the data you are creating your models from, and learners are more specific to building models. For example, the first learner that's created here says "create a ranger regression model, and when creating the model rank importance variables by their impurity values. Also, this is a response model". The next learner is a feature selection filter which wraps around the first learner. It pretty much says that it will filter the variables using the ranger_impurity algorithm, but always will keep the site_series layer. The last learner is a parameter tuning algorithm wrapped around the feature selection filter, and gives further details on the model. It will be a spatial 10-fold cross validation repeated 5 times. Also, it will create models using different amounts of covariate layers and numbers of trees so that it selects the best model from that bunch.
+
+After mlr fits the best model, that model is extracted and the predictions for presence / absence or cover are created. This can take some time depending on the amount of predictor variables used in the final model. Finally, some zonal statistics are calculated per site series.
+
+```{r mlr modelling}
+model_run <- "corncan_extravars_PresAbs"
+
+# Create the intial learner
+if(endsWith(model_run, "cover")) {
+  raw_data <- st_read(grep(model_run, in_data_list, value = TRUE)) %>% 
+    dplyr::rename(response = 1) %>% 
+    cbind(raster::extract(anc_dat, .))
+  coords <- as.data.frame(st_coordinates(raw_data))
+  raw_data <- st_drop_geometry(raw_data)
+  
+  # Create task for mlr
+  task <- makeRegrTask(data = raw_data, target = "response", coordinates = coords)
+  lrn_1 <- makeLearner("regr.ranger", importance = "impurity", predict.type = "response", keep.inbag = TRUE, num.threads = detectCores() - 2)
+  #mod_measures <- list("rsq" = rsq, "mse" = mse, "rmse" = rmse, "mae" = mae)
+  
+} else if(endsWith(model_run, "PresAbs")) {
+  raw_data <- st_read(grep(model_run, in_data_list, value = TRUE)) %>% 
+    dplyr::rename(response = 1) %>% 
+    cbind(raster::extract(anc_dat, .)) %>% 
+    mutate(response = as.factor(make.names(response)))
+  coords <- as.data.frame(st_coordinates(raw_data))
+  raw_data <- st_drop_geometry(raw_data)
+  #mod_measures <- list("logloss" = logloss, "mmce" = mmce, "acc" = acc)
+  
+  # Create task for mlr
+  task <- makeClassifTask(data = raw_data, target = "response", coordinates = coords)
+  lrn_1 <- makeLearner("classif.ranger", importance = "impurity", predict.type = "response", keep.inbag = TRUE, num.threads = detectCores())
+  
+} else stop("You must use a cover or pres/abs model")
+
+# Get the minimum number of covariates to use in feature selection (used later)
+# and start parallelization
+min_var_prop <- ceiling((nrow(raw_data) / 2) / 10) / (ncol(raw_data) - 1)
+parallelStartSocket(detectCores() - 2)
+
+# Do feature selection, always keeping site series in the model
+lrn_feat_filter <- makeFilterWrapper(learner = lrn_1, 
+                                     fw.method = "ranger.impurity", 
+                                     fw.mandatory.feat = c("site_series", "Structural.Stage", "Site.Disturbance", "X..Canopy.Cover"))
+
+# Tune the final model so as to select the model with the lowest error
+# This wil do iterative feature selection using between minimum variable percentage and 100% of the features
+# as well as test the models using a different number of trees.
+lrn_tune <- makeTuneWrapper(lrn_feat_filter, 
+                            resampling = makeResampleDesc("SpRepCV", reps = 5L, folds = 10L), 
+                            par.set = makeParamSet(makeNumericParam("fw.perc", lower = min_var_prop, upper = 1), 
+                                                   makeDiscreteParam("num.trees", values = seq(50, 500, by = 100))),
+                            control = makeTuneControlGrid(resolution = 10))
+
+mod <- mlr::train(lrn_tune, task = task)
+parallelStop()
+
+# Generate performance metrics
+mod_pred <- predict(mod, task)
+#mod_perform <- data.frame(as.list(performance(mod_pred, measures = mod_measures, task, mod)))
+
+# Extract the ranger model from the mlr model
+model_ranger <- getLearnerModel(mod$learner.model$next.model$learner.model$next.model)
+model_importance <- data.frame(importance = ranger::importance(model_ranger)) %>% 
+  rownames_to_column() %>% 
+  rename(covariate = rowname) %>% 
+  arrange(desc(importance))
+
+write.csv(model_ranger$confusion.matrix, file.path(output_dir, paste0(model_run, "_MLR_confusion.csv")))
+write.csv(model_importance, file.path(output_dir, paste0(model_run, "_var_importance.csv")))
+
+# Subset only the important rasters that the final model used
+anc_dat_important <- subset(anc_dat, mod$learner.model$next.model$learner.model$next.model$features)
+
+# Ranger doesn't natively make maps from their predictions
+# This is a workaround to get it to work.
+beginCluster()
+if(endsWith(model_run, "cover")) {
+  pred_raster <- clusterR(anc_dat_important, predict, 
+                          args = list(model = model_ranger, 
+                                      type = "response",
+                                      fun = function(model, ...) 
+                                        raster::predict(model, ...)$predictions))
+} else if(endsWith(model_run, "PresAbs")) {
+  conf_matrix <- as.data.frame(calculateConfusionMatrix(mod_pred)$result)
+  write.csv(conf_matrix, file.path(output_dir, paste0(model_run, "_confusion.csv")))
+  pred_raster <- clusterR(anc_dat_important, predict, 
+                          args = list(model = model_ranger, 
+                                      type = "response",
+                                      fun = function(model, ...) 
+                                        raster::predict(model, ...)$predictions[, "TRUE."]))
+}
+endCluster()
+
+# After the raster is made, perform some zonal statistics by site series
+zonal_stats <- cbind(zonal(pred_raster, site_series, fun = "mean"), 
+                     min = zonal(pred_raster, site_series, fun = "min")[, "min"], 
+                     max = zonal(pred_raster, site_series, fun = "max")[, "max"], 
+                     sd = zonal(pred_raster, site_series, fun = "sd")[, "sd"], 
+                     n_cells = zonal(pred_raster, site_series, fun = "count")[, "count"]) %>% 
+  merge(dsmart_lookup, by.x = "zone", by.y = "code") %>% 
+  dplyr::select(name, mean, min, max, sd, n_cells) %>% 
+  dplyr::rename(site_series = name)
+
+# Write final outputs
+writeRaster(pred_raster, file.path(output_dir, paste0(model_run, ".tif")), overwrite = TRUE)
+write.csv(mod_perform, file.path(output_dir, paste0(model_run, "_performance.csv")), row.names = FALSE)
+write.csv(model_importance, file.path(output_dir, paste0(model_run, "_importance.csv")), row.names = FALSE)
+write.csv(zonal_stats, file.path(output_dir, paste0(model_run, "_zonal_stats.csv")), row.names = FALSE)
+```
+
+```{r ModelMap testing}
+important_vars <- names(model_ranger$variable.importance)
+mmap_test <- model.build(
+  model.type = "RF",
+  qdata.trainfn = raw_data[, c("response", important_vars)], 
+  folder = tempdir(),
+  MODELfn = NULL,
+  predList = names(raw_data[, c("response", important_vars)])[-1],
+  predFactor = c("Structural.Stage", "Site.Disturbance"),
+  response.name = names(raw_data)[1], 
+  response.type = "categorical", 
+  unique.rowname = FALSE,
+  ntree = model_ranger$num.trees, 
+  mtry = model_ranger$mtry, 
+  proximity = FALSE
+)
+
+write.csv(mmap_test$confusion, file.path(output_dir, paste0(model_run, "_MMap_confusion.csv")))
+```
+
+```{r ranger package testing}
+important_vars <- names(model_ranger$variable.importance)
+ranger_mod <- ranger(response ~., 
+                     data = raw_data[, c("response", important_vars)], 
+                     num.trees = model_ranger$num.trees, 
+                     mtry = model_ranger$mtry, 
+                     importance = "impurity", 
+                     write.forest = TRUE, 
+                     probability = FALSE, 
+                     min.node.size = model_ranger$min.node.size, 
+                     replace = TRUE, 
+                     keep.inbag = TRUE, 
+                     oob.error = TRUE, 
+                     classification = TRUE)
+write.csv(ranger_mod$confusion.matrix, file.path(output_dir, paste0(model_run, "_ranger_confusion.csv")))
+
+```
+
+
+```{r randomForest package testing}
+important_vars <- names(model_ranger$variable.importance)
+rf_mod <- randomForest(response ~.,
+                       data = raw_data[, c("response", important_vars)],
+                       ntree = model_ranger$num.trees, 
+                       mtry = model_ranger$mtry, 
+                       replace = TRUE, 
+                       nodesize = model_ranger$min.node.size, 
+                       importance = TRUE, 
+                       keep.forest = TRUE, 
+                       keep.inbag = TRUE)
+write.csv(rf_mod$confusion, file.path(output_dir, paste0(model_run, "_randomForest_confusion.csv")))
+```
+

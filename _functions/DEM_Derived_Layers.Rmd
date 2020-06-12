@@ -1,0 +1,460 @@
+---
+title: "PEM_DerivedLayers"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The purpose of this document is to derive desired lower resolution DEM's from a 1m DEM, and subsequently create covariate layers for the PEM project. This document uses three coding languages: R, cmd(aka batch), and XML. Command line functions will call individual functions to SAGA, while the XML scripts allow for "chaining" tools together for more efficient processing in SAGA so that SAGA doesn't continuously stop and start. It also prevents the creation of intermediate files. The big benefit of using SAGA is that it automatically uses all cores on the machine you're using. In this manner, SAGA will utilize available RAM on your machine for storing files until the very end when they are written to the disk so in some instances you may be limited in its use depending on the specs of your machine.
+
+It's important to note that this markdown file will output the desired covariates to file paths relative to the location of your input DEM. For example, all DEM resolutions are placed in a folder labelled "DEM_out" in the same location as your input DEM. All DEM resolutions are placed in there. Next, folders are created for the covariates at each of the desired resolutions, and all outputs for each resolution are placed in those. The functions used here do not load the final rasterstacks into the R environment, they just output them to a folder. If this is necessary, it should be simple enough to script that in. 
+
+Before getting started, the first thing to do is to load the required packages. Most of the processing work will actually be accomplished by SAGA GIS, thus there are only a few packages required here.
+
+```{r Load Packages, include=FALSE}
+ls <- c("raster", "xml2", "tools")
+new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+if (length(new.packages))
+  install.packages(new.packages)
+lapply(ls, library, character.only = TRUE)  # load the required packages
+rm(ls, new.packages)
+```
+
+In this next chunk, you enter the only input data required for this sheet to function, the rest is automated! Simply input the location of your DEM, the choice of resolutions you want outputted, a projection code, and the file path for where SAGA is located.
+
+The `Remove` variable states which covariate layers will be removed at the end of the analysis (i.e.: intermediate layers). A list of layer names can be found by running the first "GridList_Filtered" variable, located after the last XML line.
+
+```{r R Data Objects, include=FALSE}
+DEM <- file.path("./layers/DEM_1m.tif")
+ResChoice <- c(5, 10, 25)
+PROJ_code <- 3005
+SAGA_Path <- file.path("C:/SAGA/SAGA_CMD.exe")
+
+if (Sys.info()['sysname'] == "Windows") {
+  SAGA_CMD = SAGA_Path
+} else {
+  SAGA_CMD = "saga_cmd"
+}
+system(paste(SAGA_CMD, "-v"))
+
+Remove <- c("ChannelNetwork", "DEM_PREPROC", "TCA") # Grids to remove after covariate layer generation
+```
+
+This next chunk in a function which will start the pre-processing of a 1m resolution DEM into your desired DEM resolutions and places all separate DEM's into a new folder named "DEM_out". This is following the examples set out by Lucas Jarron and Nicholas Coops, except this time R will be used to call SAGA GIS functions rather than using ArcGIS or QGIS.
+
+First, the metadata of the DEM .tif file is loaded into the environment (`DEM_R`). Using the `raster` package, the DEM is reprojected to the correct projection code that the user specified at the top, if it is not already. Afterwards, it checks to see that the resolution of the DEM is (close to) 1m. If it is, processing will continue; however if it is not, processing ends and a message is displayed. There was a lot of hardship involved with reprojecting in SAGA, so I've left it up to R to complete this step and it should be the only time that a raster is actually loaded into the R environment.
+
+The DEM is then cropped to the data. This allows for quicker processing downstream since NoData cells along the edges will be omitted from the analysis. Source: http://www.saga-gis.org/saga_tool_doc/7.4.0/grid_tools_17.html
+
+All that is required here is the DEM, and it outputs a cropped DEM. Issues arose when scripting using XML, so it was placed by itself outside of the XML toolchain (the reason for this is because in the event that the DEM is already cropped to the data, it won't save a new file). The rest of the functions in this chunk use XML toolchains in SAGA. The way that this works is that XML code is scripted inside quotation marks so 
+
+Next, focal statistics are computed in a defined area around the focal point (the mean values in a defined area). SAGA calculates these focal statistics based on a radius away from the focal point, thus the resolution of choice is divided by 2 and rounded to the nearest integer. For a radius of 1, it is calculating the mean statistics (elevation) in a 3x3 grid, a radius of 2 will be a 5x5 grid, etc., but the point here is that processing time will increase at coarser resolutions. No weighting is given here since the elevations are given in raw form, so everything is left to the default settings. Source: http://www.saga-gis.org/saga_tool_doc/7.4.0/statistics_grid_1.html
+
+Next, an empty grid is created using the extent of the smoothed DEM and a cell size (resolution) defined by the choices. The grid only contains values of -99999 which are considered "no data" cells in SAGA. Source: http://www.saga-gis.org/saga_tool_doc/7.4.0/grid_tools_23.html
+
+Next, points are placed in the middle of these grid cells using "Grid values to Points". It takes each cell and assigns a point with the same data as the cell (which will be "no data" on the empty grid). This allows for points to be spatially joined later on at the specified cell resolution. This step can take a while depending on hardware and raster cell size. Source: http://www.saga-gis.org/saga_tool_doc/7.4.0/shapes_grid_3.html
+
+Now that we have points where we want them, they can be attributed using the "Add grid values to shapes" tool. Overlaying the points on the smoothed DEM, the elevations are extracted to the point data. Source: http://www.saga-gis.org/saga_tool_doc/7.4.0/shapes_grid_1.html
+
+Resampling was left to the default setting of B-spline interpolation. I'm not familiar with the different resampling techniques but I've seen this used widely so I felt it was fine to leave it as it is.
+
+The resulting DEM is saved as a geotiff on its own, but it's also cropped to the data once more in case there was any shrinkage occurring during the processing. If there was, it saves it as a separate geotiff file.
+
+The XML code is processed and written to the "`SAGA_PATH`/tools/toolchains" folder. Each time it loops through for a different resolution, some of the parameters are recalculated based on the desired resolution and the XML file gets re-written. SAGA is called after the XML file is written to process the toolchain XML, and all output DEM's will be located in the DEM_out folder.
+
+```{r Derive DEM Resolutions, include=FALSE}
+DEM_Resolutions <- function(DEM_input){
+  DEM_Out_Path <- file.path(dirname(DEM), "DEM_out")
+  ifelse(!dir.exists(DEM_Out_Path),
+         dir.create(DEM_Out_Path), FALSE)
+  DEM_R <- raster(DEM)
+  
+  PEM_PROJ <- crs(paste0("+init=epsg:", PROJ_code))@projargs
+  DEM_PROJ <- paste0("+init=epsg:", PROJ_code, " ", projection(DEM_R))
+  
+  if(identical(DEM_PROJ, PEM_PROJ) == FALSE){
+    DEM_Project <- projectRaster(DEM_R, crs=crs(paste0("+init=epsg:", PROJ_code)))
+    writeRaster(DEM_Project, file.path(DEM_Out_Path, "DEM_Reprojected.tif"), format = "GTiff")
+    DEM <- file.path(DEM_Out_Path, "DEM_Reprojected.tif")
+    DEM_res <- round(res(DEM_Project)[1])
+    rm(DEM_R, DEM_Project); gc()
+    print("Warning: CRS Change detected, it is recommended you check your raster before proceeding!")
+  } else {
+    DEM_res <- round(res(DEM_R)[1])
+    rm(DEM_R); gc()
+  }
+  
+  if(DEM_res == 1){
+    DEM_IN <- file.path(DEM_Out_Path, paste0("DEM_", DEM_res, "m_Cropped.tif"))
+    sysCMD <- paste(SAGA_CMD, "grid_tools 17",
+                    "-INPUT" , DEM,
+                    "-OUTPUT", DEM_IN
+    )
+    system(sysCMD)
+    
+    ifelse(!file.exists(DEM_IN),
+           DEM_IN <- DEM, FALSE)
+    
+    DeriveDEMResolutions_XML <- paste(deparse(substitute(paste0("<?xml version='1.0' encoding='UTF-8'?>
+      <toolchain saga-version='7.4.0'>
+        <group>toolchains</group>
+        <identifier>Rescale</identifier>
+        <name>Rescale</name>
+        <description>Rescale DEM for PEM BC</description>
+        
+        <parameters>
+          <input varname='DEM_in' type='grid'>
+            <name>DEM Input</name>
+          </input>
+        </parameters>
+        
+        <tools>
+        
+          <tool library='statistics_grid' tool='1' name='Focal Statistics'>
+            <input id='GRID'>DEM_in</input>
+            <output id='MEAN'>DEM_Smooth</output>
+            <option id='BCENTER'>true</option>
+            <option id='KERNEL_TYPE'>0</option>
+        	  <option id='KERNEL_RADIUS'>", round(i/2),"</option>
+            <option id='DW_WEIGHTING'>0</option>
+          </tool>
+      	  <tool library='grid_tools' tool='23' name='Create Grid System'>
+            <output id='GRID'>DEM_Empty</output>
+            <option id='INIT'>-99999.000000</option>
+            <option id='M_EXTENT'>3</option>
+            <option id='ADJUST'>0</option>
+            <option id='USEOFF'>false</option>
+      	    <option id='CELLSIZE'>", i, "</option>
+            <input id='GRIDLIST'>DEM_Smooth</input>
+          </tool>
+          <tool library='shapes_grid' tool='3' name='Grid Values to Points'>
+            <output id='SHAPES'>DEM_Points_Empty</output>
+            <option id='NODATA'>false</option>
+            <option id='TYPE'>0</option>
+            <input id='GRIDS'>DEM_Empty</input>
+          </tool>
+          <tool library='shapes_grid' tool='1' name='Add Grid Values to Shapes'>
+            <output id='RESULT'>DEM_Points_Filled</output>
+            <option id='RESAMPLING'>3</option>
+            <input id='SHAPES'>DEM_Points_Empty</input>
+            <input id='GRIDS'>DEM_Smooth</input>
+          </tool>
+          <tool library='grid_gridding' tool='0' name='Shapes to Grid'>
+            <output id='GRID'>DEM_final</output>
+            <option id='FIELD'>", paste(basename(file_path_sans_ext(DEM_IN)), "[Mean Value]"), "</option>
+            <option id='OUTPUT'>2</option>
+            <option id='MULTIPLE'>0</option>
+            <option id='GRID_TYPE'>7</option>
+            <option id='TARGET_DEFINITION'>0</option>
+            <option id='TARGET_USER_SIZE'>", i, "</option>
+            <option id='TARGET_USER_FITS'>0</option>
+            <input id='INPUT'>DEM_Points_Filled</input>
+          </tool>
+            <tool library='io_gdal' tool='2' name='Export GeoTIFF'>
+            <input id='GRIDS'>DEM_final</input>
+            <option id='FILE'>", file.path(file_path_as_absolute(DEM_Out_Path), paste0("DEM_", i, "m.tif")),"</option>
+          </tool> 
+          <tool library='grid_tools' tool='17' name='Crop to Data'>
+            <output id='OUTPUT'>DEM_CROP</output>
+            <input id='INPUT'>DEM_final</input>
+          </tool>
+          
+            <tool library='io_gdal' tool='2' name='Export GeoTIFF'>
+            <input id='GRIDS'>DEM_CROP</input>
+            <option id='FILE'>", file.path(file_path_as_absolute(DEM_Out_Path), paste0("DEM_", i, "m_Cropped.tif")),"</option>
+          </tool> 
+        </tools>
+      </toolchain>"))), collapse = '')
+    
+    for(i in ResChoice){
+      if(i != 1){
+        write_xml(read_xml(eval(parse(text=DeriveDEMResolutions_XML))), file.path(dirname(SAGA_Path), "tools", "toolchains", "DeriveDEMs.xml"))
+        
+        sysCMD <- paste(SAGA_CMD, "toolchains Rescale",
+                        "-DEM_in", DEM_IN
+        )
+        system(sysCMD)
+      }
+    }
+  } else {print("Raster cell size >1m, generation of further raster resolutions halted")}
+}
+```
+
+Below is the function which generates all SAGA covariate layers used in the PEM project. It uses the ResChoice vector to decide how many times to loop through the function at what resolutions, and it finds the above processsed DEM's in the "DEM_out" folder in order to begin processing. The first part of this chunk is the XML code for creating the tool chain. Within the function, this only needs to be ran once since it gets changed based on resolution with a much simpler function below it.
+
+Certain parameters are defined within the toolchain which are important for some of the SAGA layers in order to keep things relatively efficient as well as accurate. These parameters include:
+
+Scale_param: This defines the TRI (ruggedness) search area and channel network length. Essentially, the function scales up the resulting value at low resolutions and scales it down at higher resolutions. Since ruggedness looks at an area around the focal cell, it's important to scale this based on resolution since differences will be miniscule at low resolutions, but more dramatic at higher resolutions. This is also used in the "channel network" grid tool to define how long a channel needs to be before it is no longer considered a channel, thus at high resolutions channels need to be continuous for a longer segment before they are considered a channel.
+
+MRVBF_param: This defines the "initial threshold for slope" parameter in the MRVBF algorithm. The math is based on the paper that this originally came from as well as a very helpful infographic retrieved from here: https://www.nrcs.usda.gov/wps/PA_NRCSConsumption/download?cid=stelprdb1258050&ext=pdf 
+
+TPI_param: This defines a search radius around a cell. I figured since it has to do with topographic position, search radius should be the same value in cells at each scale. This will create different results at each resolution as well which might help indicate why certain resolutions are more important than others.
+
+Openness_param: This parameter is for using the multi-scaled approach to defining openness. I found through exhaustive testing that this parameter is best defined by half the number of columns, which produced the best looking (least blocky) result out of the plethora of other trials ran.
+
+The workflow for this function is as follows:
+1. Script the XML code used for the SAGA toolchain which includes the following tools:
+
+1. Fill Sinks XXL (Wang & Liu): For filling sinks in the DEM and only returning a DEM
+2. Slope, Aspect, Curvature: returns Slope, Aspect, General Curvature, and Total Curvature rasters
+3. Flow Accumulation (Recursive): Creates the "total catchment area" (TCA) intermediate layer. This layer is only used in the generation of the TWI, and not in the final rasterstack.
+4. Topographic wetness index (TWI): Creates the TWI for the study area. I found these to be the best methods based on exhaustive testing of many other methods. Rather than using the specific catchment area, TCA is used and converted all at once within this tool thus it is more efficient. My methods are based on those found here: https://gracilis.carleton.ca/CUOSGwiki/index.php/Enhanced_Wetness_Modelling_in_SAGA_GIS 
+5. Channel Network: This creates a channel network grid using the filled DEM and the TCA layer as an initiation grid. I found that using the initiaion value of 1,000,000 worked to create channels consistently at all scales, thus I propose using that here as well. Scale_param is used here to define how long a stream needs to be in pixels before it is considered a stream. Source: https://sourceforge.net/projects/saga-gis/files/SAGA%20-%20Documentation/SAGA%20Documents/SagaManual.pdf/download 
+Note: This is an intermediate layer and is not used in the final rasterstack
+6. Overland Flow Distance to Channel Network: This tool draws the overland flow distance to the channel network created in step 5. In order to create a raster that is used to the borders of the grid, the "boundary" option had to be set to "true" This may not give a realistic representation of this variable at a given study area, but without this it constricts the final grid.
+7. Multiresolution Index of Valley Bottom Flatness (MRVBF): Looks at valley bottom flatness and ridge top flatness and uses the MRVBF_param to define the "initial threshold for slope" parameter. The input DEM's used from here all use the original, unfilled DEM.
+8. Terrain Ruggedness Index (TRI): Looks at ruggedness at a specified distance away from a focal cell.
+9. Convergence index: This tool is unchanged from the parameters defined by Lucas and Nicholas (uses 3x3 gradient to determind convergence)
+10. Topographic Openness: Calculates openness across a landscape at multiple scales. The advantage to the multi-scale approach is that it calculates the values at the edges of the map, whereas the line-tracing method does not. Multi-scale keeps things more consistent I would wager. This outputs both negative and positive openness.
+11. Diurnal Anisotropic Heat: The settings are unchanged from the default.
+12. Topographic Position Index (TPI): This calculates the position of a cell relative to neighboring cells in a defined vicinity. This value could easily change depending on the scale of interest. When running this tool, it pastes the default search parameters; however, it actually runs the ones defined by the TPI_param code. This is a bug from SAGA, but has no effect on the outcome of the TPI, it outputs it properly.
+13. Potential Incoming Solar Radiation: This calculates direct and diffuse insolation from a range of days spanning a whole year. I've restricted the time from between 3:30am and 8:30pm which encompasses the earliest sunrise and latest sunset of 2018 in the Kamloops area, rounded to the nearest 30 minutes. Source: https://www.nrc-cnrc.gc.ca/eng/services/sunrise/advanced.html
+Note: It would be good to automate that step somehow.
+14. Change Grid Value: Changes the grid values of 0 to -99999 (i.e.: no data) for the insolation grids
+15. Export Raster: The final output(s)
+
+2. Handle whether the user desires a stacked raster output, or individual tif files for each layer
+
+This function doesn't rely on any "input" since it is assumed that the various DEM resolutions would be made prior to running this tool; however, if the DEM resolutions are already created, you should just have to create the following variable:
+`DEM <- file.path(<file/path/to/DEMs>)`
+Note that all of the DEM's should be in this folder in order to process them all at once.
+
+```{r DEM Derived Layers, include=FALSE}
+PEM_Derived_Layers <- function(individual_rasters = TRUE){
+  CovariateLayers_XML <- paste(deparse(substitute(paste0("<?xml version='1.0' encoding='UTF-8'?>
+    <toolchain saga-version='7.4.0'>
+    	<group>toolchains</group>
+    	<identifier>Derived</identifier>
+    	<name>Derived Layers (one step)</name>
+    	<description>
+    	Common DEM derivatives in SAGA GIS
+    	</description>
+    
+    	<parameters>
+    		<option varname='GRID_SYSTEM' type='grid_system'>
+    			<name>Grid System</name>
+    		</option>
+    		<input varname='DEM' type='grid' parent='GRID_SYSTEM'>
+    			<name>Elevation</name>
+    		</input>
+        ", XML_Out_Text,
+      "</parameters>
+    	
+      <tools>",
+        "<tool library='ta_preprocessor' tool='5' name='Fill Sinks XXL (Wang &amp; Liu)'>
+          <input  id='ELEV'>DEM</input>
+          <output id='FILLED'>DEM_PREPROC</output>
+          <option id='MINSLOPE'>0.1</option>
+        </tool>",
+        "<tool library='ta_morphometry' tool='0' name='Slope, Aspect, Curvature'>
+          <input id='ELEVATION'>DEM</input>
+          <output id='SLOPE'>Slope</output>
+          <output id='ASPECT'>Aspect</output>
+          <output id='C_GENE'>gCurve</output>
+          <output id='C_TOTA'>tCurve</output>
+          <option id='METHOD'>6</option>
+          <option id='UNIT_SLOPE'>0</option>
+          <option id='UNIT_ASPECT'>0</option>
+        </tool>",
+        "<tool library='ta_hydrology' tool='1' name='Flow Accumulation (Recursive)'>
+          <input id='ELEVATION'>DEM_PREPROC</input>
+          <output id='FLOW'>TCA</output>
+          <option id='FLOW_UNIT'>1</option>
+          <option id='METHOD'>4</option>
+        </tool>",
+        "<tool library='ta_hydrology' tool='20' name='Topographic Wetness Index (TWI)'>
+          <input id='SLOPE'>Slope</input>
+          <input id='AREA'>TCA</input>
+          <output id='TWI'>TWI</output>
+          <option id='CONV'>1</option>
+          <option id='METHOD'>1</option>
+        </tool>",
+        "<tool library='ta_channels' tool='0' name='Channel Network'>
+          <input id='ELEVATION'>DEM_PREPROC</input>
+          <output id='CHNLNTWRK'>ChannelNetwork</output>
+          <input id='INIT_GRID'>TCA</input>
+          <option id='INIT_METHOD'>2</option>
+          <option id='INIT_VALUE'>1000000</option>
+          <option id='DIV_CELLS'>5</option>
+          <option id='MINLEN'>", Scale_param, "</option>
+        </tool>",
+        "<tool library='ta_channels' tool='4' name='Overland Flow Distance to Channel Network'>
+          <input id='ELEVATION'>DEM_PREPROC</input>
+          <input id='CHANNELS'>ChannelNetwork</input>
+          <output id='DISTANCE'>hDistance</output>
+          <output id='DISTVERT'>vDistance</output>
+          <option id='METHOD'>1</option>
+          <option id='BOUNDARY'>true</option>
+        </tool>",
+        "<tool library='ta_morphometry' tool='8' name='Multiresolution Index of Valley Bottom Flatness (MRVBF)'>
+          <input id='DEM'>DEM</input>
+          <output id='MRVBF'>MRVBF</output>
+          <output id='MRRTF'>MRRTF</output>
+          <option id='T_SLOPE'>", MRVBF_param, "</option>
+          <option id='T_PCTL_V'>0.400000</option>
+          <option id='T_PCTL_R'>0.350000</option>
+          <option id='P_SLOPE'>4.000000</option>
+          <option id='P_PCTL'>3.000000</option>
+          <option id='UPDATE'>false</option>
+          <option id='CLASSIFY'>false</option>
+          <option id='MAX_RES'>100.000000</option>
+        </tool>",
+        "<tool library='ta_morphometry' tool='16' name='Terrain Ruggedness Index (TRI)'>
+          <input id='DEM'>DEM</input>
+          <output id='TRI'>TRI</output>
+          <option id='MODE'>0</option>
+          <option id='RADIUS'>", Scale_param, "</option>
+          <option id='DW_WEIGHTING'>0</option>
+        </tool>",
+        "<tool library='ta_morphometry' tool='1' name='Convergence Index'>
+          <input id='ELEVATION'>DEM</input>
+          <output id='RESULT'>Convergence</output>
+          <option id='METHOD'>1</option>
+          <option id='NEIGHBOURS'>1</option>
+        </tool>",
+        "<tool library='ta_lighting' tool='5' name='Topographic Openness'>
+          <input id='DEM'>DEM</input>
+          <output id='POS'>OpennessPos</output>
+          <output id='NEG'>OpennessNeg</output>
+          <option id='RADIUS'>", Openness_param, "</option>
+          <option id='METHOD'>0</option>
+          <option id='DLEVEL'>3.000000</option>
+          <option id='NDIRS'>8</option>
+          <option id='UNIT'>0</option>
+          <option id='NADIR'>true</option>
+        </tool>",
+        "<tool library='ta_morphometry' tool='12' name='Diurnal Anisotropic Heat'>
+          <input id='DEM'>DEM</input>
+          <output id='DAH'>DAH</output>
+          <option id='ALPHA_MAX'>202.500000</option>
+        </tool>",
+        "<tool library='ta_morphometry' tool='18' name='Topographic Position Index (TPI)'>
+          <input id='DEM'>DEM</input>
+          <output id='TPI'>TPI</output>
+          <option id='STANDARD'>false</option>
+          <option id='RADIUS'>0.000000;", TPI_param, "</option>
+          <option id='DW_WEIGHTING'>0</option>
+        </tool>", #Solar radiation tool blanked out because it takes a long time to run
+        "<tool library='ta_lighting' tool='2' name='Potential Incoming Solar Radiation'>
+          <input id='GRD_DEM'>DEM</input>
+          <output id='GRD_DIRECT'>InsolationDirect</output>
+          <output id='GRD_DIFFUS'>InsolationDiffuse</output>
+          <option id='SOLARCONST'>1367.000000</option>
+          <option id='LOCALSVF'>true</option>
+          <option id='UNITS'>0</option>
+          <option id='SHADOW'>0</option>
+          <option id='LOCATION'>1</option>
+          <option id='PERIOD'>2</option>
+          <option id='DAY'>2018-01-15</option>
+          <option id='DAY_STOP'>2018-12-15</option>
+          <option id='DAYS_STEP'>30</option>
+          <option id='HOUR_RANGE'>3.500000; 20.500000</option>
+          <option id='HOUR_STEP'>0.500000</option>
+          <option id='METHOD'>2</option>
+          <option id='LUMPED'>70.000000</option>
+          <option id='UPDATE'>0</option>
+        </tool>", 
+        "<tool library='grid_tools' tool='12' name='Change Grid Values'>
+          <input id='INPUT'>InsolationDirect</input>
+          <option id='METHOD'>0</option>
+          <option id='IDENTITY'>
+            <OPTION type='static_table' id='IDENTITY' name='Lookup Table'>
+              <FIELDS>
+                <FIELD type='DOUBLE'>New Value</FIELD>
+                <FIELD type='DOUBLE'>Value</FIELD>
+              </FIELDS>
+              <RECORDS>
+                <RECORD>
+                  <FIELD>-99999.000000</FIELD>
+                  <FIELD>0.000000</FIELD>
+                </RECORD>
+              </RECORDS>
+            </OPTION>
+          </option>
+        </tool>", 
+        "<tool library='grid_tools' tool='12' name='Change Grid Values'>
+          <input id='INPUT'>InsolationDiffuse</input>
+          <option id='METHOD'>0</option>
+          <option id='IDENTITY'>
+            <OPTION type='static_table' id='IDENTITY' name='Lookup Table'>
+              <FIELDS>
+                <FIELD type='DOUBLE'>New Value</FIELD>
+                <FIELD type='DOUBLE'>Value</FIELD>
+              </FIELDS>
+              <RECORDS>
+                <RECORD>
+                  <FIELD>-99999.000000</FIELD>
+                  <FIELD>0.000000</FIELD>
+                </RECORD>
+              </RECORDS>
+            </OPTION>
+          </option>
+        </tool>", 
+    Raster_Out, 
+    "</tools>
+    </toolchain>"))), collapse = '')
+  DEM_Out_Path <- file.path(dirname(DEM), "DEM_out")
+  GridList_Full <- as.list(gsub(".*>", "", regmatches(CovariateLayers_XML, gregexpr("(?<=<output).*?(?=</output>)", CovariateLayers_XML, perl = TRUE))[[1]])) # Lists all of the output variable names in the XML code above. Output names are located between <output id='text'>OUTPUT_NAME</output>
+  GridList_Filtered <- GridList_Full[! GridList_Full %in% Remove] # Filters the list to remove the undesired layers
+  
+  for(j in ResChoice){
+    Covariate_out <- file.path(dirname(DEM), paste0(j, "m"))
+    ifelse(!dir.exists(Covariate_out),
+           dir.create(Covariate_out), FALSE)
+    Scale_param <- ifelse(round((j*(25/j))/j) == 0, 1, round((j*(25/j))/j))
+    MRVBF_param <- 116.57*(j^-0.62)
+    TPI_param <- j*5
+    Openness_param <- as.numeric((raster(file.path(DEM_Out_Path, paste0("DEM_", j, "m.tif")))@ncols)/2)
+    
+    if(individual_rasters == TRUE){ # This section will edit the XML based on whether the user wants individual tif files or a single, larger raster stack
+      for(k in GridList_Filtered){
+        CMD_Out_Text <- paste0("-", k, " ", file.path(Covariate_out, paste0(k, ".tif")), collapse = ' ')
+        XML_Out_Text <- paste0("<output varname='", k, "' type='grid' parent='GRID_SYSTEM'><name>", k, "</name></output>", collapse = '')
+        Raster_Out <- NULL
+      }
+    } else if(individual_rasters == FALSE){
+        for(k in GridList_Filtered){
+          CMD_Out_Text <- NULL
+          XML_Out_Text <- NULL
+          Raster_Out <- paste0("
+  		  <tool library='grids_tools' tool='0' name='Create a Grid Collection'>
+    			<option id='ATTRIBUTES'>0</option>
+    			", paste0("<input id='LIST'>", k, "</input>", collapse=''), "
+    			<output id='GRIDS'>RASTERSTACK</output>
+    			<option id='DELETE'>1</option>
+  			</tool>
+        <tool library='io_gdal' tool='2' name='Export GeoTIFF'>
+          <input id='GRIDS'>RASTERSTACK</input>
+          <option id='FILE'>", paste0(file.path(file_path_as_absolute(Covariate_out), paste0("Covariates_", j, "m.tif"))), "</option>
+          <option id='OPTIONS'/>
+        </tool>
+            ", collapse = '')
+        }
+    } else {
+      print("individual_rasters option not specified")
+    }
+    
+    write_xml(read_xml(eval(parse(text=CovariateLayers_XML))), file.path(dirname(SAGA_Path), "tools", "toolchains", "PEM_Derived_Layers.xml"))
+    write.csv(setNames(data.frame(c(1:length(unlist(GridList_Filtered))), unlist(GridList_Filtered)),  c("LayerID", "GridList")), file.path(Covariate_out, "Raster_Bands.csv"), row.names = FALSE) # Writes a CSV to the output folder containing a list of the layers included in the final result
+    
+    DEM_input <- file.path(DEM_Out_Path, paste0("DEM_", j, "m_Cropped.tif"))
+    ifelse(!file.exists(DEM_input),
+           DEM_input <- file.path(DEM_Out_Path, paste0("DEM_", j, "m.tif")), FALSE)
+    
+    sysCMD <- paste(SAGA_CMD, "toolchains Derived", 
+                    paste0("-DEM=", DEM_input), 
+                    CMD_Out_Text
+    )
+    system(sysCMD)
+  }
+}
+```
+
+All that is left to do now is run the functions! I am leaving echo=TRUE here so that the SAGA output is fully displayed and if there are any errors, you can go back and view what happened.
+
+```{r Run Functions, echo=TRUE}
+DEM_Resolutions(DEM)
+PEM_Derived_Layers(individual_rasters = FALSE)
+```

@@ -1,0 +1,795 @@
+---
+title: "01a_DEM_SpatialLayer_Prep"
+author: "Matthew Coghill"
+date: "2/5/2020"
+output: html_document
+---
+```{r global_options, include=FALSE }
+require(knitr)
+#knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='Figs/',
+#                      echo=FALSE, warning=FALSE, message=FALSE)
+#knitr::opts_knit$set(progress=TRUE, root.dir = 'relative_path_to_root_from_Rmd')
+```
+
+## Introduction
+This document describes the steps required to prepare spatial layers to be used in machine-learning based predictive ecosystem map method. This is a preliminary step to Stage 1 Sample Design (script ref.) and the modeling process (script ref). 
+
+This method is scripted in R, but uses other open source packages, predominently SAGA :  (https://sourceforge.net/projects/saga-gis/). This script enables you to set up a connection from R to Sage and pass commands to the saga.exe. This relies on the package RSAGA[https://cran.r-project.org/web/packages/RSAGA/RSAGA.pdf]. 
+
+
+
+###Preparation steps. 
+
+### Software
+Prior to running this script you will need to download SAGA[https://sourceforge.net/projects/saga-gis/] and know its location. SAGA can be downloaded on an external drive and run independent of pemissions 
+
+### Data 
+To run this script you will need a base digital elevation model (digital terrain model) at the spatial resolution of your choice. The base rasters for the PEM research project are 2.5m. 
+
+
+### 1) Set up link between Saga and R. 
+Depending on your location of the saga program you will need to define the location of the saga_cmd.exe file. This can be done manually as shown below, or can be called using the #myenv <- rsaga.env() function which will search in successive locations on your hard drive. This is normally within the Programs folder on your C:/ drive. 
+
+
+### Matt's Notes
+The purpose of this document is to derive desired lower resolution DEM's from a 1m DEM, and subsequently create covariate layers for the PEM project. This document uses three coding languages: R, cmd (aka batch), and XML. Command line functions will call individual functions to SAGA, while the XML scripts allow for "chaining" tools together for more efficient processing in SAGA so that SAGA doesn't continuously stop and start. It also prevents the creation of intermediate files. The big benefit of using SAGA is that it automatically uses all cores on the machine you're using. In this manner, SAGA will utilize available RAM on your machine for storing files until the very end when they are written to the disk so in some instances you may be limited in its use depending on the specs of your machine.
+
+It's important to note that this markdown file will output the desired covariates to file paths relative to the location of your input DEM. For example, all DEM resolutions are placed in a folder labelled "DEM_out" in the same location as your input DEM. All DEM resolutions are placed in there. Next, folders are created for the covariates at each of the desired resolutions, and all outputs for each resolution are placed in those. The functions used here do not load the final rasterstacks into the R environment, they just output them to a folder. If this is necessary, it should be simple enough to script that in. 
+
+Before getting started, the first thing to do is to load the required packages. Most of the processing work will actually be accomplished by SAGA GIS, thus there are only a few packages required here.
+
+```{r Load Packages, include=FALSE}
+
+ls <- c("tidyverse", "raster", "xml2", "sf", "lubridate", "foreach", "rvest", "httr")
+new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+if(length(new_packages)) install.packages(new_packages)
+lapply(ls, library, character.only = TRUE)[0]  # load the required packages
+rm(ls, new_packages)
+
+source(file.path('_functions', 'get_saga.R'))
+
+```
+
+
+```{r download SAGA, eval = FALSE}
+# NOTE: New function get_saga() will detect your version of SAGA gis and if it's
+# too old (< 7.3.0), it will download and install 7.3.0 (latest lts)
+
+saga_cmd <- get_saga()
+
+```
+
+In this next chunk, you enter the only input data required for this sheet to function, the rest is (mostly) automated! Simply input the AOI, the choice of resolutions you want outputted, a projection code, and the file path for where SAGA is located.
+
+The `remove` variable states which covariate layers will be removed at the end of the analysis (i.e.: intermediate layers). A list of layer names can be found by running the first "grid_list_filtered" variable, located after the last XML line.
+
+```{r R Data Objects, include=FALSE}
+
+AOI <- "Sechelt"
+AOI.dir <- file.path(".", paste0(AOI, "_AOI"))
+res_choice <- 4
+epsg <- 3005
+
+```
+
+In the next chunk, we want to specify which of the DEM files in the file list of the DEM's is the 1m raster. We are also preparing SAGA to run (note: not sure of the effect this has on other OS's).
+
+```{r Specify 1m Raster}
+
+covariate_file_path <- file.path(AOI.dir, "1_map_inputs", "covariates")
+cov_1m <- file.path(covariate_file_path, "1m")
+if(!dir.exists(cov_1m)) dir.create(cov_1m)
+
+# Load files
+dem_raw <- raster(file.path(AOI.dir, "_original_files", "dem", "w001001.adf"))
+chm_raw <- raster(file.path(AOI.dir, "_original_files", "chm", "w001001.adf"))
+
+# Want to use BC Albers projection, so transform that. Also, the resolution and
+# extent for both the dem and chm are not the same so they will both need to be 
+# reset to have the correct resolution, crs, and extents
+if(ncell(dem_raw) > ncell(chm_raw)) {
+  dem <- projectRaster(
+    dem_raw, crs = paste0("+init=epsg:", epsg), res = 1, 
+    filename = file.path(cov_1m, "dem.tif"), overwrite = TRUE)
+  chm <- projectRaster(
+    chm_raw, dem, filename = file.path(cov_1m, "chm.tif"), overwrite = TRUE)
+  
+} else if(ncell(dem_raw) < ncell(chm_raw)) {
+  chm <- projectRaster(
+    chm_raw, crs = paste0("+init=epsg:", epsg), res = 1, 
+    filename = file.path(cov_1m, "chm.tif"), overwrite = TRUE)
+  dem <- projectRaster(
+    dem_raw, chm, filename = file.path(cov_1m, "dem.tif"), overwrite = TRUE)
+  
+} else {
+  NULL # Placeholder for now
+}
+
+dem_files <- list.files(covariate_file_path, pattern = "dem.tif$", full.names = TRUE, recursive = TRUE, ignore.case = TRUE)
+dem_1m <- list.files(file.path(covariate_file_path, "1m"), pattern = "dem.tif", full.names = TRUE)
+
+```
+
+The next chunk is a function written to transform rasters using SAGA. Since SAGA is being used for most of the "heavy lifting", I thought I would script grid transforming here as well in order to be consistent. This function can be added into a loop if you wish so that you can transform multiple grids.
+
+```{r Grid Transformation Function}
+
+
+
+```
+
+This next chunk is a function which will start the pre-processing of a 1m resolution DEM into your desired DEM resolutions and places all separate DEM's into the AOI's DEM folder. This is following the examples set out by Lucas Jarron and Nicholas Coops, except this time R will be used to call SAGA GIS functions rather than using ArcGIS or QGIS.
+
+First, focal statistics are computed in a defined area around the focal point (the mean values in a defined area). SAGA calculates these focal statistics based on a radius away from the focal point, thus the resolution of choice is divided by 2 and rounded to the nearest integer. For a radius of 1, it is calculating the mean statistics (elevation) in a 3x3 grid, a radius of 2 will be a 5x5 grid, etc., but the point here is that processing time will increase at coarser resolutions. No weighting is given here since the elevations are given in raw form, so everything is left to the default settings. Source: http://www.saga-gis.org/saga_tool_doc/7.4.0/statistics_grid_1.html
+
+Next, an empty grid is created using the extent of the smoothed DEM and a cell size (resolution) defined by the choices. The grid only contains values of -99999 which are considered "no data" cells in SAGA. Source: http://www.saga-gis.org/saga_tool_doc/7.4.0/grid_tools_23.html
+
+Next, points are placed in the middle of these grid cells using "Grid values to Points". It takes each cell and assigns a point with the same data as the cell (which will be "no data" on the empty grid). This allows for points to be spatially joined later on at the specified cell resolution. This step can take a while depending on hardware and raster cell size. Source: http://www.saga-gis.org/saga_tool_doc/7.4.0/shapes_grid_3.html
+
+Now that we have points where we want them, they can be attributed using the "Add grid values to shapes" tool. Overlaying the points on the smoothed DEM, the elevations are extracted to the point data. Source: http://www.saga-gis.org/saga_tool_doc/7.4.0/shapes_grid_1.html
+
+Resampling was left to the default setting of B-spline interpolation. I'm not familiar with the different resampling techniques but I've seen this used widely for floating point data so I felt it was fine to leave it as it is.
+
+The resulting DEM finally cropped to the data in case there was any shrinkage occurring during the processing. If there was, it saves it as a separate geotiff file.
+
+The XML code is processed and written to the "<SAGA_PATH>/tools/toolchains" folder. Each time it loops through for a different resolution, some of the parameters are recalculated based on the desired resolution and the XML file gets re-written. SAGA is called after the XML file is written to process the toolchain XML, and all output DEM's will be located in the DEM folder.
+
+```{r Derive DEM Resolutions, include=FALSE}
+lower_resolutions <- function(
+  grid_1m, 
+  out_path, 
+  res_choices
+  ) {
+  
+  tool_list <- list(
+    fill_sinks = paste0(
+      "<tool library='ta_preprocessor' tool='1' name='Sink Drainage Route Detection'>
+        <input  id='ELEVATION'>dem</input>
+        <output id='SINKROUTE'>sinkroute</output>
+    </tool>
+    <tool library='ta_preprocessor' tool='2' name='Sink Removal'>
+        <input  id='DEM'>dem</input>
+        <input  id='SINKROUTE'>sinkroute</input>
+        <output id='DEM_PREPROC'>dem_preproc</output>
+        <option id='METHOD'>1</option>
+        <option id='THRESHOLD'>0</option>
+    </tool>"
+    ),
+    
+    #    Can script more output curvature types, see:
+    # http://www.saga-gis.org/saga_tool_doc/7.3.0/ta_morphometry_0.html
+    slope = paste0(
+      "<tool library='ta_morphometry' tool='0' name='Slope, Aspect, Curvature'>
+        <input id='ELEVATION'>dem_preproc</input>
+        <output id='SLOPE'>slope</output>
+        <output id='ASPECT'>aspect</output>
+        <output id='C_GENE'>gencurve</output>
+        <output id='C_TOTA'>totcurve</output>
+        <option id='METHOD'>6</option>
+        <option id='UNIT_SLOPE'>0</option>
+        <option id='UNIT_ASPECT'>0</option>
+    </tool>"
+    ),
+  
+  
+  
+  function_output <- NULL
+  for(i in res_choices) {
+     derive_dem_resolutions_xml <- paste(deparse(substitute(paste0("<?xml version='1.0' encoding='UTF-8'?>
+     <toolchain saga-version='7.3.0'>
+       <group>toolchains</group>
+       <identifier>Rescale</identifier>
+       <name>Rescale</name>
+       <description>Rescale DEM for PEM BC</description>
+
+      <parameters>
+        <option varname='GRID_SYSTEM' type='grid_system'>
+            <name>Grid System</name>
+           </option>
+         <input varname='DEM_in' type='grid' parent='GRID_SYSTEM'>
+           <name>DEM Input</name>
+         </input>
+       </parameters>
+        <tools>
+         <tool library='statistics_grid' tool='1' name='Focal Statistics/Residual Analysis'>
+           <input id='GRID'>DEM_in</input>
+           <output id='MEAN'>DEM_Smooth</output>
+           <option id='BCENTER'>true</option>
+           <option id='MODE'>0</option>
+       	  <option id='RADIUS'>", round(i/2),"</option>
+           <option id='DW_WEIGHTING'>0</option>
+         </tool>
+     	  <tool library='grid_tools' tool='23' name='Create Grid System'>
+           <output id='GRID'>DEM_Empty</output>
+           <option id='INIT'>-99999.000000</option>
+           <option id='M_EXTENT'>3</option>
+           <option id='ADJUST'>0</option>
+           <option id='USEOFF'>false</option>
+    	    <option id='CELLSIZE'>", i, "</option>
+           <input id='GRIDLIST'>DEM_Smooth</input>
+         </tool>
+         <tool library='shapes_grid' tool='3' name='Grid Values to Points'>
+           <output id='SHAPES'>DEM_Points_Empty</output>
+           <option id='NODATA'>false</option>
+           <option id='TYPE'>0</option>
+           <input id='GRIDS'>DEM_Empty</input>
+         </tool>
+         <tool library='shapes_grid' tool='1' name='Add Grid Values to Shapes'>
+          <output id='RESULT'>DEM_Points_Filled</output>
+           <option id='RESAMPLING'>3</option>
+           <input id='SHAPES'>DEM_Points_Empty</input>
+           <input id='GRIDS'>DEM_Smooth</input>
+         </tool>
+         <tool library='grid_gridding' tool='0' name='Shapes to Grid'>
+           <output id='GRID'>DEM_out</output>
+           <option id='FIELD'>", paste(basename(file_path_sans_ext(dem_1m)), "[Mean Value]"), "</option>
+           <option id='OUTPUT'>2</option>
+           <option id='MULTIPLE'>0</option>
+           <option id='GRID_TYPE'>7</option>
+           <option id='TARGET_DEFINITION'>0</option>
+           <option id='TARGET_USER_SIZE'>", i, "</option>
+           <option id='TARGET_USER_FITS'>0</option>
+           <input id='INPUT'>DEM_Points_Filled</input>
+         </tool>
+         <tool library='grid_tools' tool='17' name='Crop to Data'>
+           <output id='OUTPUT'>DEM_out</output>
+           <input id='INPUT'>DEM_out</input>
+         </tool>
+
+         <tool library='io_gdal' tool='2' name='Export GeoTIFF'>
+            <input id='GRIDS'>DEM_out</input>
+            <option id='FILE'>", normalizePath(file.path(out_path, "dem.tif")), "</option>
+          </tool>
+       </tools>
+     </toolchain>"))), collapse = '')
+
+     write_xml(read_xml(eval(parse(text = derive_dem_resolutions_xml))), file.path(dirname(saga_path), "tools", "toolchains", "DeriveDEMs.xml"))
+
+     sys_cmd <- paste(saga_cmd, "toolchains Rescale",
+                    "-DEM_in", dem_1m)
+     system(sys_cmd)
+     function_output <- c(function_output, file.path(out_path, "dem.tif"))
+  }
+  return(function_output)
+}
+```
+
+Below is the function which generates all SAGA covariate layers used in the PEM project. The first part of this chunk is the XML code for creating the tool chain. Within the function, this only needs to be ran once since it gets changed based on resolution with a much simpler function below it.
+
+Certain parameters are defined within the toolchain which are important for some of the SAGA layers in order to keep things relatively efficient as well as accurate. These parameters include:
+
+scale_param: This defines the TRI (ruggedness) search area and channel network length. Essentially, the function scales up the resulting value at low resolutions and scales it down at higher resolutions. Since ruggedness looks at an area around the focal cell, it's important to scale this based on resolution since differences will be miniscule at low resolutions, but more dramatic at higher resolutions. This is also used in the "channel network" grid tool to define how long a channel needs to be before it is no longer considered a channel, thus at high resolutions channels need to be continuous for a longer segment before they are considered a channel.
+
+mrvbf_param: This defines the "initial threshold for slope" parameter in the MRVBF algorithm. The math is based on the paper that this originally came from as well as a very helpful infographic retrieved from here: https://www.nrcs.usda.gov/wps/PA_NRCSConsumption/download?cid=stelprdb1258050&ext=pdf 
+
+tpi_param: This defines a search radius around a cell. I figured since it has to do with topographic position, search radius should be the same value in cells at each scale. This will create different results at each resolution as well which might help indicate why certain resolutions are more important than others.
+
+openness_param: This parameter is for using the multi-scaled approach to defining openness. I found through exhaustive testing that this parameter is best defined by half the number of columns, which produced the best looking (least blocky) result out of the plethora of other trials ran.
+
+The workflow for this function is as follows:
+1. Script the XML code used for the SAGA toolchain which includes the following tools:
+
+1. Fill Sinks XXL (Wang & Liu): For filling sinks in the DEM and only returning a DEM
+2. Slope, Aspect, Curvature: returns Slope, Aspect, General Curvature, and Total Curvature rasters
+3. Flow Accumulation (Recursive): Creates the "total catchment area" (TCA) intermediate layer. This layer is only used in the generation of the TWI, and not in the final rasterstack.
+4. Topographic wetness index (TWI): Creates the TWI for the study area. I found these to be the best methods based on exhaustive testing of many other methods. Rather than using the specific catchment area, TCA is used and converted all at once within this tool thus it is more efficient. My methods are based on those found here: https://gracilis.carleton.ca/CUOSGwiki/index.php/Enhanced_Wetness_Modelling_in_SAGA_GIS 
+5. Channel Network: This creates a channel network grid using the filled DEM and the TCA layer as an initiation grid. I found that using the initiaion value of 1,000,000 worked to create channels consistently at all scales, thus I propose using that here as well. scale_param is used here to define how long a stream needs to be in pixels before it is considered a stream. Source: https://sourceforge.net/projects/saga-gis/files/SAGA%20-%20Documentation/SAGA%20Documents/SagaManual.pdf/download 
+Note: This is an intermediate layer and is not used in the final rasterstack
+6. Overland Flow Distance to Channel Network: This tool draws the overland flow distance to the channel network created in step 5. In order to create a raster that is used to the borders of the grid, the "boundary" option had to be set to "true" This may not give a realistic representation of this variable at a given study area, but without this it constricts the final grid.
+7. Multiresolution Index of Valley Bottom Flatness (MRVBF): Looks at valley bottom flatness and ridge top flatness and uses the mrvbf_param to define the "initial threshold for slope" parameter. The input DEM's used from here all use the original, unfilled DEM.
+8. Terrain Ruggedness Index (TRI): Looks at ruggedness at a specified distance away from a focal cell.
+9. Convergence index: This tool is unchanged from the parameters defined by Lucas and Nicholas (uses 3x3 gradient to determind convergence)
+10. Topographic Openness: Calculates openness across a landscape at multiple scales. The advantage to the multi-scale approach is that it calculates the values at the edges of the map, whereas the line-tracing method does not. Multi-scale keeps things more consistent I would wager. This outputs both negative and positive openness.
+11. Diurnal Anisotropic Heat: The settings are unchanged from the default.
+12. Topographic Position Index (TPI): This calculates the position of a cell relative to neighboring cells in a defined vicinity. This value could easily change depending on the scale of interest. When running this tool, it pastes the default search parameters; however, it actually runs the ones defined by the tpi_param code. This is a bug from SAGA, but has no effect on the outcome of the TPI, it outputs it properly.
+13. Potential Incoming Solar Radiation: This calculates direct and diffuse insolation from a range of days spanning a whole year. I've restricted the time from between 3:30am and 8:30pm which encompasses the earliest sunrise and latest sunset of 2018 in the Kamloops area, rounded to the nearest 30 minutes. Source: https://www.nrc-cnrc.gc.ca/eng/services/sunrise/advanced.html
+Note: It would be good to automate that step somehow.
+14. Change Grid Value: Changes the grid values of 0 to -99999 (i.e.: no data) for the insolation grids
+15. Export Raster: The final output(s)
+
+2. Handle whether the user desires a stacked raster output, or individual tif files for each layer
+
+This function requires that you specify an input file path to a DEM, not an input raster (same for all functions in this document).
+
+
+
+```{r DEM Derived Layers, include=FALSE}
+dem_derived_layers <- function(
+  dem_input = NULL, # Input DEM either as file path or raster layer
+  out_path = NULL,  # output file path, will default to dem_input directory
+  saga_cmd = NULL # path to saga_cmd
+) {
+  # Note: All SAGA tools and associated documentation can be found here:
+  # http://www.saga-gis.org/saga_tool_doc/7.3.0/index.html
+  
+  # Data input checks
+  if(class(dem_input) %in% "RasterLayer") {
+    reference <- dem_input
+    dem_input <- reference@file@name
+  } else if(is.character(dem_input) && length(dem_input) == 1) {
+    reference <- raster(dem_input)
+  } else {
+    stop(paste(
+      "\rError: 'dem_input' must either be a character string to a valid raster 
+      \rfile, or a valid raster layer brought in by the 'raster' package"
+    ))
+  }
+  
+  if(is.null(out_path))
+    out_path <- dirname(dirname(dem_input))
+  
+  if(!is.character(out_path) && length(out_path) != 1)
+    stop(
+      "\r'out_path' must be a character string to a folder on your system"
+    )
+  
+  if(!dir.exists(out_path)) dir.create(out_path)
+  
+  if(!file.exists(saga_cmd)) 
+    stop("\rPlease provide a valid path to 'saga_cmd'")
+  
+  # Define inputs used in some of the SAGA tools below
+  reference_res <- res(reference)[1]
+  covariate_out <- file.path(out_path, paste0(reference_res, "m"))
+  if(!dir.exists(covariate_out)) dir.create(covariate_out, recursive = TRUE)
+  
+  ## Sunrise/sunset time calculation for solar radiation tool:
+  centroid <- data.frame(x = mean(xmax(reference), xmin(reference)),
+                         y = mean(ymax(reference), ymin(reference))) %>%
+    st_as_sf(coords = c("x", "y"), crs = crs(reference)) %>%
+    st_transform(4326) %>% # needs lat/long for calculating sunlight times
+    st_coordinates() %>%
+    as.data.frame() %>%
+    mutate(X = as.character(round(X, digits = 2)),
+           Y = as.character(round(Y, digits = 2))) %>%
+    separate(X, into = c("Long_Hours", "Long_Mins"),
+             sep = "\\.", remove = TRUE) %>%
+    separate(Y, into = c("Lat_Hours", "Lat_Mins"),
+             sep = "\\.", remove = TRUE) %>%
+    mutate_all(.funs = as.numeric) %>%
+    mutate_all(abs)
+  
+  # Using rvest to gather sunset/sunrise information
+  session <- html_session(
+    "https://www.nrc-cnrc.gc.ca/eng/services/sunrise/advanced.html")
+  form <- html_form(session)[[4]]
+  filled_form <- set_values(
+    form, phlong = centroid$Long_Hours, pmlong = centroid$Long_Mins,
+    pdlat = centroid$Lat_Hours, pmlat = centroid$Lat_Mins, year = 2019,
+    month = "Jan", day = 1, timezone = "PST|8", sunmoon = "Sunrise/set_yhtml1",
+    ew = "West", sn = "North"
+  )
+  
+  result <- submit_form(session, filled_form)
+  response <- content(result$response)
+  timetable <- html_table(html_node(response, "table")) %>%
+    mutate_all(~ifelse(. %in% c("N/A", "null", ""), NA, .)) %>%
+    na.omit() %>%
+    mutate(Month = match(trimws(gsub("[[:digit:]]+", "", Date)), month.abb),
+           Day = readr::parse_number(Date)) %>%
+    mutate(rise = as_datetime(paste0(
+      "2019-", Month, "-", Day, " ", hm(Sunrise)), tz = "Canada/Pacific"),
+      set = as_datetime(paste0(
+        "2019-", Month, "-", Day, " ", hm(Sunset)), tz = "Canada/Pacific")) %>%
+    mutate(rise = floor_date(rise, "30 minutes"),
+           set = ceiling_date(set, "30 minutes")) %>%
+    mutate(rise = strftime(rise, format = "%H:%M:%S"),
+           set = strftime(set, format = "%H:%M:%S"))
+  
+  min_sunrise <- min(timetable$rise)
+  max_sunset <- max(timetable$set)
+  min_sunrise_numeric <- as.numeric(hms(min_sunrise)) / 3600
+  max_sunset_numeric <- as.numeric(hms(max_sunset)) / 3600
+  
+  time_res <- (max_sunset_numeric - min_sunrise_numeric) / 4
+  
+  ## Scaling parameter for a few of the tools:
+  scale_param <- ifelse(
+    round((reference_res*(25 / reference_res)) / reference_res) == 0, 1, 
+    round((reference_res*(25 / reference_res)) / reference_res)
+  )
+  
+  ## Tool specific parameters
+  mrvbf_param <- 116.57 * (reference_res ^ -0.62)
+  tpi_param <- reference_res * 5
+  openness_param <- as.numeric(ncol(reference) / 2)
+  vrm_param <- 10
+  vall_ridg_param <- 7
+  mpi_param <- 50
+  
+  
+  #############################################################################
+  # Build the xml toolchain piece by piece (easier than previously)
+  
+  # Does this by first creating a list of tools and their associated parameters
+  # If a tool is not going to be ran, it can simply be commented out/deleted, and
+  # that's it, no mucking around anywhere else! 
+  
+  # Note: There are multiple ways to fill sinks for a given DEM. The way 
+  # currently coded here may not be the most efficient but it produces a 
+  # sinkroute layer which is used in multiple tools later on and appears to be 
+  # the most accurate.
+  tool_list <- list(
+    fill_sinks = paste0(
+      "<tool library='ta_preprocessor' tool='1' name='Sink Drainage Route Detection'>
+        <input  id='ELEVATION'>dem</input>
+        <output id='SINKROUTE'>sinkroute</output>
+    </tool>
+    <tool library='ta_preprocessor' tool='2' name='Sink Removal'>
+        <input  id='DEM'>dem</input>
+        <input  id='SINKROUTE'>sinkroute</input>
+        <output id='DEM_PREPROC'>dem_preproc</output>
+        <option id='METHOD'>1</option>
+        <option id='THRESHOLD'>0</option>
+    </tool>"
+    ),
+    
+    #    Can script more output curvature types, see:
+    # http://www.saga-gis.org/saga_tool_doc/7.3.0/ta_morphometry_0.html
+    slope = paste0(
+      "<tool library='ta_morphometry' tool='0' name='Slope, Aspect, Curvature'>
+        <input id='ELEVATION'>dem_preproc</input>
+        <output id='SLOPE'>slope</output>
+        <output id='ASPECT'>aspect</output>
+        <output id='C_GENE'>gencurve</output>
+        <output id='C_TOTA'>totcurve</output>
+        <option id='METHOD'>6</option>
+        <option id='UNIT_SLOPE'>0</option>
+        <option id='UNIT_ASPECT'>0</option>
+    </tool>"
+    ),
+    
+    #   Following this method for calculating topographic wetness index:
+    #    https://gracilis.carleton.ca/CUOSGwiki/index.php/Enhanced_Wetness_Modelling_in_SAGA_GIS
+    #    See this paper as well for discussion on different ways to calculate TWI:
+    #    https://link.springer.com/article/10.1186/s40965-019-0066-y
+    flow_accum = paste0(
+      "<tool library='ta_hydrology' tool='1' name='Flow Accumulation (Recursive)'>
+         <input id='ELEVATION'>dem_preproc</input>
+         <output id='FLOW'>tca</output>
+         <output id='FLOW_LENGTH'>flowlength4</output>
+         <option id='FLOW_UNIT'>1</option>
+         <option id='METHOD'>4</option>
+     </tool>"
+    ),
+    
+    
+    twi = paste0(
+      "<tool library='ta_hydrology' tool='20' name='Topographic Wetness Index (TWI)'>
+      <input id='SLOPE'>slope</input>
+      <input id='AREA'>tca</input>
+      <output id='TWI'>twi</output>
+      <option id='CONV'>1</option>
+      <option id='METHOD'>1</option>
+  </tool>"
+    ),
+  
+    # The threshold value of 1,000,000 on the TCA grid appears to give a good
+    # representation of the channel network. See
+    # https://sourceforge.net/projects/saga-gis/files/SAGA%20-%20Documentation/SAGA%20Documents/SagaManual.pdf/download
+    chan_net = paste0(
+      "<tool library='ta_channels' tool='0' name='Channel Network'>
+       <input id='ELEVATION'>dem</input>
+       <input id='SINKROUTE'>sinkroute</input>
+       <output id='CHNLNTWRK'>cnetwork</output>
+       <input id='INIT_GRID'>tca</input>
+       <option id='INIT_METHOD'>2</option>
+       <option id='INIT_VALUE'>1000000</option>
+       <option id='DIV_CELLS'>5</option>
+       <option id='MINLEN'>", scale_param, "</option>
+   </tool>"
+    ),
+   
+   # Since multiple flow direction (MFD) algorithms were used throughout, I
+   # thought it would be consistent to keep that trend in this tool here
+   # (METHOD = 1). Keeping the "BOUNDARY" attribute at TRUE will model the flow
+   # distance to the boundaries of the study area (by making the study area
+   # boundary a "channel" in itself).
+   
+   flow_dist = paste0(
+     "<tool library='ta_channels' tool='4' name='Overland Flow Distance to Channel Network'>
+            <input id='ELEVATION'>dem_preproc</input>
+            <input id='CHANNELS'>cnetwork</input>
+            <output id='DISTANCE'>hdist</output>
+            <output id='DISTVERT'>vdist</output>
+            <option id='METHOD'>1</option>
+            <option id='BOUNDARY'>true</option>
+        </tool>"
+   ),
+   
+   # See page 2-3 of:
+   # https://www.nrcs.usda.gov/wps/PA_NRCSConsumption/download?cid=stelprdb1258050&ext=pdf
+   # Which makes reference to the following article:
+   # https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2002WR001426
+   # So initial slope threshold needs to be changed depending on the input
+   # resolution, which is defined by the mrvbf_param variable. All other values
+   # are SAGA default
+   
+   mrvbf = paste0(
+     "<tool library='ta_morphometry' tool='8' name='Multiresolution Index of Valley Bottom Flatness (MRVBF)'>
+           <input id='DEM'>dem</input>
+           <output id='MRVBF'>mrvbf</output>
+           <output id='MRRTF'>mrrtf</output>
+           <option id='T_SLOPE'>", mrvbf_param, "</option>
+           <option id='T_PCTL_V'>0.400000</option>
+           <option id='T_PCTL_R'>0.350000</option>
+           <option id='P_SLOPE'>4.000000</option>
+           <option id='P_PCTL'>3.000000</option>
+           <option id='UPDATE'>false</option>
+           <option id='CLASSIFY'>false</option>
+           <option id='MAX_RES'>100.000000</option>
+       </tool>"
+   ),
+   
+   # Terrain Ruggedness Index (TRI): Looks at ruggedness at a specified distance
+   # away from a focal cell. The scale_param will adjust the search radius
+   # distance in order to get a consistent idea across scales of the terrain
+   # ruggedness. Ex: at 2.5m, it should look at a distance of 25m (i.e.: radius
+   # of 10 cells), while at 5m if we want to look at a 25m distance away, it
+   # should have a radius of 5 cells, etc.
+   
+   tri = paste0(
+     "<tool library='ta_morphometry' tool='16' name='Terrain Ruggedness Index (TRI)'>
+           <input id='DEM'>dem</input>
+           <output id='TRI'>tri</output>
+           <option id='MODE'>0</option>
+           <option id='RADIUS'>", scale_param, "</option>
+           <option id='DW_WEIGHTING'>0</option>
+        </tool>"
+   ),
+   
+   convergence = paste0(
+     "<tool library='ta_morphometry' tool='1' name='Convergence Index'>
+           <input id='ELEVATION'>dem</input>
+           <output id='RESULT'>convergence</output>
+           <option id='METHOD'>1</option>
+           <option id='NEIGHBOURS'>1</option>
+       </tool>"
+   ),
+   
+   # The default openness parameters create a fairly blocky grid. With the Eagle
+   # Hills data, changing the radius parameter to be half the amount of rows in
+   # a grid helped to alleviate that. I don't have documentation for that, that
+   # was just me trying things out and seeing what worked. The original paper for
+   # calculating openness is:
+   # https://www.asprs.org/wp-content/uploads/pers/2002journal/march/2002_mar_257-265.pdf
+   openness = paste0(
+     "<tool library='ta_lighting' tool='5' name='Topographic Openness'>
+           <input id='DEM'>dem</input>
+           <output id='POS'>open_pos</output>
+           <output id='NEG'>open_neg</output>
+           <option id='RADIUS'>", openness_param, "</option>
+           <option id='METHOD'>0</option>
+           <option id='DLEVEL'>3.000000</option>
+           <option id='NDIRS'>8</option>
+      </tool>"
+   ),
+   
+   # These are default parameters
+   dah = paste0(
+     "<tool library='ta_morphometry' tool='12' name='Diurnal Anisotropic Heat'>
+          <input id='DEM'>dem</input>
+          <output id='DAH'>dah</output>
+          <option id='ALPHA_MAX'>202.500000</option>
+      </tool>"
+   ),
+   
+   # The tpi_param here will calculate topographic position based on its position
+   # relative to the cells in its neighborhood. For a 25m grid, 5 cells away is
+   # 125m, while for a 2.5m grid 5 cells away is 12.5m This was scaled this way
+   # to promote faster processing at higher resolutions. I also think this is a
+   # better representation of topographic position at different scales anyway.
+   
+   tpi = paste0(
+     "<tool library='ta_morphometry' tool='18' name='Topographic Position Index (TPI)'>
+          <input id='DEM'>dem</input>
+          <output id='TPI'>tpi</output>
+          <option id='STANDARD'>false</option>
+          <option id='RADIUS'>0.000000;", tpi_param, "</option>
+          <option id='DW_WEIGHTING'>0</option>
+      </tool>"
+   ),
+   
+   # Using the rvest package, the centroid of the raster is found and sent off to
+   # https://www.nrc-cnrc.gc.ca/eng/services/sunrise/advanced.html, where we get
+   # official accurate representations of daily sunrise and sunset times
+   # throughout a year at that centroid. Minimum sunrise and maximum sunset times
+   # are calculated for a givenstudy area in order to limit the amount of
+   # calculations that occur while there would be no solar radiation at any given
+   # time throughout a year. It also helps to decrease processing time.
+   
+   solar = paste0(
+     "<tool library='ta_lighting' tool='2' name='Potential Incoming Solar Radiation'>
+           <input id='GRD_DEM'>dem</input>
+           <output id='GRD_DIRECT'>direinso</output>
+           <output id='GRD_DIFFUS'>diffinso</output>
+           <option id='SOLARCONST'>1367.000000</option>
+           <option id='LOCALSVF'>true</option>
+           <option id='UNITS'>0</option>
+           <option id='SHADOW'>0</option>
+           <option id='LOCATION'>1</option>
+           <option id='PERIOD'>2</option>
+           <option id='DAY'>2019-01-15</option>
+           <option id='DAY_STOP'>2019-12-15</option>
+           <option id='DAYS_STEP'>30</option>
+           <option id='HOUR_RANGE'>", min_sunrise_numeric, "; ", max_sunset_numeric, "</option>
+           <option id='HOUR_STEP'>", time_res, "</option>
+           <option id='METHOD'>2</option>
+           <option id='LUMPED'>70.000000</option>
+           <option id='UPDATE'>0</option>
+       </tool>
+  
+       <tool library='grid_tools' tool='12' name='Change Grid Values'>
+         <input id='INPUT'>direinso</input>
+         <option id='METHOD'>0</option>
+         <option id='IDENTITY'>
+           <OPTION type='static_table' id='IDENTITY' name='Lookup Table'>
+             <FIELDS>
+               <FIELD type='DOUBLE'>New Value</FIELD>
+               <FIELD type='DOUBLE'>Value</FIELD>
+             </FIELDS>
+             <RECORDS>
+               <RECORD>
+                 <FIELD>-99999.000000</FIELD>
+                 <FIELD>0.000000</FIELD>
+               </RECORD>
+             </RECORDS>
+           </OPTION>
+         </option>
+       </tool>
+  
+     <tool library='grid_tools' tool='12' name='Change Grid Values'>
+         <input id='INPUT'>diffinso</input>
+         <option id='METHOD'>0</option>
+         <option id='IDENTITY'>
+           <OPTION type='static_table' id='IDENTITY' name='Lookup Table'>
+             <FIELDS>
+               <FIELD type='DOUBLE'>New Value</FIELD>
+               <FIELD type='DOUBLE'>Value</FIELD>
+             </FIELDS>
+             <RECORDS>
+               <RECORD>
+                 <FIELD>-99999.000000</FIELD>
+                 <FIELD>0.000000</FIELD>
+               </RECORD>
+             </RECORDS>
+           </OPTION>
+         </option>
+       </tool>"
+   )
+  )
+  
+  # End list of tools, don't adjust code after here
+  #############################################################################
+  
+  tools <- lapply(tool_list, function(x) {
+    inputs = gsub(".*>", "", regmatches(
+      x, gregexpr("(?<=<input).*?(?=</input>)", x, perl = TRUE))[[1]])
+    outputs = unique(gsub(".*>", "", regmatches(
+      x, gregexpr("(?<=<output).*?(?=</output>)", x, perl = TRUE))[[1]]))
+    
+    inputs = unique(inputs[!inputs %in% outputs])
+    tc = sum(length(inputs), length(outputs))
+    
+    tibble(tool = x, inputs = list(inputs), outputs = list(outputs), tc = tc)
+  })
+  
+  # Dynamically split processing based on the amount of available RAM a PC has.
+  # The following code will determine the best way to process the rasters
+  # based on the amount of RAM on a users machine. It does this by summing the
+  # number of inputs and outputs and comparing them to the maximum number of 
+  # files your system can hold based on the size of the input DEM.
+  raster_size <- file.info(dem_input)$size / 1024 ^ 2 
+  memory <- memory.limit() - raster_size - 1024 # Leave ~1GB of RAM available?
+  n_files <- floor(memory / raster_size)
+  
+  # Adjust tools list
+  for(i in 1:length(tools)) {
+    try({
+      if(tools[[i]]$tc < n_files) {
+        while(sum(tools[[i]]$tc, tools[[i + 1]]$tc) < n_files) {
+          y <- rbind(tools[[i]], tools[[i + 1]])
+          y[1, "tc"] <- sum(y$tc)
+          y[1, "tool"] <- paste(y$tool, collapse = "\n")
+          y[1, "inputs"][[1]] <- list(unlist(y$inputs))
+          y[1, "outputs"][[1]] <- list(unlist(y$outputs))
+          y <- y[1, ]
+          tools[[i]] <- y
+          tools[[i + 1]] <- NULL
+        }
+      }
+    }, silent = TRUE)
+  }
+  
+  # Fix inputs and outputs columns, add function to call the whole thing in cmd
+  xml_layout <- lapply(tools, function(x) {
+    x$inputs <- list(
+      unique(unlist(x$inputs)[!unlist(x$inputs) %in% unlist(x$outputs)])
+    )
+    
+    x$input_xml <- foreach(i = x$inputs, .combine = paste) %do% {
+      paste0("<input varname='", i, "' type='grid' parent='GRID_SYSTEM'>
+          <name>", i, "</name>
+      </input>\n", collapse = " ")}
+    
+    x$outputs <- foreach(k = x$outputs, .combine = paste) %do% {
+      paste0(
+        "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
+        <input id='GRIDS'>", k, "</input>
+        <option id='FILE'>", file.path(covariate_out, paste0(k, ".tif")), "</option>
+      </tool>\n", collapse = " ")
+    }
+    
+    x$header <- paste0(
+      "<?xml version='1.0' encoding='UTF-8'?>
+      <toolchain saga-version='7.3.0'>
+      <group>toolchains</group>
+      <identifier>Derived</identifier>
+      <name>Derived Layers (one step)</name>
+      <description>
+        Common DEM derivatives in SAGA GIS
+      </description>
+    
+      <parameters>
+        <option varname='GRID_SYSTEM' type='grid_system'>
+          <name>Grid System</name>
+        </option>
+        ", x$input_xml,
+      "</parameters>
+      <tools>", sep = "\n")
+    
+    x$footer <- paste0(
+      "</tools>
+  </toolchain>"
+    )
+    
+    x$call <- paste(x$header, x$tool, x$outputs, x$footer, sep = "\n")
+    return(x)
+  })
+  
+  # Define text for cmd input
+  cmd_text <- lapply(xml_layout, function(x) {
+    foreach(k = x$inputs, .combine = paste) %do% {
+      paste0("-", k, " ", file.path(covariate_out, paste0(k, ".tif")), collapse = " ")
+    }
+  })
+  
+  # Determine the toolchain directory based on your system
+  dem_derived_xml <- ifelse(
+    Sys.info()[["sysname"]] == "Windows", 
+    file.path(dirname(saga_cmd), "tools", "toolchains", "dem_derived_layers.xml"), 
+    file.path(dirname(dirname(saga_cmd)), "share", "saga", 
+              "toolchains", "dem_derived_layers.xml")
+  )
+  
+  # Process SAGA toolchains in the list
+  for(p in 1:length(xml_layout)) {
+    write_xml(read_xml(xml_layout[[p]]$call), dem_derived_xml)
+    sys_cmd <- paste(saga_cmd, "toolchains Derived", cmd_text[[p]])
+    system(sys_cmd)
+  }
+  
+  # Remove intermediate files
+  unlink(list.files(
+    covariate_out, pattern = "ChannelNetwork|TCA|dem_preproc|sinkroute",
+    full.names = TRUE)
+  )
+  
+  return(list.files(covariate_out, pattern = ".tif$", full.names = TRUE))
+}
+
+```
+
+
+
+All that is left to do now is run the functions!
+
+```{r Run Functions, echo=TRUE}
+#transformed_raster <- saga_transform(dem_files[1], epsg_code = epsg)
+#rescaled_dems <- dem_resolutions(dem_1m, res_choice)
+covariate_list <- NULL
+for(i in dem_files){
+   dem_derivatives <- dem_derived_layers(i, individual_rasters = TRUE)
+   covariate_list <- c(covariate_list, dem_derivatives)
+}
+```

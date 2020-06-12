@@ -1,0 +1,120 @@
+---
+title: "Random Forest Species Distribution Modelling"
+author: "Matthew Coghill"
+date: "11/26/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This script is intended to run a random forest model for the Sechelt presence/absence data and improve the maps that we made. The Sechelt dataset had extravagantly low plant presence data which prompted the exploration into "Random forest class balancing". This document will describe the process for this model.
+
+First, load the required libraries.
+
+```{r Load Libraries, include=FALSE}
+ls <- c("randomForest", "raster", "rfUtilities", "rgdal", "stringr", "sf")
+new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+if (length(new.packages))
+  install.packages(new.packages)
+lapply(ls, library, character.only = TRUE)  # load the required packages
+rm(ls, new.packages)
+```
+
+Next, load the data. All that is required is a folder path for the covariates and a folder path for the shapefiles. This script assumes that the raster data is given in a single .tif file for each covariate as ran from the DEM_Derived_Layers script (i.e.: the tif file has multiple layers and is already stacked). The shapefiles should also be in one folder, all together for each plant species, but separated files for each species should be present.
+
+Lists of files are prepared from the covariate set and shapefile set. Next, the loop starts by "bricking" the tif raster. This is similar to stacking, however according to the internet, bricking ends up being quicker and more efficient. If this raster brick was created from the DEM_Derived_Layers script, then the bands need to be renamed to have actual proper names instead of "band1, band2, etc.". After the raster brick is read in, the plant species loop starts.
+
+So for each plant species, there should be a separate shapefile with presence/absence data (presence = 1, absence = 0). The shapefile needs to have the same projection as the raster brick, and since the raster brick came from a properly generated script, the projection transformation (if necessary) should take place on the point shapefile. Data from the raster brick is then extracted to the points. A test of multicollinearity is then performed with subsequent "leave one out" analyses performed. If any of the data is deemed to be multicollinear, it is removed from the rest of the analyses in both the point file and the raster brick file.
+
+The next step builds the model parameters for the predict function in random forests. With low presence data, the model should be balanced to account for that. The function "rf.classbalance()" does that, along with builds some R list objects with the relevant model accuracy information.
+
+Finally, we make maps predicting the probability of occurrence at any given raster square. Maps are saved in <path to script file>/Species Distribution Model/output. Probabilities here are between 0-1, 1 being a 100% chance of occurrence. 
+
+```{r Read in objects, include=FALSE}
+Covariate_Path <- file.path("./Covariates")
+Shapefile_Path <- file.path("./Species Distribution Model/shapefiles")
+
+Covariate_List <- list.files(Covariate_Path, pattern = "tif$", full.names = TRUE)
+Shapefile_List <- list.files(Shapefile_Path, pattern = "shp$", full.names = TRUE)
+
+for(i in Covariate_List){
+  Covariates <- raster::brick(file.path(i))
+  Covariate_bands <- as.list(read.delim("./Covariates/Raster_Bands.txt", header = FALSE))
+  names(Covariates) <- as.character(Covariate_bands[[1]])
+  Covariate_name <- paste0(res(Covariates)[1], "m")
+  
+  for(j in Shapefile_List){
+    PresAbs <- readOGR(j)
+    Shapefile_name <- unlist(regmatches(j, gregexpr(paste0("(?<=", Shapefile_Path, "/).*?(?=.shp)"), j, perl = TRUE)))
+    
+    SHAPE_PROJ <- proj4string(PresAbs)
+    COV_PROJ <- proj4string(Covariates)
+    
+    if(identical(SHAPE_PROJ, COV_PROJ) == FALSE){
+      PresAbs <- spTransform(PresAbs, CRS(proj4string(Covariates)))
+    }
+    
+    SHAPE_COLS <- as.numeric(ncol(PresAbs@data))+1
+    PresAbs$PresAbs <- as.factor(PresAbs$PresAbs)
+    PresAbs@data <- data.frame(PresAbs@data, extract(Covariates, PresAbs))
+    
+    cl <- multi.collinear(PresAbs@data[, SHAPE_COLS:ncol(PresAbs@data)], p = 0.05)
+    if(length(cl)>0){
+      LeaveOut_List <- list()
+      for (l in cl) {
+        cl.test <- PresAbs@data[, -c(which(names(PresAbs@data) == l), 1:SHAPE_COLS)]
+        print(paste0("Remove variable: ", l))
+        
+        name <- paste(l)
+        tmp <- list(multi.collinear(cl.test, p = 0.05))
+        LeaveOut_List[[name]] <- tmp
+      }
+      
+      TableCount <- as.data.frame(table(c(names(LeaveOut_List), as.character(unlist(LeaveOut_List)))))
+      VarsToRemove <- as.character(TableCount[1/TableCount$Freq >= 1/length(cl), "Var1"])
+      PresAbs@data <- PresAbs@data[, -which(names(PresAbs@data) %in% VarsToRemove)]
+      Covariates <- dropLayer(Covariates, VarsToRemove)
+    }
+    
+    length(PresAbs$PresAbs[PresAbs$PresAbs==1]) / dim(PresAbs)[1] * 100
+    balance <- rf.classBalance(ydata = PresAbs@data[,"PresAbs"], xdata = PresAbs@data[, SHAPE_COLS:ncol(PresAbs@data)], cbf = 3)
+    
+    WhileLength <- as.numeric(length(balance$confusion))
+    
+    for(k in 1:length(balance$confusion)){
+      print(accuracy(balance$confusion[[k]][,1:2])[5])
+      if(k < WhileLength){
+        if(k == 1){
+          balance$confusion[[WhileLength+1]] <- balance$confusion[[k]] + balance$confusion[[k+1]]
+        } else {
+          balance$confusion[[WhileLength+1]] <- balance$confusion[[WhileLength+1]] + balance$confusion[[k+1]]
+        }
+      }
+    }
+    
+    do.call("<-", list(paste0(Shapefile_name, "_", Covariate_name, "_Model"), balance))
+    do.call("<-", list(paste0(Shapefile_name, "_", Covariate_name, "_ConfusionCumulative"), accuracy(round((balance$confusion[[WhileLength + 1]])/WhileLength)[,1:2])))
+    do.call("<-", list(paste0(Shapefile_name, "_", Covariate_name, "_ConfusionMean"), accuracy(round((balance$confusion[[WhileLength + 1]])/WhileLength)[,1:2])))
+    
+    OutFolder <- file.path("./Species Distribution Model/output")
+    ifelse(!dir.exists(OutFolder),
+           dir.create(OutFolder), FALSE)
+    
+    capture.output(summary(print(get(paste0(Shapefile_name, "_", Covariate_name, "_Model")))), file = file.path(OutFolder, paste0(Shapefile_name, "_", Covariate_name, "_Model.txt")))
+    capture.output(summary(get(paste0(Shapefile_name, "_", Covariate_name, "_ConfusionCumulative"))), file = file.path(OutFolder, paste0(Shapefile_name, "_", Covariate_name, "_ConfusionCumulative.txt")))
+    capture.output(summary(get(paste0(Shapefile_name, "_", Covariate_name, "_ConfusionMean"))), file = file.path(OutFolder, paste0(Shapefile_name, "_", Covariate_name, "_ConfusionMean.txt")))
+
+    predict(Covariates, 
+            balance$model, 
+            file.path(OutFolder, paste0(Shapefile_name, "_", Covariate_name, "_model_probs2.tif")), 
+            type = "prob",
+            index = 2,
+            na.rm = TRUE,
+            overwrite = TRUE,
+            progress = "window"
+    )
+  }
+}
+```
