@@ -67,7 +67,6 @@ The `remove` variable states which covariate layers will be removed at the end o
 
 AOI <- "Sechelt"
 AOI.dir <- file.path(".", paste0(AOI, "_AOI"))
-res_choice <- 4
 epsg <- 3005
 
 ```
@@ -78,7 +77,7 @@ In the next chunk, we want to specify which of the DEM files in the file list of
 
 covariate_file_path <- file.path(AOI.dir, "1_map_inputs", "covariates")
 cov_1m <- file.path(covariate_file_path, "1m")
-if(!dir.exists(cov_1m)) dir.create(cov_1m)
+if(!dir.exists(cov_1m)) dir.create(cov_1m, recursive = TRUE)
 
 # Load files
 dem_raw <- raster(file.path(AOI.dir, "_original_files", "dem", "w001001.adf"))
