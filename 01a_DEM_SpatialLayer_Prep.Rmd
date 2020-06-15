@@ -65,7 +65,7 @@ The `remove` variable states which covariate layers will be removed at the end o
 
 ```{r R Data Objects, include=FALSE}
 
-AOI <- "Sechelt"
+AOI <- "Test"
 AOI.dir <- file.path(".", paste0(AOI, "_AOI"))
 epsg <- 3005
 
@@ -116,12 +116,47 @@ if(class(lidar) %in% "try-error") {
 
 lidar_layers <- list.files(cov_1m, pattern = "chm.tif|dem.tif", full.names = TRUE)
 
+dem <- raster(file.path(cov_1m, "dem.tif"))
+chm <- raster(file.path(cov_1m, "chm.tif"))
+
+# Create 1m res polygon
+dem_0 <- dem * 0
+aoi_poly <- st_as_stars(dem_0) %>% 
+  st_as_sf(as_points = FALSE, merge = TRUE, na.rm = TRUE, use_integer = TRUE) %>% 
+  st_geometry() %>% 
+  lapply(., function(x) 
+    x[which.max(lapply(x, function(y) st_area(st_polygon(list(y)))))]) %>% 
+  st_multipolygon() %>%
+  st_combine() %>%
+  st_cast("POLYGON") %>%
+  st_sf(crs = projection(dem)) %>% 
+  slice(which.max(st_area(.)))
+
+
 ```
 
 The next chunk is a function written to transform rasters using SAGA. Since SAGA is being used for most of the "heavy lifting", I thought I would script grid transforming here as well in order to be consistent. This function can be added into a loop if you wish so that you can transform multiple grids.
 
-```{r Grid Transformation Function}
+```{r TRIM Dowload}
+dl_path <- file.path(AOI.dir, "_original_files", "TRIM")
+if(!dir.exists(dl_path)) dir.create(dl_path)
 
+urls <- c("https://pub.data.gov.bc.ca/datasets/175624/92f/092f09_e.dem.zip", 
+          "https://pub.data.gov.bc.ca/datasets/175624/92g/092g12_w.dem.zip")
+
+trim <- foreach(i = urls, .combine = list) %do% {
+  download.file(url = i, destfile = file.path(dl_path, basename(i)))
+  unzip(file.path(dl_path, basename(i)), overwrite = TRUE, exdir = file.path(
+    dl_path))
+  unlink(file.path(dl_path, basename(i)))
+  r <- raster(file.path(dl_path, basename(file_path_sans_ext(i))))
+  r_bc <- projectRaster(r, res = c(25, 25), crs = paste0("+init=epsg:", epsg))
+}
+trim$fun <- mean
+trim$na.rm <- TRUE
+trim$tolerance <- 0.5
+
+r_mos <- do.call(mosaic, trim)
 
 ```
 
@@ -181,6 +216,7 @@ lower_resolutions <- function(
   
   out_grids <- foreach(r = res_choices, .combine = c) %do% {
     covariate_out_path <- file.path(out_path, paste0(r, "m"))
+    if(!dir.exists(covariate_out_path)) dir.create(covariate_out_path)
     tool_list <- list(
       # Different option names for this tool based on SAGA version
       focal_stats = paste0(
@@ -226,13 +262,9 @@ lower_resolutions <- function(
       points_to_grid = paste0(
         "<tool library='grid_gridding' tool='0' name='Shapes to Grid'>
            <output id='GRID'>grid_downscaled</output>
-           <option id='FIELD'>", paste(basename(file_path_sans_ext(grid_1m)), "[Mean Value]"), "</option>
-           <option id='OUTPUT'>2</option>
-           <option id='MULTIPLE'>0</option>
-           <option id='GRID_TYPE'>7</option>
-           <option id='TARGET_DEFINITION'>0</option>
-           <option id='TARGET_USER_SIZE'>", r, "</option>
-           <option id='TARGET_USER_FITS'>0</option>
+           <option id='FIELD'>Mean Value</option>
+           <option id='TARGET_DEFINITION'>1</option>
+           <input id='TARGET_TEMPLATE'>grid_empty</input>
            <input id='INPUT'>points_filled</input>
          </tool>"
       ), 
@@ -306,22 +338,36 @@ lower_resolutions <- function(
         }
       }
       
-      x$outputs <- foreach(k = unlist(x$outputs), .combine = paste) %do% {
-        if(startsWith(k, "points")) {
-          paste0(
-            "<tool library='io_gdal' tool='4' name='Export Shapes'>
+      if(n_files == Inf) {
+        x$outputs <- paste0(
+          "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
+              <input id='GRIDS'>grid_downscaled</input>
+              <option id='FILE'>", file.path(covariate_out_path, "grid_downscaled.tif"), "</option>
+            </tool>\n", 
+          "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
+              <input id='GRIDS'>", toupper(basename(file_path_sans_ext(grid_1m))), "</input>
+              <option id='FILE'>", file.path(covariate_out_path, basename(grid_1m)), "</option>
+            </tool>\n",
+          collapse = " ")
+      } else {
+        x$outputs <- foreach(k = unlist(x$outputs), .combine = paste) %do% {
+          if(startsWith(k, "points")) {
+            paste0(
+              "<tool library='io_gdal' tool='4' name='Export Shapes'>
               <input id='SHAPES'>", k, "</input>
               <option id='FILE'>", file.path(covariate_out_path, paste0(k, ".shp")), "</option>
-              <option id='FORMAT'>8</option>
+              <option id='FORMAT'>7</option>
             </tool>\n", collapse = " ")
-        } else {
-          paste0(
-            "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
+          } else {
+            paste0(
+              "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
               <input id='GRIDS'>", k, "</input>
               <option id='FILE'>", file.path(covariate_out_path, paste0(k, ".tif")), "</option>
             </tool>\n", collapse = " ")
+          }
         }
       }
+      
       
       x$header <- paste0(
         "<?xml version='1.0' encoding='UTF-8'?>
@@ -379,11 +425,22 @@ lower_resolutions <- function(
     }
     
     # Remove intermediate files
+    if(file.exists(file.path(covariate_out_path, toupper(basename(grid_1m))))) {
+      pattern <- "grid_smooth|grid_empty|points_empty|points_filled|grid_downscaled"
+    } else pattern <- "grid_smooth|grid_empty|points_empty|points_filled"
+    
     unlink(list.files(
-      covariate_out_path, pattern = "grid_smooth|grid_empty|points_empty|points_filled|grid_downscaled",
+      covariate_out_path, 
+      pattern = pattern,
       full.names = TRUE)
     )
     
+    output <- list.files(
+      covariate_out_path, 
+      pattern = paste(basename(grid_1m), "grid_downscaled.tif", sep = "|"),
+      full.names = TRUE, ignore.case = TRUE)
+    
+    file.rename(output, file.path(dirname(output), tolower(basename(output))))
     list.files(covariate_out_path, pattern = basename(grid_1m), full.names = TRUE)
   }
   return(out_grids)
@@ -584,9 +641,6 @@ dem_derived_layers <- function(
       "<tool library='ta_hydrology' tool='1' name='Flow Accumulation (Recursive)'>
          <input id='ELEVATION'>dem_preproc</input>
          <output id='FLOW'>tca</output>
-         <output id='FLOW_LENGTH'>flowlength4</output>
-         <option id='FLOW_UNIT'>1</option>
-         <option id='METHOD'>4</option>
      </tool>"
     ),
     
@@ -741,7 +795,7 @@ dem_derived_layers <- function(
            <output id='GRD_DIRECT'>direinso</output>
            <output id='GRD_DIFFUS'>diffinso</output>
            <option id='SOLARCONST'>1367.000000</option>
-           <option id='LOCALSVF'>true</option>
+           <option id='LOCALSVF'>1</option>
            <option id='UNITS'>0</option>
            <option id='SHADOW'>0</option>
            <option id='LOCATION'>1</option>
@@ -908,7 +962,7 @@ dem_derived_layers <- function(
   
   # Remove intermediate files
   unlink(list.files(
-    covariate_out, pattern = "ChannelNetwork|TCA|dem_preproc|sinkroute",
+    covariate_out, pattern = "cnetwork|tca|dem_preproc|sinkroute",
     full.names = TRUE)
   )
   
@@ -921,7 +975,7 @@ All that is left to do now is run the functions!
 
 ```{r Run Functions, echo=TRUE}
 
-low_res <- foreach(grid = lidar_layers, .combine = paste) %do% {
+low_res <- foreach(grid = lidar_layers, .combine = c) %do% {
   lower_resolutions(
     grid_1m = grid, 
     out_path = covariate_file_path, 
@@ -932,8 +986,9 @@ low_res <- foreach(grid = lidar_layers, .combine = paste) %do% {
 
 dem_files <- grep("dem.tif", low_res, value = TRUE)
 
-covariate_list <- foreach(i = dem_files) %do% {
-  dem_derived_layers(i, individual_rasters = TRUE)
+covariate_list <- foreach(i = dem_files, .final = function(x) 
+  setNames(x, basename(dirname(dem_files)))) %do% {
+  dem_derived_layers(i, saga_cmd = saga_cmd)
 }
 
 ```
