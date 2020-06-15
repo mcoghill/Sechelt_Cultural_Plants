@@ -461,7 +461,7 @@ dem_derived_layers <- function(
   }
   
   if(is.null(out_path))
-    out_path <- dirname(dirname(dem_input))
+    out_path <- dirname(dem_input)
   
   if(!is.character(out_path) && length(out_path) != 1)
     stop(
@@ -475,7 +475,7 @@ dem_derived_layers <- function(
   
   # Define inputs used in some of the SAGA tools below
   reference_res <- res(reference)[1]
-  covariate_out <- file.path(out_path, paste0(reference_res, "m"))
+  covariate_out <- out_path
   if(!dir.exists(covariate_out)) dir.create(covariate_out, recursive = TRUE)
   
   ## Sunrise/sunset time calculation for solar radiation tool:
