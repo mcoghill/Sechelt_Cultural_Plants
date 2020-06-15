@@ -9,9 +9,11 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r read libraries}
-checkpoint::setSnapshot(Sys.Date())
-ls <- c("bcdata", "bcmaps", "sf", "tidyverse", "raster", "stars")
+
+
+```{r packages, include=FALSE}
+ls <- c("bcdata", "bcmaps", "tidyverse", "raster", "stars", "foreach", 
+        "doParallel", "fasterize", "xml2")
 github_ls <- c("bcmapsdata")
 new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 github_new_packages <- github_ls[!(github_ls %in% installed.packages()[, "Package"])]
@@ -20,8 +22,10 @@ if(length(new_packages))
 if(length(github_new_packages))
   install.packages('bcmapsdata', repos='https://bcgov.github.io/drat/')
 ls <- c(ls, github_ls)
-lapply(ls, library, character.only = TRUE)
-rm(ls, new_packages, github_ls, github_new_packages)
+lapply(ls, library, character.only = TRUE)[0]
+rm(list = ls())
+
+source(file.path('_functions', 'get_saga.R'))
 
 ```
 
@@ -46,19 +50,120 @@ This script downloads the relevant spatial data for BEC zones, VRI, TEM, waterbo
 
 This script relies on having a spatial file (AOI.gpkg) defining the study area (area of interest - AOI). Firstly the area of interest is defined along with input and output folders. 
 
-Where a subset of the study area is being used (ie. by subzone), a character string is used to define the subzone(s) of interest. The default value (NULL) will include all subzones. 
+Where a subset of the study area is being used (ie. by subzone), a character string is used to define the subzone(s) of interest and filter only the areas you specify. The default value (NULL) will include all subzones. 
+
+Finally, it is assumed that since you have an AOI shapefile that it was produced in the initial LiDAR script, implying that some raster files were produced (height metrics and dem). If a subzone filter was applied, you may want to mask your raster to the new AOI shape so that they are excluded from further analysis.
 
 
 ```{r Parameters}
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-
-# Options and parameters
-map_res <- 4 # Only used to help locate input files below
-subzones <- c("IDFxh2", "IDFdk1") # Filter results to only include subzones of interest
-                                  # set to NULL or don't run it if you want the full area
+cov_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
+shape_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
+                       
+saga_cmd <- get_saga()
 
 ```
+
+
+```{r Raster to polygon}
+dem_files <- list.files(cov_dir, pattern = "dem.tif", full.names = TRUE, recursive = TRUE)
+for(i in dem_files) {
+  shape_subdir <- file.path(shape_dir, basename(dirname(i)))
+  if(!dir.exists(shape_subdir)) dir.create(shape_subdir, recursive = TRUE)
+  # First, crop grids to data
+  saga_ver <- system(paste(saga_cmd, "-v"), intern = TRUE)
+  saga_ver <- unlist(regmatches(saga_ver, regexec("Version:\\s*(.*?)\\s*\\(", saga_ver)))[2]
+  
+  tool_list <- list(
+    header = paste0(
+      "<?xml version='1.0' encoding='UTF-8'?>
+          <toolchain saga-version='", saga_ver, "'>
+          <group>toolchains</group>
+          <identifier>polygonize</identifier>
+          <name>Polygonize (one step)</name>
+          <description>
+            Common DEM derivatives in SAGA GIS
+          </description>
+        
+          <parameters>
+            <option varname='GRID_SYSTEM' type='grid_system'>
+              <name>Grid System</name>
+            </option>
+            <input varname='dem' type='grid' parent='GRID_SYSTEM'>
+          <name>DEM</name>
+      </input>
+      </parameters>
+          <tools>", sep = "\n"),
+    crop_grid = paste0(
+      "<tool library='grid_tools' tool='17' name='Crop to Data'>
+           <output id='OUTPUT'>dem</output>
+           <input id='INPUT'>dem</input>
+         </tool>"
+    ), 
+    change_values = paste0(
+      "<tool library='grid_tools' tool='12' name='Change Grid Values'>
+        <input id='INPUT'>dem</input>
+        <output id='OUTPUT'>dem_0</output>
+        <option id='METHOD'>1</option>
+        <option id='RANGE'>
+          <OPTION type='static_table' id='RANGE' name='Lookup Table'>
+            <FIELDS>
+              <FIELD type='DOUBLE'>New Value</FIELD>
+              <FIELD type='DOUBLE'>Minimum</FIELD>
+              <FIELD type='DOUBLE'>Maximum</FIELD>
+            </FIELDS>
+            <RECORDS>
+              <RECORD>
+                <FIELD>0.000000</FIELD>
+                <FIELD>0.000000</FIELD>
+                <FIELD>99999.000000</FIELD>
+              </RECORD>
+            </RECORDS>
+          </OPTION>
+        </option>
+      </tool>"
+    ), 
+    grid_to_vector = paste0(
+      "<tool library='shapes_grid' tool='6' name='Vectorising Grid Classes'>
+        <input id='GRID'>dem_0</input>
+        <output id='POLYGONS'>aoi</output>
+        <option id='CLASS_ALL'>0</option>
+        <option id='CLASS_ID'>0.000000</option>
+        <option id='SPLIT'>0</option>
+        <option id='ALLVERTICES'>false</option>
+      </tool>"
+    ), 
+    export = paste0(
+      "<tool library='io_gdal' tool='4' name='Export Shapes'>
+        <input id='SHAPES'>aoi</input>
+        <option id='FILE'>", file.path(
+        shape_dir, basename(dirname(i)), "aoi.gpkg"), "</option>
+        <option id='FORMAT'>23</option>
+      </tool>"
+    ), 
+    footer = paste0(
+      "</tools>
+      </toolchain>"
+    )
+  )
+  call <- paste0(tool_list, sep = "\n", collapse = " ")
+  
+  # Determine the toolchain directory based on your system
+  xml_dir <- ifelse(
+    Sys.info()[["sysname"]] == "Windows", 
+    file.path(dirname(saga_cmd), "tools", "toolchains", "raster_poly_aoi.xml"), 
+    file.path(dirname(dirname(saga_cmd)), "share", "saga", 
+              "toolchains", "raster_poly_aoi.xml")
+  )
+  write_xml(read_xml(call), xml_dir)
+  sys_cmd <- paste(saga_cmd, "toolchains polygonize -dem", i)
+  system(sys_cmd)
+}
+
+```
+
+
 
 A single function is used to download BEC zone info, VRI shapes, TEM shapes (if applicable), water bodies, and roads all in one go. Each is clipped to the extent of the study area at each resolution, though this may not be very efficient. 
 
@@ -70,159 +175,257 @@ get_bc_shapes <- function(in_aoi = NULL,
   raster_files = NULL, 
   epsg = 3005) 
   {
+  
   #### Input checks
+  ## in_aoi can be a shape, filepath, or raster (filepath to valid shape or raster)
   if(is.null(in_aoi) || 
-     (!is.null(in_aoi) && !class(in_aoi) %in% c("character", "sf"))) {
-    stop("You must provide a valid AOI either as a shape or a file path to a shape")
+     (!is.null(in_aoi) && !class(in_aoi) %in% c("character", "sf", "RasterLayer"))) {
+    stop(
+      "\rYou must provide a valid AOI either as a shape or a file path to a shape"
+    )
+    
+    # Options for filepath
   } else if(!is.null(in_aoi) && is.character(in_aoi)) {
-    study_area <- st_read(in_aoi)
+    study_area <- try(st_read(in_aoi, quiet = TRUE), silent = TRUE)
+    if(class(study_area) == "try-error") {
+      study_area_rast <- try(raster(in_aoi), silent = TRUE)
+      if(class(study_area_rast) %in% "RasterLayer") {
+        study_area <- raster_to_poly(study_area_rast)
+      } else {
+        stop("\rFilepath fails to point to valid shape or raster file")
+      }
+    } 
+    
+    # Options for raw files
   } else if(!is.null(in_aoi) && class(in_aoi) %in% "sf") {
     study_area <- in_aoi
+    
+  } else if(!is.null(in_aoi) && class(in_aoi) %in% "RasterLayer") {
+    study_area <- raster_to_poly(in_aoi)
   }
   
   if(is.null(out_path)) {
     out_path <- dirname(in_aoi)
   } else if(!is.null(out_path) && !is.character(out_path)) {
-    stop("out_path is an invalid file path string")
+    stop("\rout_path is an invalid file path string")
   }
   
   if(!is.null(subzones) && !is.character(subzones)) {
-    stop("Subzone filter should be a character string representing the subzones to keep")
+    stop(
+      "\rSubzone filter should be a character string representing the subzones 
+      \rto keep")
   }
   
   if(!is.null(raster_files) && !is.character(raster_files)) {
-    stop("File paths to raster files need to be provided")
+    stop("\rFile paths to raster files need to be provided")
   }
   
   if(is.null(update_raster_extents)) {
     update_raster_extents <- FALSE
   } else if(!is.null(update_raster_extents) && !is.logical(update_raster_extents)) {
-    stop("update_raster_extents requires a logical input (TRUE or FALSE)")
+    stop("\rupdate_raster_extents requires a logical input (TRUE or FALSE)")
+    
   } else if(is.null(subzones) && isTRUE(update_raster_extents)) {
     update_raster_extents <- FALSE
-    message("\nNo subzones selected, raster extents will not be updated")
+    message("\rNo subzones selected, raster extents will not be updated")
+    
   } else if(is.null(raster_files) && isTRUE(update_raster_extents)) {
-    message("\nNo raster files to update")
+    message("\rNo raster files to update")
   }
+  
+  fix_geoms <- function(x) {
+    if(any(!st_geometry_type(x) %in% c("POLYGON", "MULTIPOLYGON"))) {
+      bec_geom <- st_geometry(x)
+      new_geom <- foreach(geom = bec_geom) %do% {
+        if(!st_geometry_type(geom) %in% c("POLYGON", "MULTIPOLYGON")) {
+          for(f in 1:length(geom)) {
+            if(length(geom) > f) {
+              if(!st_geometry_type(geom[[f]]) %in% c("POLYGON", "MULTIPOLYGON")) {
+                geom[[f]] <- NULL
+              }
+            }
+          }
+          geom <- st_multipolygon(geom)
+        } else if(st_geometry_type(geom) == "POLYGON") {
+          geom <- st_multipolygon(list(geom))
+        }
+        geom
+      } %>% 
+        st_sfc()
+    }
+    st_geometry(x) <- new_geom
+    return(x)
+  }
+  
   
   #### Function script
   # Set or transform CRS of input AOI if not provided
   if(is.na(st_crs(study_area)$proj4string)) {
-    message(paste0("No CRS detected for in_aoi, setting to EPSG ", epsg))
+    message(paste0("\rNo CRS detected for in_aoi, setting to EPSG ", epsg))
     study_area <- st_set_crs(study_area, epsg)
-  } else if(st_crs(study_area)$proj4string != st_crs(epsg)$proj4string) {
+    
+  } else if(st_crs(study_area) != st_crs(epsg)) {
     study_area <- st_transform(study_area, epsg)
   }
+  study_area <- st_make_valid(study_area) %>% 
+    st_geometry()
   
   # Adjust max download size based on AOI
   options(bcdata.max_geom_pred_size = as.numeric(st_area(study_area)) + 10)
   
   # Download BEC, transform if necessary, and clip to AOI
-  message("\nDownloading BEC layer")
+  message("\rDownloading BEC layer")
   bec_sf <- bec(class = "sf")
-  if(st_crs(bec_sf)$proj4string != st_crs(study_area)$proj4string) {
-    bec_sf <- st_transform(bec_sf, epsg) %>% 
-      st_intersection(study_area)
-  } else {
-    bec_sf <- st_intersection(bec_sf, study_area)
-  }
+  if(st_crs(bec_sf) != st_crs(study_area)) bec_sf <- st_transform(bec_sf, epsg)
+  bec_sf <- st_intersection(bec_sf, study_area)
   
   # Update BEC zone layer to only include subzones of interest
   if(!is.null(subzones)) {
     bec_sf <- dplyr::filter(bec_sf, as.character(MAP_LABEL) %in% subzones)
     study_area <- st_intersection(study_area, bec_sf) %>% 
-      summarise()
-    st_write(study_area, file.path(out_path, "aoi.gpkg"), delete_dsn = TRUE, delete_layer = TRUE)
+      dplyr::summarise()
+    st_write(study_area, file.path(out_path, "aoi.gpkg"), delete_dsn = TRUE, 
+             delete_layer = TRUE)
   }
-  st_write(bec_sf, file.path(out_path, "bec.gpkg"), delete_dsn = TRUE, delete_layer = TRUE)
+  
+  bec_sf <- fix_geoms(bec_sf)
+  
+  st_write(bec_sf, file.path(out_path, "bec.gpkg"), append = FALSE, overwrite = TRUE)
   
   # Download VRI
-  message("\nDownloading VRI layer")
+  message("\rDownloading VRI layer")
   vri <- bcdc_query_geodata("2ebb35d8-c82f-4a17-9c96-612ac3532d55", crs = epsg) %>% 
-    bcdata::filter(INTERSECTS(study_area)) %>% 
+    bcdata::filter(BBOX(st_bbox(study_area), crs = paste0("EPSG:", epsg))) %>% 
     bcdata::select(c("BCLCS_LEVEL_2")) %>% # Treed sites
     collect() %>% 
-    {if(nrow(.) > 0){st_intersection(., study_area)} else .}
-  st_write(vri, file.path(out_path, "vri.gpkg"), delete_dsn = TRUE, delete_layer = TRUE)
-  #st_write(vri, file.path(out_path, "vri.shp"), delete_dsn = TRUE, delete_layer = TRUE)
+    {if(nrow(.) > 0) st_intersection(., study_area) else .}
+  
+  st_write(vri, file.path(out_path, "vri.gpkg"), append = FALSE, overwrite = TRUE)
   
   # Download recent cutblocks layer
   # Uses date filter which filters cutblock ages less than 20 years, or 7305 days
-  message("\nDownloading cutblock layer")
+  message("\rDownloading cutblock layer")
   cutblocks <- bcdc_query_geodata("b1b647a6-f271-42e0-9cd0-89ec24bce9f7", crs = epsg) %>% 
-    bcdata::filter(INTERSECTS(study_area)) %>% 
+    bcdata::filter(BBOX(st_bbox(study_area), crs = paste0("EPSG:", epsg))) %>% 
     collect() %>% 
-    {if(nrow(.) > 0){st_intersection(., study_area)} else .} %>% 
+    {if(nrow(.) > 0) st_intersection(., study_area) else .} %>% 
     mutate(DISTURBANCE_START_DATE = as.Date(DISTURBANCE_START_DATE),
            DISTURBANCE_END_DATE = as.Date(DISTURBANCE_END_DATE)) %>% 
     dplyr::filter(Sys.Date() - DISTURBANCE_END_DATE < 7305)
-  st_write(cutblocks, file.path(out_path, "cutblocks.gpkg"), delete_dsn = TRUE, delete_layer = TRUE)
-  #st_write(cutblocks, file.path(out_path, "cutblocks.shp"), delete_dsn = TRUE, delete_layer = TRUE)
+  st_write(cutblocks, file.path(out_path, "cutblocks.gpkg"),  append = FALSE, overwrite = TRUE)
   
   # Download TEM
-  "\nDownloading TEM layer"
+  message("\rDownloading TEM layer")
   tem <- bcdc_query_geodata("0a83163b-a62f-4ce6-a9a1-21c228b0c0a3", crs = epsg) %>%
-    bcdata::filter(INTERSECTS(study_area)) %>%
+    bcdata::filter(BBOX(st_bbox(study_area), crs = paste0("EPSG:", epsg))) %>%
     collect() %>% 
-    {if(nrow(.) > 0){st_intersection(., study_area)} else .}
-  st_write(tem, file.path(out_path, "tem.gpkg"), delete_dsn = TRUE, delete_layer = TRUE)
-  #st_write(tem, file.path(out_path, "tem.shp"), delete_dsn = TRUE, delete_layer = TRUE)
+    {if(nrow(.) > 0) st_intersection(., study_area) else .}
+  st_write(tem, file.path(out_path, "tem.gpkg"),  append = FALSE, overwrite = TRUE)
   
   # Download water layers, requires merging multiple layers
-  message("\nDownloading water layers")
-  waterbodies <- study_area[0, ] # creates an empty sf dataframe
-  waterbodies <- bcdc_query_geodata("cb1e3aba-d3fe-4de1-a2d4-b8b6650fb1f6", crs = epsg) %>% # lakes
-    bcdata::filter(INTERSECTS(study_area)) %>% 
-    collect() %>% {if(nrow(.) > 0){rbind(., waterbodies)} else waterbodies}
-  waterbodies <- bcdc_query_geodata("f7dac054-efbf-402f-ab62-6fc4b32a619e", crs = epsg) %>% # rivers
-    bcdata::filter(INTERSECTS(study_area)) %>% 
-    collect() %>% {if(nrow(.) > 0){rbind(., waterbodies)} else waterbodies}
-  waterbodies <- bcdc_query_geodata("93b413d8-1840-4770-9629-641d74bd1cc6", crs = epsg) %>% # wetlands
-    bcdata::filter(INTERSECTS(study_area)) %>% 
-    collect() %>% {if(nrow(.) > 0){rbind(., waterbodies)} else waterbodies}
+  message("\rDownloading water layers")
   
-  water_clipped <- st_intersection(waterbodies, study_area) 
-  st_write(water_clipped, file.path(out_path, "water.gpkg"), delete_dsn = TRUE, delete_layer = TRUE)
-  #st_write(water_clipped, file.path(out_path, "water.shp"), delete_dsn = TRUE, delete_layer = TRUE)
+  # Use foreach in parallel to efficiently download multiple water layers
+  water_records <- c("cb1e3aba-d3fe-4de1-a2d4-b8b6650fb1f6", # lakes
+                     "f7dac054-efbf-402f-ab62-6fc4b32a619e", # rivers
+                     "93b413d8-1840-4770-9629-641d74bd1cc6") # wetlands
+  
+  cl <- parallel::makeCluster(parallel::detectCores())
+  doParallel::registerDoParallel(cl)
+  
+  waterbodies <- foreach(i = water_records, .combine = rbind, 
+                         .packages = c("tidyverse", "bcdata", "sf")) %dopar% 
+    {
+      bcdc_query_geodata(i, crs = epsg) %>% # lakes
+        bcdata::filter(BBOX(st_bbox(study_area), crs = paste0("EPSG:", epsg))) %>% 
+        collect() %>% 
+        {if(nrow(.) > 0) st_intersection(., study_area) else NULL}
+    }
+  parallel::stopCluster(cl)
+  
+  st_write(waterbodies, file.path(out_path, "water.gpkg"),  append = FALSE, overwrite = TRUE)
   
   # Download road network
-  message("\nDownloading Road network")
+  # The main road network layer has too many roads in it. Filter it down to only
+  # include named roads and combine those with actual mapped FSR's
+  message("\rDownloading Road network")
   roads <- bcdc_query_geodata("bb060417-b6e6-4548-b837-f9060d94743e", crs = epsg) %>% 
-    bcdata::filter(INTERSECTS(study_area)) %>% 
+    bcdata::filter(
+      BBOX(st_bbox(study_area), crs = paste0("EPSG:", epsg)),
+      ROAD_NAME_ID > 0) %>% 
     collect() %>% 
-    {if(nrow(.) > 0){st_intersection(., study_area)} else .}
-  st_write(roads, file.path(out_path, "road_network.gpkg"), delete_dsn = TRUE, delete_layer = TRUE)
-  #st_write(roads, file.path(out_path, "road_network.shp"), delete_dsn = TRUE, delete_layer = TRUE)
+    dplyr::select(id, ROAD_NAME_FULL, FEATURE_LENGTH_M) %>% 
+    dplyr::rename(NAME = ROAD_NAME_FULL) %>% 
+    {if(nrow(.) > 0) {
+      st_intersection(., study_area) %>% 
+        st_cast("MULTILINESTRING")
+      } else .}
   
-  # Mask raster files with updated BEC shape
-  # It would be better to functionize this using the terra package
-  # though I ran into issues during testing (it would always crash).
-  if(isTRUE(update_raster_extents) && !is.null(subzones)) {
-    message("\nUpdating raster shapes")
-    in_stack <- stack()
-    for(i in raster_files) {
-      r <- raster(i)
-      if(projection(r) != st_crs(epsg)$proj4string) {
-        projection(r) <- st_crs(epsg)$proj4string
-      }
-      in_stack <- stack(in_stack, r)
+  fsr <- bcdc_query_geodata("9e5bfa62-2339-445e-bf67-81657180c682", crs = epsg) %>% 
+    bcdata::filter(
+      BBOX(st_bbox(study_area), crs = paste0("EPSG:", epsg)), 
+      LIFE_CYCLE_STATUS_CODE == "ACTIVE") %>% 
+    collect() %>% 
+    dplyr::select(id, MAP_LABEL, FEATURE_LENGTH_M) %>% 
+    dplyr::rename(NAME = MAP_LABEL) %>% 
+    {if(nrow(.) > 0) {
+      st_intersection(., study_area) %>% 
+        st_cast("MULTILINESTRING")
+    } else .}
+  
+  road_merge <- rbind(roads, fsr)
+  
+  st_write(road_merge, file.path(out_path, "road_network.gpkg"),  append = FALSE, overwrite = TRUE)
+  
+  # Download fire polygons
+  message("\rDownloading Fire areas")
+  fire_records <- c("cdfc2d7b-c046-4bf0-90ac-4897232619e1", 
+                    "22c7cb44-1463-48f7-8e47-88857f207702")
+    
+  cl <- parallel::makeCluster(parallel::detectCores())
+  doParallel::registerDoParallel(cl)
+  
+  fires <- foreach(i = fire_records, .combine = rbind, 
+                         .packages = c("tidyverse", "bcdata", "sf")) %dopar% 
+    {
+      bcdc_query_geodata(i, crs = epsg) %>%
+        bcdata::filter(BBOX(st_bbox(study_area), crs = paste0("EPSG:", epsg))) %>% 
+        collect() %>% 
+        {if(nrow(.) > 0) st_intersection(., study_area) %>% 
+            dplyr::select(id, FIRE_NUMBER, VERSION_NUMBER, FIRE_YEAR, 
+                          FIRE_SIZE_HECTARES, LOAD_DATE) %>% 
+            mutate(FIRE_YEAR = as.Date(paste0(FIRE_YEAR, "-01-01"))) %>% 
+            dplyr::filter(Sys.Date() - FIRE_YEAR <= 7305) # 7305 days is 20 years
+          else NULL}
     }
-    m <- mask(in_stack, study_area)
-    writeRaster(m, filename = file.path(dirname(i[1]), names(m)), 
-                bylayer = TRUE, format = "GTiff", overwrite = TRUE)
+  
+  parallel::stopCluster(cl)
+  
+  st_write(fires, file.path(out_path, "fires.gpkg"),  append = FALSE, overwrite = TRUE)
+  
+  # Mask raster files with updated study area shape
+  if(isTRUE(update_raster_extents) && !is.null(subzones)) {
+    message("\rUpdating raster shapes")
+    study_area_rast <- fasterize(study_area, raster(raster_files[1]))
+    in_stack <- foreach(i = raster_files, .combine = c) %do% {
+      r <- raster(i)
+      if(!compareCRS(r, study_area_rast)) 
+        crs(r) <- crs(study_area_rast)
+      
+      m <- mask(r, study_area_rast, filename = i, overwrite = TRUE)
+      return(i)
+    }
   }
-  output <- list.files(out_path, pattern = ".gpkg", full.names = TRUE)
+  return(list.files(out_path, pattern = ".gpkg", full.names = TRUE))
 }
+
 ```
 
 We can define the parameters and run the above function.
 
 ```{r Run Functions}
-res_name <- paste0(map_res, "m")
-
 # Define the input AOI file
-in_aoi <- file.path(
-  AOI_dir, "0_raw_inputs", "base_layers", res_name, "aoi.gpkg")
+in_aoi <- list.files(shape_dir, pattern = "aoi.gpkg", recursive = TRUE, full.names = TRUE)
 
 # Define output file path for downloaded shapes (function will default
 # to the folder of in_aoi)
@@ -231,11 +434,17 @@ out_path <- dirname(in_aoi)
 # If masking rasters due to the AOI changing from the BEC, list the
 # appropriate rasters here. Below, I've included a file pattern
 # that will find LiDAR derived files created from the 01_LiDAR script
+raster_files <- list.files( 
+  file.path(cov_dir, res_name), 
+  pattern = "dem.tif|[[:digit:]]m.tif$", 
+  full.names = TRUE)
 
-download_shapes <- get_bc_shapes(in_aoi = in_aoi, 
-  out_path = out_path, 
-  subzones = NULL, 
-  update_raster_extents = FALSE)
+bc_shapes <- foreach(aoi = in_aoi, .final = function(x) 
+  setNames(x, basename(dirname(in_aoi)))) %do% {
+  download_shapes <- get_bc_shapes(in_aoi = aoi)
+  list.files(dirname(in_aoi))
+}
+
 
 ## Can throw the whole chunk above into a loop to get exact clipping boundaries for multiple resolutions
 ```
