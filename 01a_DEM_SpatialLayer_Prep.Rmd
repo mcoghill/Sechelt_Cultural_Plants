@@ -12,29 +12,25 @@ require(knitr)
 ```
 
 ## Introduction
-This document describes the steps required to prepare spatial layers to be used in machine-learning based predictive ecosystem map method. This is a preliminary step to Stage 1 Sample Design (script ref.) and the modeling process (script ref). 
+This document describes the steps required to prepare spatial layers to be used in machine-learning based predictive ecosystem map method. The code used here is largely pawned from PEM project coding, but with adjustments made to suit this project more accurately.
 
-This method is scripted in R, but uses other open source packages, predominently SAGA :  (https://sourceforge.net/projects/saga-gis/). This script enables you to set up a connection from R to Sage and pass commands to the saga.exe. This relies on the package RSAGA[https://cran.r-project.org/web/packages/RSAGA/RSAGA.pdf]. 
-
+This method is scripted in R, but uses other open source packages, predominently SAGA :  (https://sourceforge.net/projects/saga-gis/). 
 
 
 ###Preparation steps. 
 
 ### Software
-Prior to running this script you will need to download SAGA[https://sourceforge.net/projects/saga-gis/] and know its location. SAGA can be downloaded on an external drive and run independent of pemissions 
+Prior to running this script you will need to download SAGA[https://sourceforge.net/projects/saga-gis/] and know its location. SAGA can be downloaded on an external drive and run independent of pemissions. Additionally, a source script may be called in R to install it to your system.
 
 ### Data 
-To run this script you will need a base digital elevation model (digital terrain model) at the spatial resolution of your choice. The base rasters for the PEM research project are 2.5m. 
+To run this script you will need a base digital elevation model (digital terrain model) at 1m resolution. 
 
 
 ### 1) Set up link between Saga and R. 
-Depending on your location of the saga program you will need to define the location of the saga_cmd.exe file. This can be done manually as shown below, or can be called using the #myenv <- rsaga.env() function which will search in successive locations on your hard drive. This is normally within the Programs folder on your C:/ drive. 
-
+This is taken care of with the saga_cmd function
 
 ### Matt's Notes
 The purpose of this document is to derive desired lower resolution DEM's from a 1m DEM, and subsequently create covariate layers for the PEM project. This document uses three coding languages: R, cmd (aka batch), and XML. Command line functions will call individual functions to SAGA, while the XML scripts allow for "chaining" tools together for more efficient processing in SAGA so that SAGA doesn't continuously stop and start. It also prevents the creation of intermediate files. The big benefit of using SAGA is that it automatically uses all cores on the machine you're using. In this manner, SAGA will utilize available RAM on your machine for storing files until the very end when they are written to the disk so in some instances you may be limited in its use depending on the specs of your machine.
-
-It's important to note that this markdown file will output the desired covariates to file paths relative to the location of your input DEM. For example, all DEM resolutions are placed in a folder labelled "DEM_out" in the same location as your input DEM. All DEM resolutions are placed in there. Next, folders are created for the covariates at each of the desired resolutions, and all outputs for each resolution are placed in those. The functions used here do not load the final rasterstacks into the R environment, they just output them to a folder. If this is necessary, it should be simple enough to script that in. 
 
 Before getting started, the first thing to do is to load the required packages. Most of the processing work will actually be accomplished by SAGA GIS, thus there are only a few packages required here.
 
@@ -50,6 +46,7 @@ source(file.path('_functions', 'get_saga.R'))
 
 ```
 
+Run the below function to detect and install SAGA GIS if necessary for your system
 
 ```{r download SAGA, eval = FALSE}
 # NOTE: New function get_saga() will detect your version of SAGA gis and if it's
@@ -59,19 +56,17 @@ saga_cmd <- get_saga()
 
 ```
 
-In this next chunk, you enter the only input data required for this sheet to function, the rest is (mostly) automated! Simply input the AOI, the choice of resolutions you want outputted, a projection code, and the file path for where SAGA is located.
-
-The `remove` variable states which covariate layers will be removed at the end of the analysis (i.e.: intermediate layers). A list of layer names can be found by running the first "grid_list_filtered" variable, located after the last XML line.
+In this next chunk, you enter the only input data required for this sheet to function, the rest is (mostly) automated! Simply input the AOI, the choice of resolutions you want outputted, and a projection code.
 
 ```{r R Data Objects, include=FALSE}
 
-AOI <- "Test"
+AOI <- "Sechelt"
 AOI.dir <- file.path(".", paste0(AOI, "_AOI"))
 epsg <- 3005
 
 ```
 
-In the next chunk, we want to specify which of the DEM files in the file list of the DEM's is the 1m raster. We are also preparing SAGA to run (note: not sure of the effect this has on other OS's).
+In the next chunk, we want to specify where the raw files are located. For the Sechelt project, there were two output LiDAR files: a CHM and a DEM, both at resolutions of (almost) 1m. Once the raw LiDAR files have been located, they are transformed to the larger of the two extents using the provided EPSG code for transformation. After grid transformation, the two files should stack properly. There is a test at the bottom of the chunk to see if they will properly stack, and if they don't then a closer look at the files will need to be made in order to determine why they aren't stacking.
 
 ```{r Specify 1m Raster}
 
@@ -116,51 +111,10 @@ if(class(lidar) %in% "try-error") {
 
 lidar_layers <- list.files(cov_1m, pattern = "chm.tif|dem.tif", full.names = TRUE)
 
-dem <- raster(file.path(cov_1m, "dem.tif"))
-chm <- raster(file.path(cov_1m, "chm.tif"))
-
-# Create 1m res polygon
-dem_0 <- dem * 0
-aoi_poly <- st_as_stars(dem_0) %>% 
-  st_as_sf(as_points = FALSE, merge = TRUE, na.rm = TRUE, use_integer = TRUE) %>% 
-  st_geometry() %>% 
-  lapply(., function(x) 
-    x[which.max(lapply(x, function(y) st_area(st_polygon(list(y)))))]) %>% 
-  st_multipolygon() %>%
-  st_combine() %>%
-  st_cast("POLYGON") %>%
-  st_sf(crs = projection(dem)) %>% 
-  slice(which.max(st_area(.)))
-
-
 ```
 
-The next chunk is a function written to transform rasters using SAGA. Since SAGA is being used for most of the "heavy lifting", I thought I would script grid transforming here as well in order to be consistent. This function can be added into a loop if you wish so that you can transform multiple grids.
 
-```{r TRIM Dowload}
-dl_path <- file.path(AOI.dir, "_original_files", "TRIM")
-if(!dir.exists(dl_path)) dir.create(dl_path)
-
-urls <- c("https://pub.data.gov.bc.ca/datasets/175624/92f/092f09_e.dem.zip", 
-          "https://pub.data.gov.bc.ca/datasets/175624/92g/092g12_w.dem.zip")
-
-trim <- foreach(i = urls, .combine = list) %do% {
-  download.file(url = i, destfile = file.path(dl_path, basename(i)))
-  unzip(file.path(dl_path, basename(i)), overwrite = TRUE, exdir = file.path(
-    dl_path))
-  unlink(file.path(dl_path, basename(i)))
-  r <- raster(file.path(dl_path, basename(file_path_sans_ext(i))))
-  r_bc <- projectRaster(r, res = c(25, 25), crs = paste0("+init=epsg:", epsg))
-}
-trim$fun <- mean
-trim$na.rm <- TRUE
-trim$tolerance <- 0.5
-
-r_mos <- do.call(mosaic, trim)
-
-```
-
-This next chunk is a function which will start the pre-processing of a 1m resolution DEM into your desired DEM resolutions and places all separate DEM's into the AOI's DEM folder. This is following the examples set out by Lucas Jarron and Nicholas Coops, except this time R will be used to call SAGA GIS functions rather than using ArcGIS or QGIS.
+This next chunk is a function which will start the pre-processing of a 1m resolution DEM into your desired DEM resolutions. This is following the examples set out by Lucas Jarron and Nicholas Coops, except this time R will be used to call SAGA GIS functions rather than using ArcGIS or QGIS.
 
 First, focal statistics are computed in a defined area around the focal point (the mean values in a defined area). SAGA calculates these focal statistics based on a radius away from the focal point, thus the resolution of choice is divided by 2 and rounded to the nearest integer. For a radius of 1, it is calculating the mean statistics (elevation) in a 3x3 grid, a radius of 2 will be a 5x5 grid, etc., but the point here is that processing time will increase at coarser resolutions. No weighting is given here since the elevations are given in raw form, so everything is left to the default settings. Source: http://www.saga-gis.org/saga_tool_doc/7.4.0/statistics_grid_1.html
 
@@ -481,10 +435,7 @@ Note: It would be good to automate that step somehow.
 14. Change Grid Value: Changes the grid values of 0 to -99999 (i.e.: no data) for the insolation grids
 15. Export Raster: The final output(s)
 
-2. Handle whether the user desires a stacked raster output, or individual tif files for each layer
-
 This function requires that you specify an input file path to a DEM, not an input raster (same for all functions in this document).
-
 
 
 ```{r DEM Derived Layers, include=FALSE}
@@ -984,6 +935,37 @@ low_res <- foreach(grid = lidar_layers, .combine = c) %do% {
   )
 }
 
+# One of the things brought up in the beginning was to do a comparison to TRIM
+# TRIM is about 25m resolution, so we can clip it using the derived 25m DEM to
+# do exact comparisons
+# Download TRIM using these links: 
+# https://www2.gov.bc.ca/assets/gov/data/geographic/topography/250kgrid.pdf
+# https://pub.data.gov.bc.ca/datasets/175624/
+dl_path <- file.path(AOI.dir, "_original_files", "TRIM")
+trim_path <- file.path(covariate_file_path, "25m_TRIM")
+
+if(!dir.exists(dl_path) || dir.exists(trim_path)) {
+  if(!dir.exists(dl_path)) dir.create(dl_path)
+  if(!dir.exists(trim_path)) dir.create(trim_path)
+  dem_25 <- raster(file.path(covariate_file_path, "25m", "dem.tif"))
+  
+  # URL's to download tiles for Sechelt
+  urls <- c("https://pub.data.gov.bc.ca/datasets/175624/92f/092f09_e.dem.zip", 
+            "https://pub.data.gov.bc.ca/datasets/175624/92g/092g12_w.dem.zip")
+  
+  trim <- foreach(i = urls, .combine = function(x, y) mosaic(x, y, fun = "mean") ) %do% {
+    download.file(url = i, destfile = file.path(dl_path, basename(i)))
+    unzip(file.path(dl_path, basename(i)), overwrite = TRUE, exdir = file.path(
+      dl_path))
+    unlink(file.path(dl_path, basename(i)))
+    raster(file.path(dl_path, basename(file_path_sans_ext(i))))
+  } %>% 
+    projectRaster(dem_25) %>% 
+    mask(dem_25)
+  writeRaster(trim, file.path(trim_path, "dem.tif"), overwrite = TRUE)
+}
+
+low_res <- c(low_res, list.files(trim_path, pattern = "dem.tif", full.names = TRUE))
 dem_files <- grep("dem.tif", low_res, value = TRUE)
 
 covariate_list <- foreach(i = dem_files, .final = function(x) 
