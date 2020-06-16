@@ -973,4 +973,50 @@ covariate_list <- foreach(i = dem_files, .final = function(x)
   dem_derived_layers(i, saga_cmd = saga_cmd)
 }
 
+# Create DEM files for use with ClimateBC program:
+dem_files <- list.files(covariate_file_path, pattern = "dem.tif", full.names = TRUE, recursive = TRUE)
+dem_files <- dem_files[basename(dirname(dem_files)) != "1m"]
+clim_bc_path <- file.path(file.path(AOI.dir, "0_raw_inputs", "ClimateBC_Layers"))
+if(!dir.exists(clim_bc_path)) dir.create(clim_bc_path, recursive = TRUE)
+for(i in dem_files) {
+  r <- raster(i)
+  p <- projectRaster(r, crs = "+init=epsg:4326")
+  writeRaster(p, 
+              file.path(clim_bc_path, paste0("dem_", basename(dirname(i)), ".asc")),
+              overwrite = TRUE)
+}
+
+# Create climate layers for normal annual & seasonal 1961-1990, same for 1991-2010, 
+# for each resolution using the ClimateBC program. When that finishes, come back 
+# here for renaming and saving the variables to their final location.
+
+# Use SAGA to bulk transform grids
+# Folders indicate resolutions, subfolders are the data attribute
+clim_res <- list.dirs(clim_bc_path, full.names = TRUE, recursive = FALSE)
+
+for(i in clim_res) {
+  clim_sub <- list.dirs(i, recursive = FALSE)
+  for(j in clim_sub) {
+    res <- gsub("dem_", "", basename(dirname(j)))
+    dem <- grep(res, dem_files, value = TRUE)
+    clim_layers <- list.files(j, full.names = TRUE, pattern = ".asc$")
+    for(k in clim_layers) {
+      l <- raster(k)
+      crs(l) <- CRS("+init=epsg:4326")
+      writeRaster(l, file.path(dirname(k), paste0(basename(file_path_sans_ext(k)), ".tif")), 
+                  overwrite = TRUE)
+    }
+    system(paste(saga_cmd, "pj_proj4 3", 
+                 "-SOURCE", paste(clim_layers[1:2], collapse = ";"),
+                 "-TARGET_DEFINITION 1", 
+                 "-TARGET_TEMPLATE", dem,
+                 "-CRS_PROJ4", paste0('"', projection(raster(dem)), '"'),
+                 "-GRIDS", paste0(file.path(
+                   covariate_file_path, res, 
+                   paste0(basename(dirname(clim_layers)), "_", basename(clim_layers[1:2]))), 
+                   collapse = ";")))
+  }
+}
+
+
 ```
