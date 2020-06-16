@@ -233,31 +233,6 @@ get_bc_shapes <- function(in_aoi = NULL,
     message("\rNo raster files to update")
   }
   
-  fix_geoms <- function(x) {
-    if(any(!st_geometry_type(x) %in% c("POLYGON", "MULTIPOLYGON"))) {
-      bec_geom <- st_geometry(x)
-      new_geom <- foreach(geom = bec_geom) %do% {
-        if(!st_geometry_type(geom) %in% c("POLYGON", "MULTIPOLYGON")) {
-          for(f in 1:length(geom)) {
-            if(length(geom) > f) {
-              if(!st_geometry_type(geom[[f]]) %in% c("POLYGON", "MULTIPOLYGON")) {
-                geom[[f]] <- NULL
-              }
-            }
-          }
-          geom <- st_multipolygon(geom)
-        } else if(st_geometry_type(geom) == "POLYGON") {
-          geom <- st_multipolygon(list(geom))
-        }
-        geom
-      } %>% 
-        st_sfc()
-    }
-    st_geometry(x) <- new_geom
-    return(x)
-  }
-  
-  
   #### Function script
   # Set or transform CRS of input AOI if not provided
   if(is.na(st_crs(study_area)$proj4string)) {
@@ -287,8 +262,6 @@ get_bc_shapes <- function(in_aoi = NULL,
     st_write(study_area, file.path(out_path, "aoi.gpkg"), delete_dsn = TRUE, 
              delete_layer = TRUE)
   }
-  
-  bec_sf <- fix_geoms(bec_sf)
   
   st_write(bec_sf, file.path(out_path, "bec.gpkg"), append = FALSE, overwrite = TRUE)
   
