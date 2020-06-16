@@ -29,7 +29,7 @@ The first thing that will be done is load in the required packages. We are relyi
 
 ```{r load library, echo = FALSE}
 ls <- c("stars", "raster", "tools", "xml2", "RStoolbox", "reticulate", 
-        "googledrive", "tidyverse", "stringi", "rstudioapi", "foreach")
+        "googledrive", "tidyverse", "stringi", "rstudioapi", "foreach", "snow")
 new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new_packages))
   install.packages(new_packages)
@@ -139,7 +139,7 @@ AOI_epsg <- 3005
 AOI_res <- c(4, 25)
 
 # Define existing files and paths
-map_res <- paste0(AOI_res, "m")
+map_res <- c(paste0(AOI_res, "m"), "25m_TRIM")
 AOI_shapefile <- file.path(AOI_dir, "0_raw_inputs", "base_layers", map_res, "aoi.gpkg")
 dem_hi_res <- file.path(AOI_dir, "1_map_inputs", "covariates", paste0(min(AOI_res), "m"), "dem.tif")
 dem_list <- list.files(file.path(AOI_dir, "1_map_inputs", "covariates"), pattern = "dem.tif",
@@ -147,9 +147,6 @@ dem_list <- list.files(file.path(AOI_dir, "1_map_inputs", "covariates"), pattern
 
 # Define path for file processing (doesn't have to exist)
 raw_path <- file.path(AOI_dir, "0_raw_inputs", "satellite_layers")
-
-# Define path for satellite index outputs (should be "covariates" folder)
-output_path <- file.path(AOI_dir, "1_map_inputs", "covariates", map_res)
 
 ```
 
@@ -481,7 +478,7 @@ ee_download <- get_sentinel_ee(
 season_dirs <- dir(file.path(raw_path, "1_download"), 
                    full.names = TRUE)[dir(file.path(raw_path, "1_download"))
                                       %in% seasons_df$season]
-
+dem_list <- dem_list[-1]
 # Run the bands_to_indices function to produce satellite indices for each 
 # of the date ranges
 for(i in season_dirs) {
@@ -490,7 +487,7 @@ for(i in season_dirs) {
       reference_raster = dem, 
       satellite_files = list.files(i, full.names = TRUE),
       single_scene = FALSE,
-      output_path = output_path, 
+      output_path = dirname(dem), 
       remove_index = c("EVI2")
     )
   }
