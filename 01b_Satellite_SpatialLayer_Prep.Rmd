@@ -136,12 +136,14 @@ Here, we can load some local directories and file paths. SAGA will be used to pr
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 AOI_epsg <- 3005
-AOI_res <- 4
+AOI_res <- c(4, 25)
 
 # Define existing files and paths
 map_res <- paste0(AOI_res, "m")
-AOI_shapefile <- file.path(AOI_dir, "0_raw_inputs", "base_layers", map_res, "AOI.gpkg")
-dem <- file.path(AOI_dir, "1_map_inputs", "covariates", map_res, "dem.tif")
+AOI_shapefile <- file.path(AOI_dir, "0_raw_inputs", "base_layers", map_res, "aoi.gpkg")
+dem_hi_res <- file.path(AOI_dir, "1_map_inputs", "covariates", paste0(min(AOI_res), "m"), "dem.tif")
+dem_list <- list.files(file.path(AOI_dir, "1_map_inputs", "covariates"), pattern = "dem.tif",
+                       full.names = TRUE, recursive = TRUE)
 
 # Define path for file processing (doesn't have to exist)
 raw_path <- file.path(AOI_dir, "0_raw_inputs", "satellite_layers")
@@ -470,7 +472,7 @@ seasons_df <- data.frame(
 # Run get_sentinel_ee function to process and download satellite images
 ee_download <- get_sentinel_ee(
   aoi = AOI_bbox,
-  template_raster = dem,
+  template_raster = dem_hi_res,
   date_ranges = seasons_df,
   drive_folder = "Sentinel2",
   download_folder = file.path(raw_path, "1_download")
@@ -483,13 +485,15 @@ season_dirs <- dir(file.path(raw_path, "1_download"),
 # Run the bands_to_indices function to produce satellite indices for each 
 # of the date ranges
 for(i in season_dirs) {
-  sat_indices <- bands_to_indices(
-    reference_raster = dem, 
-    satellite_files = list.files(i, full.names = TRUE),
-    single_scene = FALSE,
-    output_path = output_path, 
-    remove_index = c("EVI2")
-  )
+  for(dem in dem_list) {
+    sat_indices <- bands_to_indices(
+      reference_raster = dem, 
+      satellite_files = list.files(i, full.names = TRUE),
+      single_scene = FALSE,
+      output_path = output_path, 
+      remove_index = c("EVI2")
+    )
+  }
 }
 
 ```
