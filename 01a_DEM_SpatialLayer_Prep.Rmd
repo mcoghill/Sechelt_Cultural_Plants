@@ -978,12 +978,69 @@ dem_files <- list.files(covariate_file_path, pattern = "dem.tif", full.names = T
 dem_files <- dem_files[basename(dirname(dem_files)) != "1m"]
 clim_bc_path <- file.path(file.path(AOI.dir, "0_raw_inputs", "ClimateBC_Layers"))
 if(!dir.exists(clim_bc_path)) dir.create(clim_bc_path, recursive = TRUE)
+
 for(i in dem_files) {
-  r <- raster(i)
-  p <- projectRaster(r, crs = "+init=epsg:4326")
-  writeRaster(p, 
-              file.path(clim_bc_path, paste0("dem_", basename(dirname(i)), ".asc")),
-              overwrite = TRUE)
+  saga_ver <- system(paste(saga_cmd, "-v"), intern = TRUE)
+  saga_ver <- unlist(regmatches(saga_ver, regexec("Version:\\s*(.*?)\\s*\\(", saga_ver)))[2]
+  
+  tool_list <- list(
+    header = paste0(
+      "<?xml version='1.0' encoding='UTF-8'?>
+          <toolchain saga-version='", saga_ver, "'>
+          <group>toolchains</group>
+          <identifier>reproject_arc</identifier>
+          <name>Reproject and Save ARCInfo Grid (one step)</name>
+          <description>
+            Common DEM derivatives in SAGA GIS
+          </description>
+        
+          <parameters>
+            <option varname='GRID_SYSTEM' type='grid_system'>
+              <name>Grid System</name>
+            </option>
+            <input varname='dem' type='grid' parent='GRID_SYSTEM'>
+          <name>DEM</name>
+      </input>
+      </parameters>
+          <tools>", sep = "\n"),
+    transform_grid = paste0(
+      "<tool library='pj_proj4' tool='4' name='Coordinate Transformation (Grid List)'>
+        <option id='CRS_PROJ4'>+proj=longlat +datum=WGS84 +no_defs </option>
+        <option id='CRS_EPSG'>4326</option>
+        <option id='CRS_EPSG_AUTH'>EPSG</option>
+        <input id='SOURCE'>dem</input>
+        <option id='RESAMPLING'>3</option>
+        <option id='TARGET_DEFINITION'>0</option>
+        <output id='GRID'>out</output>
+      </tool>"
+    ), 
+    export = paste0(
+      "<tool library='io_grid' tool='0' name='Export ESRI Arc/Info Grid'>
+        <input id='GRID'>out</input>
+        <option id='FILE'>", file.path(clim_bc_path, paste0("dem_", basename(dirname(i)), ".asc")), "</option>
+        <option id='FORMAT'>1</option>
+        <option id='GEOREF'>0</option>
+        <option id='PREC'>4</option>
+        <option id='DECSEP'>0</option>
+      </tool>"
+    ), 
+    footer = paste0(
+      "</tools>
+      </toolchain>"
+    )
+  )
+  call <- paste0(tool_list, sep = "\n", collapse = " ")
+  
+  # Determine the toolchain directory based on your system
+  xml_dir <- ifelse(
+    Sys.info()[["sysname"]] == "Windows", 
+    file.path(dirname(saga_cmd), "tools", "toolchains", "transform_arc.xml"), 
+    file.path(dirname(dirname(saga_cmd)), "share", "saga", 
+              "toolchains", "transform_arc.xml")
+  )
+  write_xml(read_xml(call), xml_dir)
+  sys_cmd <- paste(saga_cmd, "toolchains reproject_arc -dem", i)
+  system(sys_cmd)
 }
 
 # Create climate layers for normal annual & seasonal 1961-1990, same for 1991-2010, 
