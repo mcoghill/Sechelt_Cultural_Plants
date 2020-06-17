@@ -445,7 +445,8 @@ dsmart_strata <- ungroup(dsmart_polygons) %>%
   st_cast("MULTIPOLYGON")
 
 # Write DSMART outputs
-if(!dir.exists(file.path(dsmart_dir, "inputs"))) dir.create(file.path(dsmart_dir, "inputs"))
+if(!dir.exists(file.path(dsmart_dir, "inputs"))) 
+  dir.create(file.path(dsmart_dir, "inputs"), recursive = TRUE)
 st_write(dsmart_polygons, file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), delete_dsn = TRUE)
 st_write(dsmart_strata, file.path(dsmart_dir, "inputs", "dsmart_strata.gpkg"), delete_dsn = TRUE)
 write.csv(dsmart_composition, file.path(dsmart_dir, "inputs", "dsmart_composition.csv"), row.names = FALSE)
