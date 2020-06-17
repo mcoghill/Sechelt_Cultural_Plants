@@ -24,12 +24,14 @@ A lot of the work stems from previously ran scripts which have:
 Using the RMarkdown format, I'll walk through the scripting process used to create the final maps. First, we must load/install the required packages. The dsmart package is not on CRAN, so it must be installed from bitbucket.
 
 ```{r Load Packages}
-ls <- c("tidyverse", "readxl", "httr", "svSocket", "R.utils", "RODBC", "sf")
+
+ls <- c("plyr", "tidyverse", "readxl", "httr", "svSocket", "R.utils", "RODBC", "sf")
 new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new.packages))
   install.packages(new.packages)
-lapply(ls, library, character.only = TRUE)
+lapply(ls, library, character.only = TRUE)[0]
 rm(ls, new.packages)
+
 ```
 
 Next, we should set some directories for this work. A lot of the scripting used here is adapted from PEM mapping, so the file folder structure used will be much the same. The idea is that if we want to apply a similar shcematic to another study area, we should only have to adjust the directories for that given study area.
@@ -37,21 +39,24 @@ Next, we should set some directories for this work. A lot of the scripting used 
 Additionally, we need to set the directory for where the 32-bit version of R is installed on your machine. This will be used later on in MS Access Database processing.
 
 ```{r Set directories}
+
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 4
+map_res <- 25
 
 shapes_path <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
 field_data_dir <- file.path(AOI_dir, "1_map_inputs", "field_data")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
 dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
 out_path <- file.path(AOI_dir, "2_map_predictions")
-r_32bit_path <- file.path("C:/Program Files/R/R-3.5.3/bin/i386/Rscript.exe")
+r_32bit_path <- file.path(Sys.getenv()[["R_HOME"]],  "bin/i386/Rscript.exe")
+
 ```
 
 The next thing that is typical is to place any repeated functions at the top so that they may be called in a given parameter below. access_query_32 will open a separate 32-bit version of R in order to read in the tables of a Microsoft Access database, while the droplevels function adds the sf class to be able to drop factor levels when necessary without throwing an error.
 
 ```{r Functions}
+
 access_query_32 <- function(db_path = NULL){
   # variables to make values uniform
   sock_port <- 8642L
@@ -61,7 +66,7 @@ access_query_32 <- function(db_path = NULL){
   
   if (file.exists(db_path)) {
     # start socket server to transfer data to 32 bit session
-    startSocketServer(port=sock_port, server.name="access_query_32", local=TRUE)
+    startSocketServer(port = sock_port, server.name = "access_query_32", local = TRUE)
     
     # build expression to pass to 32 bit R session
     expr <- "ls <- c('svSocket', 'RODBC', 'tidyverse')"
@@ -98,7 +103,9 @@ access_query_32 <- function(db_path = NULL){
   }
 }
 
+droplevels.sf = function(x, except, exclude, ...) x # Allows sf dataframes to have unused factor
 droplevels.sfc = function(x, except, exclude, ...) x # Allows sf dataframes to have unused factor
+
 ```
 
 In the next chunk, we are processing the 2019 field data excel file. The file contains 5 separate worksheets:
@@ -114,103 +121,87 @@ Each of the species specific sheets had the site ID but no lat/long for points, 
 
 There was discussion on whether or not to include Ledum groenlandicum (Labrador tea) in any analyses. There was a single recording of it in the final sheet of the excel file, so I decided to see what would come of throwing it into a model. To boost the presence/absence ratio for Ledum, I only used the points that were included on the last datasheet rather than all of the points.
 
-```{r Field data 2019}
-sechelt_bec <- read_excel(file.path(field_data_dir, "raw",  "shishalhBECandCulturalPlants_FieldData_2019.xlsx"), sheet = 1) %>% 
-  mutate(`Site Disturbance` = gsub("\\s*\\([^\\)]+\\)", "", `Site Disturbance`)) %>% # Remove brakets and everything within them
-  mutate(`Site Disturbance` = substr(`Site Disturbance`, start = 1, stop = 5)) %>% # Shorten strings to 5 characters max
-  mutate(`Site Disturbance` = gsub("^[[:lower:]]+", NA, `Site Disturbance`)) %>% # Remove strings starting with lowercase
-  mutate(`Site Disturbance` = gsub(", +", ",", `Site Disturbance`)) %>% # In strings with commas, remove white space
-  mutate(`Site Disturbance` = sub(" .*", "", `Site Disturbance`)) %>% # In strings with white space, remove the text after the white space
-  mutate(`Site Disturbance` = gsub(",[a-z]+", "", `Site Disturbance`)) %>%  # If there is a comma, keep only text after it if it does not begin with lowercase
-  mutate(`Site Disturbance` = str_replace_all(`Site Disturbance`, "[^[A-Za-z,]]", " ") %>% str_squish(.)  %>% str_replace_all(.," , ", ", ")) %>% # Removes all special characters except for commas
-  mutate(`Site Disturbance` = gsub(",$", "", `Site Disturbance`)) %>% # Removes trailing commas
-  mutate(`Structural Stage` = substr(`Structural Stage`, start = 1, stop = 2)) %>% 
-  mutate(`Structural Stage` = str_replace_all(`Structural Stage`, "[^[:alnum:]]", " "))
-  
-  
-sechelt_rubuspe <- read_excel(file.path(field_data_dir, "raw", "shishalhBECandCulturalPlants_FieldData_2019.xlsx"), sheet = 2)
-sechelt_veravir <- read_excel(file.path(field_data_dir, "raw", "shishalhBECandCulturalPlants_FieldData_2019.xlsx"), sheet = 3)
-sechelt_corncan <- read_excel(file.path(field_data_dir, "raw", "shishalhBECandCulturalPlants_FieldData_2019.xlsx"), sheet = 4)
+```{r Field data 2019 - Site}
 
-# Using tidyverse to tidy up the sechelt_bec table
-# 1. Make site series calls pure calls only (for simplicity)
-# 2. Apply fix to incorrectly labelled BGC subzones
-# 3. Create map unit column
-# 4. Make an sf dataframe using lat/long and transform to EPSG 3005
-sechelt_bec_sf <- dplyr::filter(sechelt_bec, nchar(`Forested Site Series`) == 2) %>% 
+spreadsheet <- file.path(field_data_dir, "raw", "shishalhBECandCulturalPlants_FieldData_2019.xlsx")
+sheets <- excel_sheets(spreadsheet)
+
+# Site data processing:
+# 1) Remove brackets and everything within them
+# 2) Shorten strings to 5 characters max
+# 3) Remove strings starting with lowercase
+# 4) In strings with commas, remove white space
+# 5) In strings with white space, remove the text after the white space
+# 6) If there is a comma, keep only text after it if it does not begin with lowercase
+# 7) Removes all special characters except for commas
+# 8) Removes trailing commas
+# 9) Apply fix to incorrectly labelled BGC subzones
+# 10) Create map unit column
+# 11) Make an sf dataframe using lat/long and transform to EPSG 3005
+sechelt_bec_full <- read_excel(spreadsheet, sheet = "Site data") %>% 
+  mutate(`Site Disturbance` = gsub("\\s*\\([^\\)]+\\)", "", `Site Disturbance`)) %>% # 1
+  mutate(`Site Disturbance` = substr(`Site Disturbance`, start = 1, stop = 5)) %>% # 2
+  mutate(`Site Disturbance` = gsub("^[[:lower:]]+", NA, `Site Disturbance`)) %>% # 3
+  mutate(`Site Disturbance` = gsub(", +", ",", `Site Disturbance`)) %>% # 4
+  mutate(`Site Disturbance` = sub(" .*", "", `Site Disturbance`)) %>% # 5
+  mutate(`Site Disturbance` = gsub(",[a-z]+", "", `Site Disturbance`)) %>% # 6
+  mutate(`Site Disturbance` = str_replace_all(`Site Disturbance`, "[^[A-Za-z,]]", " ") %>% 
+           str_squish(.)  %>% str_replace_all(.," , ", ", ")) %>% # 7
+  mutate(`Site Disturbance` = gsub(",$", "", `Site Disturbance`)) %>% # 8
+  mutate(`Structural Stage` = substr(`Structural Stage`, start = 1, stop = 2)) %>% 
+  mutate(`Structural Stage` = str_replace_all(`Structural Stage`, "[^[:alnum:]]", " ")) %>% 
   mutate(`BGC Subzone/variant` = str_replace(`BGC Subzone/variant`, "CHWxm", "CWHxm"), 
-         `BGC Subzone/variant` = str_replace(`BGC Subzone/variant`, "CWHxm", "CWHxm1"),
-         MapUnit = as.factor(make.names(paste0(`BGC Subzone/variant`, "/", `Forested Site Series`)))) %>% 
-  st_as_sf(coords = c("Long", "Lat"), crs = 4326) %>% 
+         `BGC Subzone/variant` = str_replace(`BGC Subzone/variant`, "CWHxm", "CWHxm1"), # 9
+         MapUnit = as.factor(make.names(paste0(`BGC Subzone/variant`, "/", 
+                                               `Forested Site Series`)))) %>% # 10
+  st_as_sf(coords = c("Long", "Lat"), crs = 4326) %>% # 11
   st_transform(3005)
 
-# The species tables don't have coordinates associated with them, but they can be merged with the BEC table which has that data
-sechelt_rubuspe_sf <- dplyr::select(sechelt_bec, `Point ID`, Long, Lat, `Structural Stage`, `Site Disturbance`, `% Canopy Cover`) %>% 
-  merge(sechelt_rubuspe) %>% 
-  mutate(Cover = rowSums(.[c("A1", "A2", "A3", "B1", "B2", "C", "D")], na.rm = TRUE)) %>% 
-  mutate(RUBUSPE_Pres = Cover > 0, 
-         `Structural Stage` = as.factor(`Structural Stage`), 
-         `Site Disturbance` = as.factor(`Site Disturbance`)) %>% 
-  st_as_sf(coords = c("Long", "Lat"), crs = 4326) %>% 
-  st_transform(3005) %>% 
-  dplyr::select(`Point ID`, Cover, RUBUSPE_Pres, `Structural Stage`, `Site Disturbance`, `% Canopy Cover`) %>% 
-  drop_na()
-  
-sechelt_veravir_sf <- dplyr::select(sechelt_bec, `Point ID`, Long, Lat,`Structural Stage`, `Site Disturbance`, `% Canopy Cover`) %>% 
-  merge(sechelt_veravir) %>% 
-  mutate(Cover = rowSums(.[c("A1", "A2", "A3", "B1", "B2", "C", "D")], na.rm = TRUE)) %>% 
-  mutate(VERAVIR_Pres = Cover > 0, 
-         `Structural Stage` = as.factor(`Structural Stage`), 
-         `Site Disturbance` = as.factor(`Site Disturbance`)) %>% 
-  st_as_sf(coords = c("Long", "Lat"), crs = 4326) %>% 
-  st_transform(3005) %>% 
-  dplyr::select(`Point ID`, Cover, VERAVIR_Pres, `Structural Stage`, `Site Disturbance`, `% Canopy Cover`) %>% 
-  drop_na()
+# Make site series calls pure calls only (for simplicity)
+sechelt_bec <- dplyr::filter(sechelt_bec_full, nchar(`Forested Site Series`) == 2)
 
-sechelt_corncan_sf <- dplyr::select(sechelt_bec, `Point ID`, Long, Lat, `Structural Stage`, `Site Disturbance`, `% Canopy Cover`) %>% 
-  merge(sechelt_corncan) %>% 
-  dplyr::filter(Comments != "*not recorded" | is.na(Comments)) %>% 
-  mutate(Cover = rowSums(.[c("A1", "A2", "A3", "B1", "B2", "C", "D")], na.rm = TRUE)) %>% 
-  mutate(CORNCAN_Pres = Cover > 0, 
-         `Structural Stage` = as.factor(`Structural Stage`), 
-         `Site Disturbance` = as.factor(`Site Disturbance`)) %>% 
-  st_as_sf(coords = c("Long", "Lat"), crs = 4326) %>% 
-  st_transform(3005) %>% 
-  dplyr::select(`Point ID`, Cover, CORNCAN_Pres, `Structural Stage`, `Site Disturbance`, `% Canopy Cover`) %>% 
-  drop_na()
+```
+
+
+```{r Field Data 2019 - Plants}
+# The species tables don't have coordinates associated with them, but they can 
+# be merged with the BEC table which has that data
 
 # It's unclear how Ledugro was sampled in the field. There is an extra spreadsheet in the 
 # excel file with more plant cover data, however I'm uncertain whether this was checked 
 # at each site, or if it was recorded as they were seen. Since Ledugro already occurs far
 # less in frequency than other plants, I'll err on the conservative side and assume that 
 # it was only recorded as it was seen, and just use the 20 points from that spreadsheet.
-sechelt_ledugro <- read_excel(file.path(field_data_dir, "raw", "shishalhBECandCulturalPlants_FieldData_2019.xlsx"), sheet = 5)
-sechelt_ledugro_sf <- dplyr::select(sechelt_bec, `Point ID`, Long, Lat,`Structural Stage`, `Site Disturbance`, `% Canopy Cover`) %>% 
-  merge(sechelt_ledugro) %>% 
-  dplyr::filter(Comments != "*not recorded" | is.na(Comments)) %>% 
-  mutate(B2 = as.numeric(unlist(str_extract_all(B2,"\\(?[0-9,.]+\\)?")))) %>% 
-  mutate(Cover = ifelse(Species == "Ledgro", rowSums(.[c("A1", "A2", "A3", "B1", "B2", "C", "D")], na.rm = TRUE), 0)) %>% 
-  mutate(LEDUGRO_Pres = Cover > 0, 
-         `Structural Stage` = as.factor(`Structural Stage`), 
-         `Site Disturbance` = as.factor(`Site Disturbance`)) %>% 
-  st_as_sf(coords = c("Long", "Lat"), crs = 4326) %>% 
-  st_transform(3005) %>% 
-  dplyr::select(`Point ID`, Cover, LEDUGRO_Pres,`Structural Stage`, `Site Disturbance`, `% Canopy Cover`) %>% 
-  drop_na()
 
-dplyr::select(sechelt_corncan_sf, -c(`Point ID`, Cover)) %>% 
-  st_write(file.path(AOI_dir, "1_map_inputs", "field_data", "processed", "corncan_extravars_PresAbs.gpkg"), delete_dsn = TRUE, delete_layer = TRUE)
+sechelt_plants <- sapply(sheets[!sheets %in% c("Site data")], function(x) {
+  dplyr::select(sechelt_bec_full, `Point ID`, `Structural Stage`, 
+                `Site Disturbance`, `% Canopy Cover`) %>% 
+    merge(read_excel(spreadsheet, x)) %>% 
+    dplyr::filter(Comments != "*not recorded" | is.na(Comments)) %>%
+    mutate(B2 = as.numeric(unlist(str_extract_all(B2,"\\(?[0-9,.]+\\)?")))) %>% 
+    mutate(Cover = ifelse(
+      Species %in% c("Rubuspe", "Corncan", "Ledgro", "Veravir"),
+      rowSums(st_drop_geometry(.)[, c("A1", "A2", "A3", "B1", "B2", "C", "D")], 
+              na.rm = TRUE), 0)) %>% 
+    mutate(Pres = Cover > 0, 
+           `Structural Stage` = as.factor(`Structural Stage`), 
+           `Site Disturbance` = as.factor(`Site Disturbance`)) %>% 
+    dplyr::select(`Point ID`, Cover, Pres, `Structural Stage`, 
+                  `Site Disturbance`, `% Canopy Cover`) %>% 
+    drop_na()
+}, simplify = FALSE, USE.NAMES = TRUE)
 
-dplyr::select(sechelt_ledugro_sf, -c(`Point ID`, Cover)) %>% 
-  st_write(file.path(AOI_dir, "1_map_inputs", "field_data", "processed", "ledugro_extravars_PresAbs.gpkg"), delete_dsn = TRUE, delete_layer = TRUE)
+# Rename list names
+names(sechelt_plants) <- ifelse(names(sechelt_plants) == "Other species", 
+                                "LEDUGRO", toupper(names(sechelt_plants)))
 
-dplyr::select(sechelt_rubuspe_sf, -c(`Point ID`, Cover)) %>% 
-  st_write(file.path(AOI_dir, "1_map_inputs", "field_data", "processed", "rubuspe_extravars_PresAbs.gpkg"), delete_dsn = TRUE, delete_layer = TRUE)
-
-dplyr::select(sechelt_veravir_sf, -c(`Point ID`, Cover)) %>% 
-st_write(file.path(AOI_dir, "1_map_inputs", "field_data", "processed", "veravir_extravars_PresAbs.gpkg"), delete_dsn = TRUE, delete_layer = TRUE)
+sechelt_pres_cov <- lapply(sechelt_plants, function(x) {
+  dplyr::select(x, Pres, Cover) %>% 
+    {if(!any(.$Pres)) return(.[0, ]) else return(.)}
+  })
 
 ```
+
 
 In 2019, a total of 84 sites were sampled in the Sechelt study area. Unfortunately, that doesn't exactly provide us with a lot of data; however, there are some external bits of data that we can call upon. The TEM project that went on for the Sechelt area is available freely on EcoCat, and there are two important datasets to garnish from there:
 1. An excel file containing point data of site series calls and notes with plant names;
@@ -223,44 +214,104 @@ Opening the Microsoft Access Database (mdb) requires a much more intricate proce
 When the mdb is processed and passed on to your current R session, it passes on all of the tables that it found within the database. In this case there were a lot of useless data (leftover queries that have no meaning to this project, tables with 0 records, small vector data), and these are immediately removed. From that leftover list of tables, we only actually need three of them: Site data, vegetation layer data, and species data. All of these tables are linked together by common fields in their tables.
 
 ```{r Get external datasets}
-tem_data <- GET("http://a100.gov.bc.ca/appsdata/acat/documents/r35895/tem_4678_eci_1363698000276_6de51d6c988801e3369406fe9a22713aa4dca27f63de77d54bf44b70a246813b.xls", write_disk(file.path(field_data_dir, "raw", "tem_data.xls"), overwrite = TRUE))
 
-tem_xls <- read_xls(file.path(field_data_dir, "raw", "tem_data.xls"), skip = 1) %>% 
-  mutate(RUBUSPE_Pres = grepl("RUBUSPE", Comments),
-         CORNCAN_Pres = grepl("CORNCAN", Comments),
-         VERAVIR_Pres = grepl("VERAVIR", Comments),
-         LEDUGRO_Pres = grepl("LEDUGRO", Comments))
+# Download TEM Spreadsheet
+GET("http://a100.gov.bc.ca/appsdata/acat/documents/r35895/tem_4678_eci_1363698000276_6de51d6c988801e3369406fe9a22713aa4dca27f63de77d54bf44b70a246813b.xls", 
+    write_disk(file.path(field_data_dir, "raw", "tem_data.xls"), overwrite = TRUE))[0]
 
-tem_xls_sf <- st_as_sf(tem_xls, coords = c("UTM_East", "UTM_North"), crs = 26910) %>% 
+# Download TEM .mdb database This seems to have issues downloading sometimes, 
+# nothing wrong with code.
+GET("http://a100.gov.bc.ca/appsdata/acat/documents/r35895/tem_4678_eci_1363697969131_6de51d6c988801e3369406fe9a22713aa4dca27f63de77d54bf44b70a246813b.mdb", 
+    write_disk(file.path(field_data_dir, "raw", "tem_data.mdb"), overwrite = TRUE))[0]
+
+# Process the TEM spreadsheet by finding matching string in the comments portion
+# of the spreadsheet
+tem_xls <- sapply(c("RUBUSPE", "VERAVIR", "CORNCAN", "LEDUGRO"), function(x) {
+  read_xls(file.path(field_data_dir, "raw", "tem_data.xls"), skip = 1) %>% 
+    mutate(Pres = grepl(x, Comments)) %>% 
+    as.data.frame() %>% 
+    st_as_sf(coords = c("UTM_East", "UTM_North"), crs = 26910) %>% 
+    st_transform(3005)
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+# Process the .mdb file in a 32 bit R session, function passes variables 
+# to this R session in a single list entry (TableList)
+access_query_32(db_path = file.path(field_data_dir, "raw", "tem_data.mdb"))
+
+tem_mdb <- lapply(TableList, function(x) {
+  if(class(x) == "data.frame") {
+    if(nrow(x) == 0) {
+      x <- NULL
+    } else x
+  } else x <- NULL
+}) %>% compact() %>% 
+  .[grep("PlotData|VegLayer|VegSpecies", names(.))]
+
+rm(TableList)
+
+```
+
+
+```{r TEM data - Site}
+
+# TEM excel spreadsheet - BEC info (just uses one of the species since all species has same data)
+tem_xls_bec <- dplyr::select(tem_xls[[1]], Poly_Nbr, ECI_Tag, `BGC Zone`, 
+                             Subzone, Variant, Sser1, Sser2, Sser3, SDec1, 
+                             Sdec2, Sdec3) %>% 
+  dplyr::filter(is.na(Sdec2), is.na(Sdec3)) %>% 
+  drop_na(SDec1) %>% 
+  mutate(Variant = str_replace_na(Variant, replacement = ""),
+         Sser1 = substr(Sser1, start = 1, stop = 2), 
+         Subzone = tolower(Subzone)) %>% 
+  mutate(MapUnit = ifelse(grepl("^[A-Za-z]+$", Sser1), Sser1, 
+                          paste0(`BGC Zone`, Subzone, Variant, "/", Sser1))) %>% 
+  mutate(MapUnit = as.factor(make.names(MapUnit))) %>% 
+  st_sf()
+
+# MDB_tblPlotData has way too many columns, keep only important ones for BEC
+tem_mdb_bec <- dplyr::select(
+  tem_mdb$MDB_tblPlotData, PlotID, PlotNumber, BECUnit, SiteSeries, SiteSeriesSymbol, 
+  UTMNorthing, UTMEasting) %>% 
+  rename(MapUnit = BECUnit) %>% 
+  mutate(MapUnit = ifelse(SiteSeries == 0, as.character(SiteSeriesSymbol), 
+                          as.character(MapUnit))) %>% 
+  mutate(MapUnit = as.factor(make.names(MapUnit))) %>% 
+  st_as_sf(coords = c("UTMEasting", "UTMNorthing"), crs = 26910) %>% 
   st_transform(3005)
 
-tem_mdb <- GET("http://a100.gov.bc.ca/appsdata/acat/documents/r35895/tem_4678_eci_1363697969131_6de51d6c988801e3369406fe9a22713aa4dca27f63de77d54bf44b70a246813b.mdb", write_disk(file.path(field_data_dir, "raw", "tem_data.mdb"), overwrite = TRUE))
+```
 
-access_query_32(db_path = file.path(field_data_dir, "raw", "tem_data.mdb")) 
 
-# Extract all of the information from the database
-for(k in 1:length(TableList)){
-  l <- TableList[[k]]
-  do.call("<-", list(names(TableList[k]), TableList[[k]])) # Separate the tables into the R environment
-}
+```{r TEM Data - Plants}
 
-# Only keep the tables with data in them (delete tables with no data)
-mdb_objects <- objects(pattern = "MDB_")
-for(k in mdb_objects) {
-  table <- get(k)
-  if(class(table) == "data.frame") {
-    if(nrow(table) == 0) {
-      rm(list = c(objects(pattern = paste0("^", k, "$")), "table"))
-    }
-  } else {
-    rm(list = c(objects(pattern = paste0("^", k, "$")), "table"))
-  }
-}
+tem_xls_pres <- lapply(tem_xls, function(x) {
+  dplyr::select(x, Pres) %>% 
+    {if(!any(.$Pres)) return(.[0, ]) else return(.)}
+  })
 
-# Clean up the remaining tables (keeping only the ones with useful information)
-rm(`MDB_Object Definition`, MDB_PreVegQry, MDB_qryVegTreeCross, MDB_tblProjectManager, MDB_tblValidation, MDB_tmpObjectDefinition, MDB_USysVersion)
+# Merge all 3 .mdb tables and filter plants of interest
+tem_mdb_merge <- merge(tem_mdb$MDB_tblVegLayer, tem_mdb$MDB_tblVegSpecies) %>% 
+  merge(tem_mdb$MDB_tblPlotData) %>% 
+  st_as_sf(coords = c("UTMEasting", "UTMNorthing"), crs = 26910) %>% 
+  st_transform(3005) 
 
-# Should be left with 3 tables containing the relevant data: PlotData, VegLayer, and VegSpecies
+tem_mdb_pres_cov <- sapply(c("RUBUSPE", "CORNCAN", "LEDUGRO", "VERAVIR"), function(x) {
+  group_by(tem_mdb_merge, PlotID, Species) %>% 
+    dplyr::filter(Species == x) %>% 
+    summarise_at(vars(Cover), sum) %>% 
+    mutate(Pres = Species == x) %>% 
+    dplyr::select(PlotID, Pres, Cover) %>% 
+    ungroup() %>% 
+    rbind(st_transform(st_as_sf(data.frame(
+      PlotID = tem_mdb$MDB_tblPlotData$PlotID[!tem_mdb$MDB_tblPlotData$PlotID %in% .$PlotID],
+      Pres = FALSE,
+      Cover = 0,
+      UTMEasting = tem_mdb$MDB_tblPlotData$UTMEasting[!tem_mdb$MDB_tblPlotData$PlotID %in% .$PlotID],
+      UTMNorthing = tem_mdb$MDB_tblPlotData$UTMNorthing[!tem_mdb$MDB_tblPlotData$PlotID %in% .$PlotID]),
+      coords = c("UTMEasting", "UTMNorthing"), crs = 26910), 3005)) %>% 
+    dplyr::select(Pres, Cover) %>% 
+    {if(!any(.$Pres)) return(.[0, ]) else return(.)}
+}, simplify = FALSE, USE.NAMES = TRUE)
 
 ```
 
@@ -286,11 +337,12 @@ The dsmart program requires a separate compositional data frame to be supplied. 
 
 It's pretty much a melted data frame from the polygon data, though I've adjusted it slightly so that it's shorter to remove rows with NA values. This compositional data frame is included in the dsmart algorithm.
 
+```{r DSMART TEM processing}
 
-```{r TEM processing}
-tem_sf <- st_read(file.path(shapes_path, "4m", "tem.gpkg"))
+tem_sf <- st_read(file.path(shapes_path, paste0(map_res, "m"), "tem.gpkg"), quiet = TRUE)
 
-tem_map_info <- dplyr::select(
+# TEM polygon processing as a DSMART input
+dsmart_polygons <- dplyr::select(
     tem_sf, PROJECT_POLYGON_IDENTIFIER, BIOGEOCLIMATIC_LBL, 
     ECOSYSTEM_DECILE_CPNT_1, 
     ECOSYSTEM_DECILE_CPNT_2,
@@ -348,22 +400,17 @@ tem_map_info <- dplyr::select(
   replace(is.na(.), 0) %>% 
   droplevels()
 
-tem_map_info$geom[[474]] <- tem_map_info$geom[[474]][[2]] # Removes a point feature causing issues
-tem_map_info <- st_cast(tem_map_info, "MULTIPOLYGON")
-
-
-# From the TEM data, create a subzone layer which will be used to stratify sampling
-dsmart_strata_sf <- ungroup(tem_map_info) %>% 
-  group_by(Subzone) %>% 
-  dplyr::summarise() %>% 
-  mutate(strata = as.numeric(Subzone)) %>% 
-  st_cast("MULTIPOLYGON")
-st_write(dsmart_strata_sf, file.path(dsmart_dir, "inputs", "dsmart_strata.gpkg"), delete_dsn = TRUE)
+# Inspect geometries and remove incorrect data types:
+tem_geom <- st_geometry(dsmart_polygons)
+for(i in 1:length(tem_geom)) {
+  if(!st_geometry_type(tem_geom[[i]]) %in% c("POLYGON", "MULTIPOLYGON")) {
+    tem_geom[[i]] <- st_collection_extract(tem_geom[[i]], "POLYGON")
+  }
+}
+st_geometry(dsmart_polygons) <- st_cast(tem_geom, "MULTIPOLYGON")
 
 # Convert polygon composition to table with 5 columns
-tem_map_composition <- tem_map_info %>% 
-  st_drop_geometry() %>% 
-  #merge(level_table) %>% 
+dsmart_composition <- st_drop_geometry(dsmart_polygons) %>% 
   pivot_longer(cols = c("Sdec1", "Sdec2", "Sdec3")) %>% 
   mutate(MapUnit = ifelse(name == "Sdec1", as.character(MapUnit1), 
                                     ifelse(name == "Sdec2", as.character(MapUnit2), 
@@ -372,10 +419,37 @@ tem_map_composition <- tem_map_info %>%
          proportion = as.integer(value)) %>% 
   drop_na(MapUnit) %>% 
   mutate(MapUnit = as.factor(make.names(MapUnit)), 
-         Subzone = as.integer(Subzone)) %>% 
+         Subzone = as.integer(as.factor(Subzone))) %>% 
   dplyr::select(POLY_NO, MAP_CODE, Subzone, MapUnit, proportion) %>% 
   group_by(POLY_NO, MAP_CODE, Subzone, MapUnit) %>% 
-  dplyr::summarise_at(vars(proportion), sum)
+  dplyr::summarise_at(vars(proportion), sum) %>% 
+  ungroup()
+
+# Create table of additional observations
+dsmart_observations <- lapply(list(sechelt_bec, tem_xls_bec, tem_mdb_bec), function(x) 
+  dplyr::select(x, MapUnit) %>% 
+    st_transform(crs = st_crs(tem_sf)) %>% 
+    st_intersection(tem_sf) %>% 
+    droplevels()) %>% 
+  do.call(what = rbind, args = .) %>%
+  cbind(st_coordinates(.)) %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(X, Y, MapUnit) %>% 
+  mutate(MapUnit = as.factor(make.names(MapUnit)))
+
+# From the TEM data, create a subzone layer which will be used to stratify sampling
+dsmart_strata <- ungroup(dsmart_polygons) %>% 
+  group_by(Subzone) %>% 
+  dplyr::summarise() %>% 
+  mutate(strata = as.numeric(Subzone)) %>% 
+  st_cast("MULTIPOLYGON")
+
+# Write DSMART outputs
+if(!dir.exists(file.path(dsmart_dir, "inputs"))) dir.create(file.path(dsmart_dir, "inputs"))
+st_write(dsmart_polygons, file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), delete_dsn = TRUE)
+st_write(dsmart_strata, file.path(dsmart_dir, "inputs", "dsmart_strata.gpkg"), delete_dsn = TRUE)
+write.csv(dsmart_composition, file.path(dsmart_dir, "inputs", "dsmart_composition.csv"), row.names = FALSE)
+write.csv(dsmart_observations, file.path(dsmart_dir, "inputs", "dsmart_observations.csv"), row.names = FALSE)
 
 ```
 
@@ -387,117 +461,36 @@ The mdb only had pure call values, so the site series column and site series sym
 
 The three data sources (TEM excel spreadsheet, TEM mdb, and 2019 point data) are finally bound together, but only data that intersects with the original TEM map is included. We now have our 3 datasets needed to properly run the dsmart algorithm: TEM polygons with class proportion information; compositions of the TEM polygons in a separate data frame; and extra observations that will help with the prediction of each map.
 
-```{r dsmart data prep}
-# TEM excel spreadsheet - BEC info
-tem_xls_bec_data <- dplyr::select(tem_xls_sf, Poly_Nbr, ECI_Tag, `BGC Zone`, Subzone, Variant, Sser1, Sser2, Sser3, SDec1, Sdec2, Sdec3) %>% 
-  dplyr::filter(is.na(Sdec2), is.na(Sdec3)) %>% 
-  drop_na(SDec1) %>% 
-  mutate(Variant = str_replace_na(Variant, replacement = ""),
-         Sser1 = substr(Sser1, start = 1, stop = 2), 
-         Subzone = tolower(Subzone)) %>% 
-  mutate(MapUnit = ifelse(grepl("^[A-Za-z]+$", Sser1), Sser1, paste0(`BGC Zone`, Subzone, Variant, "/", Sser1))) %>% 
-  mutate(MapUnit = as.factor(make.names(MapUnit))) %>% 
-  st_sf() %>% 
-  dplyr::select(MapUnit)
 
-# MDB_tblPlotData has way too many columns, keep only important ones for BEC
-tem_mdb_bec_data <- dplyr::select(MDB_tblPlotData, PlotID, PlotNumber, BECUnit, SiteSeries, SiteSeriesSymbol, UTMNorthing, UTMEasting) %>% 
-  rename(MapUnit = BECUnit) %>% 
-  mutate(MapUnit = ifelse(SiteSeries == 0, as.character(SiteSeriesSymbol), as.character(MapUnit))) %>% 
-  mutate(MapUnit = as.factor(make.names(MapUnit))) %>% 
-  st_as_sf(coords = c("UTMEasting", "UTMNorthing"), crs = 26910) %>% 
-  st_transform(3005) %>% 
-  dplyr::select(MapUnit)
-
-sechelt_bec_data <- dplyr::select(sechelt_bec_sf, MapUnit)
-
-all_bec_info <- rbind(sechelt_bec_data, tem_xls_bec_data, tem_mdb_bec_data) %>% 
-  st_intersection(tem_sf) %>% 
-  dplyr::select(MapUnit) %>% 
-  droplevels()
-
-dsmart_observations <- cbind(as.data.frame(st_coordinates(all_bec_info)), 
-                             data.frame(MapUnit = make.names(all_bec_info$MapUnit)))
-dsmart_polygons <- as(tem_map_info, "Spatial")
-dsmart_composition <- as.data.frame(tem_map_composition)
-
-ifelse(!dir.exists(file.path(dsmart_dir, "inputs")), dir.create(file.path(dsmart_dir, "inputs")), FALSE)
-
-write.csv(dsmart_observations, file.path(dsmart_dir, "inputs", "dsmart_observations.csv"), row.names = FALSE)
-write.csv(dsmart_composition, file.path(dsmart_dir, "inputs", "dsmart_composition.csv"), row.names = FALSE)
-writeOGR(dsmart_polygons, file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), layer = "dsmart_polygons", driver = "GPKG", overwrite_layer = TRUE, delete_dsn = TRUE)
-```
-
-
-
-```{r Presence Absence Info}
-sechelt_rubu_pres <- dplyr::select(sechelt_rubuspe_sf, RUBUSPE_Pres)
-sechelt_corn_pres <- dplyr::select(sechelt_corncan_sf, CORNCAN_Pres)
-sechelt_vera_pres <- dplyr::select(sechelt_veravir_sf, VERAVIR_Pres)
-sechelt_ledu_pres <- dplyr::select(sechelt_ledugro_sf, LEDUGRO_Pres)
-
-tem_xls_rubu_pres <- dplyr::select(tem_xls_sf, RUBUSPE_Pres)
-tem_xls_corn_pres <- dplyr::select(tem_xls_sf, CORNCAN_Pres)
-tem_xls_vera_pres <- dplyr::select(tem_xls_sf, VERAVIR_Pres)
-tem_xls_ledu_pres <- dplyr::select(tem_xls_sf, LEDUGRO_Pres)
-
-tem_mdb_species <- merge(MDB_tblVegLayer, MDB_tblVegSpecies) %>% 
-  merge(MDB_tblPlotData) %>% 
-  st_as_sf(coords = c("UTMEasting", "UTMNorthing"), crs = 26910) %>% 
-  st_transform(3005) %>% 
-  group_by(PlotID, Species) %>% 
-  dplyr::filter(Species %in% c("RUBUSPE", "CORNCAN", "LEDUGRO")) %>% 
-  summarise_at(vars(Cover), sum) %>% 
-  mutate(RUBUSPE_Pres = Species == "RUBUSPE",
-         CORNCAN_Pres = Species == "CORNCAN",
-         LEDUGRO_Pres = Species == "LEDUGRO") %>% 
-  dplyr::select(PlotID, Species, RUBUSPE_Pres, CORNCAN_Pres, LEDUGRO_Pres, Cover) %>% 
-  ungroup()
-
-tem_mdb_rubu_pres <- dplyr::filter(MDB_tblPlotData, PlotID %in% MDB_tblPlotData$PlotID[!MDB_tblPlotData$PlotID %in% tem_mdb_species$PlotID[tem_mdb_species$Species == "RUBUSPE"]]) %>% 
-  st_as_sf(coords = c("UTMEasting", "UTMNorthing"), crs = 26910) %>% 
-  st_transform(3005) %>% 
-  mutate(RUBUSPE_Pres = FALSE) %>% 
-  dplyr::select(RUBUSPE_Pres) %>% 
-  rbind(tem_mdb_species[tem_mdb_species$Species == "RUBUSPE", "RUBUSPE_Pres"])
-
-tem_mdb_corn_pres <- dplyr::filter(MDB_tblPlotData, PlotID %in% MDB_tblPlotData$PlotID[!MDB_tblPlotData$PlotID %in% tem_mdb_species$PlotID[tem_mdb_species$Species == "CORNCAN"]]) %>% 
-  st_as_sf(coords = c("UTMEasting", "UTMNorthing"), crs = 26910) %>% 
-  st_transform(3005) %>% 
-  mutate(CORNCAN_Pres = FALSE) %>% 
-  dplyr::select(CORNCAN_Pres) %>% 
-  rbind(tem_mdb_species[tem_mdb_species$Species == "CORNCAN", "CORNCAN_Pres"])
-
-tem_mdb_ledu_pres <- dplyr::filter(MDB_tblPlotData, PlotID %in% MDB_tblPlotData$PlotID[!MDB_tblPlotData$PlotID %in% tem_mdb_species$PlotID[tem_mdb_species$Species == "LEDUGRO"]]) %>% 
-  st_as_sf(coords = c("UTMEasting", "UTMNorthing"), crs = 26910) %>% 
-  st_transform(3005) %>% 
-  mutate(LEDUGRO_Pres = FALSE) %>% 
-  dplyr::select(LEDUGRO_Pres) %>% 
-  rbind(tem_mdb_species[tem_mdb_species$Species == "LEDUGRO", "LEDUGRO_Pres"])
+```{r Pres/Abs and Cover Merge}
 
 # Combine them all
-rubuspe_pres_abs <- rbind(sechelt_rubu_pres, tem_mdb_rubu_pres, tem_xls_rubu_pres) %>% 
-  st_intersection(tem_sf) %>% 
-  dplyr::select(RUBUSPE_Pres)
-corncan_pres_abs <- rbind(sechelt_corn_pres, tem_mdb_corn_pres, tem_xls_corn_pres) %>% 
-  st_intersection(tem_sf) %>% 
-  dplyr::select(CORNCAN_Pres)
-ledugro_pres_abs <- rbind(sechelt_ledu_pres, tem_mdb_ledu_pres, tem_xls_ledu_pres) %>% 
-  st_intersection(tem_sf) %>% 
-  dplyr::select(LEDUGRO_Pres)
-veravir_pres_abs <- rbind(sechelt_vera_pres, tem_xls_vera_pres) %>% 
-  st_intersection(tem_sf) %>% 
-  dplyr::select(VERAVIR_Pres)
+pres_abs <- sapply(c("RUBUSPE", "CORNCAN", "LEDUGRO", "VERAVIR"), function(x) {
+  rbind(sechelt_pres_cov[[x]][, "Pres"], tem_xls_pres[[x]][, "Pres"], tem_mdb_pres_cov[[x]][, "Pres"]) %>% 
+    st_transform(crs = st_crs(tem_sf)) %>% 
+    st_intersection(tem_sf) %>% 
+    dplyr::select(Pres)
+}, simplify = FALSE, USE.NAMES = TRUE)
 
-ifelse(!dir.exists(file.path(field_data_dir, "processed")), dir.create(file.path(field_data_dir, "processed"), recursive = TRUE))
+cover <- sapply(c("RUBUSPE", "CORNCAN", "LEDUGRO", "VERAVIR"), function(x) {
+  rbind(sechelt_pres_cov[[x]][, "Cover"],tem_mdb_pres_cov[[x]][, "Cover"]) %>% 
+    st_transform(crs = st_crs(tem_sf)) %>% 
+    st_intersection(tem_sf) %>% 
+    dplyr::select(Cover)
+}, simplify = FALSE, USE.NAMES = TRUE)
 
-st_write(rubuspe_pres_abs, file.path(field_data_dir, "processed", "rubuspe_PresAbs.gpkg"), delete_dsn = TRUE)
-st_write(corncan_pres_abs, file.path(field_data_dir, "processed", "corncan_PresAbs.gpkg"), delete_dsn = TRUE)
-st_write(veravir_pres_abs, file.path(field_data_dir, "processed", "veravir_PresAbs.gpkg"), delete_dsn = TRUE)
-st_write(ledugro_pres_abs, file.path(field_data_dir, "processed", "ledugro_PresAbs.gpkg"), delete_dsn = TRUE)
+# Write training data outputs
+if(!dir.exists(file.path(field_data_dir, "processed"))) 
+  dir.create(file.path(field_data_dir, "processed"), recursive = TRUE)
+
+for(layer in names(pres_abs)) {
+  st_write(pres_abs[[layer]], file.path(field_data_dir, "processed", "pres_abs.gpkg"), 
+           layer = layer, delete_layer = TRUE)
+  st_write(cover[[layer]], file.path(field_data_dir, "processed", "cover.gpkg"), 
+           layer = layer, delete_layer = TRUE)
+}
 
 ```
-
 
 Part of the issue with a couple of the metrics is that for a couple of the plant species of interest, there are only a small handfull of presence data. This can create issues with overfitting/underfitting a model; however, there are ways around this issue. The RFUtilities package includes a class balance function to balance your sample classes, while native caret has the SMOTE or ROSE algorithm to artificially increase the low class dataset and decrease the high class datasets. Once some maps have been made, it is likely that multiple renditions of these maps will be created in order to see if any of the class balancing acts have any major effects on modelling accuracy.
 
@@ -506,45 +499,3 @@ The models created above are binary classification models. Since we want to look
 
 Now we will move on to cover data. Cover data is only present in two data sources: The 2019 point dataset, and the TEM mdb file. The TEM excel file will be left out of the analysis here.
 
-```{r Cover info}
-tem_mdb_rubu_cov <- dplyr::filter(MDB_tblPlotData, PlotID %in% MDB_tblPlotData$PlotID[!MDB_tblPlotData$PlotID %in% tem_mdb_species$PlotID[tem_mdb_species$Species == "RUBUSPE"]]) %>% 
-  st_as_sf(coords = c("UTMEasting", "UTMNorthing"), crs = 26910) %>% 
-  st_transform(3005) %>% 
-  mutate(Cover = 0) %>% 
-  dplyr::select(Cover) %>% 
-  rbind(tem_mdb_species[tem_mdb_species$Species == "RUBUSPE", "Cover"])
-
-tem_mdb_corn_cov <- dplyr::filter(MDB_tblPlotData, PlotID %in% MDB_tblPlotData$PlotID[!MDB_tblPlotData$PlotID %in% tem_mdb_species$PlotID[tem_mdb_species$Species == "CORNCAN"]]) %>% 
-  st_as_sf(coords = c("UTMEasting", "UTMNorthing"), crs = 26910) %>% 
-  st_transform(3005) %>% 
-  mutate(Cover = 0) %>% 
-  dplyr::select(Cover) %>% 
-  rbind(tem_mdb_species[tem_mdb_species$Species == "CORNCAN", "Cover"])
-
-tem_mdb_ledu_cov <- dplyr::filter(MDB_tblPlotData, PlotID %in% MDB_tblPlotData$PlotID[!MDB_tblPlotData$PlotID %in% tem_mdb_species$PlotID[tem_mdb_species$Species == "LEDUGRO"]]) %>% 
-  st_as_sf(coords = c("UTMEasting", "UTMNorthing"), crs = 26910) %>% 
-  st_transform(3005) %>% 
-  mutate(Cover = 0) %>% 
-  dplyr::select(Cover) %>% 
-  rbind(tem_mdb_species[tem_mdb_species$Species == "LEDUGRO", "Cover"])
-
-rubuspe_cov_data <- dplyr::select(sechelt_rubuspe_sf, Cover) %>% rbind(tem_mdb_rubu_cov) %>% 
-  st_intersection(tem_sf) %>% 
-  dplyr::select(Cover) 
-corncan_cov_data <- dplyr::select(sechelt_corncan_sf, Cover) %>% rbind(tem_mdb_corn_cov) %>% 
-  st_intersection(tem_sf) %>% 
-  dplyr::select(Cover)
-ledugro_cov_data <- dplyr::select(sechelt_ledugro_sf, Cover) %>% rbind(tem_mdb_ledu_cov) %>% 
-  st_intersection(tem_sf) %>% 
-  dplyr::select(Cover)
-veravir_cov_data <- dplyr::select(sechelt_veravir_sf, Cover) %>% 
-  st_intersection(tem_sf) %>% 
-  dplyr::select(Cover)
-
-ifelse(!dir.exists(file.path(field_data_dir, "processed")), dir.create(file.path(field_data_dir, "processed"), recursive = TRUE))
-
-st_write(rubuspe_cov_data, file.path(field_data_dir, "processed", "rubuspe_cover.gpkg"), delete_dsn = TRUE)
-st_write(corncan_cov_data, file.path(field_data_dir, "processed", "corncan_cover.gpkg"), delete_dsn = TRUE)
-st_write(ledugro_cov_data, file.path(field_data_dir, "processed", "veravir_cover.gpkg"), delete_dsn = TRUE)
-st_write(veravir_cov_data, file.path(field_data_dir, "processed", "ledugro_cover.gpkg"), delete_dsn = TRUE)
-```
