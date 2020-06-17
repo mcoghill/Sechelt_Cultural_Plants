@@ -1055,23 +1055,47 @@ for(i in clim_res) {
   clim_sub <- list.dirs(i, recursive = FALSE)
   for(j in clim_sub) {
     res <- gsub("dem_", "", basename(dirname(j)))
-    dem <- grep(res, dem_files, value = TRUE)
+    dem <- raster(file.path(covariate_file_path, res, "dem.tif"))
     clim_layers <- list.files(j, full.names = TRUE, pattern = ".asc$")
-    for(k in clim_layers) {
-      l <- raster(k)
-      crs(l) <- CRS("+init=epsg:4326")
-      writeRaster(l, file.path(dirname(k), paste0(basename(file_path_sans_ext(k)), ".tif")), 
-                  overwrite = TRUE)
+    
+    # Add CRS information and save as tif files
+    # Determine total size of files to dynamically split reproject processing
+    size <- length(clim_layers) * quantile(sapply(clim_layers, function(x) 
+      file.size(x) / (1024 ^ 2), simplify = TRUE), probs = 0.75)
+    memory <- memory.limit() - 1024
+    
+    if(size * 2 < memory) {
+      s <- stack(clim_layers)
+      crs(s) <- CRS("+init=epsg:4326")
+      p <- projectRaster(s, dem) %>% 
+        mask(dem)
+      for(layer in names(p)) {
+        writeRaster(subset(p, layer), file.path(
+          covariate_file_path, res, 
+          paste0(basename(j), "_", layer, ".tif")), 
+          overwrite = TRUE
+        )
+      }
+    } else {
+      n_splits <- ceiling(size * 2 / memory)
+      n_files <- ceiling(length(clim_layers) / n_splits)
+      for(l in 1:n_splits) {
+        m <- clim_layers[1:n_files + (n_files * (l - 1))]
+        s <- stack(m[!is.na(m)])
+        crs(s) <- CRS("+init=epsg:4326")
+        beginCluster(parallel::detectCores())
+        p <- projectRaster(s, dem) %>% 
+          mask(dem)
+        endCluster()
+        for(layer in names(p)) {
+          writeRaster(subset(p, layer), file.path(
+            covariate_file_path, res, 
+            paste0(basename(j), "_", layer, ".tif")), 
+            overwrite = TRUE
+          )
+        }
+      }
     }
-    system(paste(saga_cmd, "pj_proj4 3", 
-                 "-SOURCE", paste(clim_layers[1:2], collapse = ";"),
-                 "-TARGET_DEFINITION 1", 
-                 "-TARGET_TEMPLATE", dem,
-                 "-CRS_PROJ4", paste0('"', projection(raster(dem)), '"'),
-                 "-GRIDS", paste0(file.path(
-                   covariate_file_path, res, 
-                   paste0(basename(dirname(clim_layers)), "_", basename(clim_layers[1:2]))), 
-                   collapse = ";")))
   }
 }
 
