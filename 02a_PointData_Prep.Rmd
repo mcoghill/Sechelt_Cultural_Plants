@@ -25,7 +25,7 @@ Using the RMarkdown format, I'll walk through the scripting process used to crea
 
 ```{r Load Packages}
 
-ls <- c("plyr", "tidyverse", "readxl", "httr", "svSocket", "R.utils", "RODBC", "sf")
+ls <- c("plyr", "tidyverse", "readxl", "httr", "svSocket", "R.utils", "RODBC", "sf", "terra")
 new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new.packages))
   install.packages(new.packages)
@@ -49,7 +49,7 @@ field_data_dir <- file.path(AOI_dir, "1_map_inputs", "field_data")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
 dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
 out_path <- file.path(AOI_dir, "2_map_predictions")
-r_32bit_path <- file.path(Sys.getenv()[["R_HOME"]],  "bin/i386/Rscript.exe")
+r_32bit_path <- file.path(R.home(),  "bin/i386/Rscript.exe")
 
 ```
 
@@ -220,7 +220,8 @@ GET("http://a100.gov.bc.ca/appsdata/acat/documents/r35895/tem_4678_eci_136369800
     write_disk(file.path(field_data_dir, "raw", "tem_data.xls"), overwrite = TRUE))[0]
 
 # Download TEM .mdb database This seems to have issues downloading sometimes, 
-# nothing wrong with code.
+# nothing wrong with code. You might just need to open this link in your web browser,
+# just be sure to save it to the same filder as the TEM spreadsheet
 GET("http://a100.gov.bc.ca/appsdata/acat/documents/r35895/tem_4678_eci_1363697969131_6de51d6c988801e3369406fe9a22713aa4dca27f63de77d54bf44b70a246813b.mdb", 
     write_disk(file.path(field_data_dir, "raw", "tem_data.mdb"), overwrite = TRUE))[0]
 
@@ -447,6 +448,7 @@ dsmart_strata <- ungroup(dsmart_polygons) %>%
 # Write DSMART outputs
 if(!dir.exists(file.path(dsmart_dir, "inputs"))) 
   dir.create(file.path(dsmart_dir, "inputs"), recursive = TRUE)
+
 st_write(dsmart_polygons, file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), delete_dsn = TRUE)
 st_write(dsmart_strata, file.path(dsmart_dir, "inputs", "dsmart_strata.gpkg"), delete_dsn = TRUE)
 write.csv(dsmart_composition, file.path(dsmart_dir, "inputs", "dsmart_composition.csv"), row.names = FALSE)
@@ -465,19 +467,27 @@ The three data sources (TEM excel spreadsheet, TEM mdb, and 2019 point data) are
 
 ```{r Pres/Abs and Cover Merge}
 
+# Create the raster stack (terra package) which will be used for data extraction
+covars <- terra::rast(list.files(file.path(covariate_dir, paste0(map_res, "m")), 
+                                   full.names = TRUE))
+
 # Combine them all
 pres_abs <- sapply(c("RUBUSPE", "CORNCAN", "LEDUGRO", "VERAVIR"), function(x) {
   rbind(sechelt_pres_cov[[x]][, "Pres"], tem_xls_pres[[x]][, "Pres"], tem_mdb_pres_cov[[x]][, "Pres"]) %>% 
     st_transform(crs = st_crs(tem_sf)) %>% 
     st_intersection(tem_sf) %>% 
-    dplyr::select(Pres)
+    dplyr::select(Pres) %>% 
+    cbind(terra::extract(covars, st_coordinates(.))) %>% 
+    drop_na()
 }, simplify = FALSE, USE.NAMES = TRUE)
 
 cover <- sapply(c("RUBUSPE", "CORNCAN", "LEDUGRO", "VERAVIR"), function(x) {
   rbind(sechelt_pres_cov[[x]][, "Cover"],tem_mdb_pres_cov[[x]][, "Cover"]) %>% 
     st_transform(crs = st_crs(tem_sf)) %>% 
     st_intersection(tem_sf) %>% 
-    dplyr::select(Cover)
+    dplyr::select(Cover) %>% 
+    cbind(terra::extract(covars, st_coordinates(.))) %>% 
+    drop_na()
 }, simplify = FALSE, USE.NAMES = TRUE)
 
 # Write training data outputs
