@@ -1173,14 +1173,14 @@ for(i in clim_res) {
   for(j in clim_sub) {
     res <- gsub("dem_", "", basename(dirname(j)))
     dem <- rast(file.path(covariate_file_path, res, "dem.tif"))
-    clim_layers <- list.files(j, full.names = TRUE, pattern = ".asc$")
+    clim_layers <- rast(list.files(j, full.names = TRUE, pattern = ".asc$"))
+    crs(clim_layers) <- projection(CRS("+init=epsg:4326"))
     
     # Add CRS information and save as tif files
     # terra cannot reproject when CRS is in memory, it has to be in storage
-    for(layer in names(s)) {
-      writeRaster(subset(s, layer), file.path(
-        dirname(clim_layers[1]), 
-        paste0(layer, ".tif")), 
+    for(k in names(clim_layers)) {
+      writeRaster(subset(clim_layers, k), file.path(
+        j, paste0(k, ".tif")), 
         overwrite = TRUE
       )
     }
