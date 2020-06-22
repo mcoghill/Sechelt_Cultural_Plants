@@ -75,16 +75,20 @@ cov_1m <- file.path(covariate_file_path, "1m")
 if(!dir.exists(cov_1m)) dir.create(cov_1m, recursive = TRUE)
 
 # Load files
-dem_raw <- raster(file.path(AOI.dir, "_original_files", "dem", "w001001.adf"))
-chm_raw <- raster(file.path(AOI.dir, "_original_files", "chm", "w001001.adf"))
+dem_raw <- rast(file.path(AOI.dir, "_original_files", "dem", "w001001.adf"))
+chm_raw <- rast(file.path(AOI.dir, "_original_files", "chm", "w001001.adf"))
 
 # Want to use BC Albers projection, so transform that. Also, the resolution and
 # extent for both the dem and chm are not the same so they will both need to be 
 # reset to have the correct resolution, crs, and extents. Want to reproject the
 # smaller raster to the larger one so that no data is accidentally lost
 if(ncell(dem_raw) > ncell(chm_raw)) {
-  dem <- projectRaster(
-    dem_raw, crs = paste0("+init=epsg:", epsg), res = 1, 
+  dem <- project(dem_raw, projection(CRS(paste0("+init=epsg:", epsg)))) #%>% 
+  dem_ext <- ext(dem)
+  res(dem) <- 4
+  dem <- resample(dem, dem_ext)
+    resample()
+  , res = 1, 
     filename = file.path(cov_1m, "dem.tif"), overwrite = TRUE)
   chm <- projectRaster(
     chm_raw, dem, filename = file.path(cov_1m, "chm.tif"), overwrite = TRUE)
@@ -1055,46 +1059,30 @@ for(i in clim_res) {
   clim_sub <- list.dirs(i, recursive = FALSE)
   for(j in clim_sub) {
     res <- gsub("dem_", "", basename(dirname(j)))
-    dem <- raster(file.path(covariate_file_path, res, "dem.tif"))
+    dem <- rast(file.path(covariate_file_path, res, "dem.tif"))
     clim_layers <- list.files(j, full.names = TRUE, pattern = ".asc$")
     
     # Add CRS information and save as tif files
-    # Determine total size of files to dynamically split reproject processing
-    size <- length(clim_layers) * quantile(sapply(clim_layers, function(x) 
-      file.size(x) / (1024 ^ 2), simplify = TRUE), probs = 0.75)
-    memory <- memory.limit() - 1024
+    # terra cannot reproject when CRS is in memory, it has to be in storage
+    for(layer in names(s)) {
+      writeRaster(subset(s, layer), file.path(
+        dirname(clim_layers[1]), 
+        paste0(layer, ".tif")), 
+        overwrite = TRUE
+      )
+    }
     
-    if(size * 2 < memory) {
-      s <- stack(clim_layers)
-      crs(s) <- CRS("+init=epsg:4326")
-      p <- projectRaster(s, dem) %>% 
+    # Do the reprojection now
+    clim_layers <- list.files(j, full.names = TRUE, pattern = ".tif$")
+    for(layer in clim_layers) {
+      p <- rast(layer) %>% 
+        project(dem) %>% 
         mask(dem)
-      for(layer in names(p)) {
-        writeRaster(subset(p, layer), file.path(
-          covariate_file_path, res, 
-          paste0(basename(j), "_", layer, ".tif")), 
-          overwrite = TRUE
-        )
-      }
-    } else {
-      n_splits <- ceiling(size * 2 / memory)
-      n_files <- ceiling(length(clim_layers) / n_splits)
-      for(l in 1:n_splits) {
-        m <- clim_layers[1:n_files + (n_files * (l - 1))]
-        s <- stack(m[!is.na(m)])
-        crs(s) <- CRS("+init=epsg:4326")
-        beginCluster(parallel::detectCores())
-        p <- projectRaster(s, dem) %>% 
-          mask(dem)
-        endCluster()
-        for(layer in names(p)) {
-          writeRaster(subset(p, layer), file.path(
-            covariate_file_path, res, 
-            paste0(basename(j), "_", layer, ".tif")), 
-            overwrite = TRUE
-          )
-        }
-      }
+      writeRaster(p, file.path(
+        covariate_file_path, res, 
+        paste0(basename(j), "_", basename(layer))), 
+        overwrite = TRUE
+      )
     }
   }
 }
