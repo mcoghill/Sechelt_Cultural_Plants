@@ -273,7 +273,7 @@ tem_xls_bec <- dplyr::select(tem_xls[[1]], Poly_Nbr, ECI_Tag, `BGC Zone`,
 tem_mdb_bec <- dplyr::select(
   tem_mdb$MDB_tblPlotData, PlotID, PlotNumber, BECUnit, SiteSeries, SiteSeriesSymbol, 
   UTMNorthing, UTMEasting) %>% 
-  rename(MapUnit = BECUnit) %>% 
+  dplyr::rename(MapUnit = BECUnit) %>% 
   mutate(MapUnit = ifelse(SiteSeries == 0, as.character(SiteSeriesSymbol), 
                           as.character(MapUnit))) %>% 
   mutate(MapUnit = as.factor(make.names(MapUnit))) %>% 
@@ -300,9 +300,9 @@ tem_mdb_pres_cov <- sapply(c("RUBUSPE", "CORNCAN", "LEDUGRO", "VERAVIR"), functi
   group_by(tem_mdb_merge, PlotID, Species) %>% 
     dplyr::filter(Species == x) %>% 
     summarise_at(vars(Cover), sum) %>% 
+    ungroup() %>% 
     mutate(Pres = Species == x) %>% 
     dplyr::select(PlotID, Pres, Cover) %>% 
-    ungroup() %>% 
     rbind(st_transform(st_as_sf(data.frame(
       PlotID = tem_mdb$MDB_tblPlotData$PlotID[!tem_mdb$MDB_tblPlotData$PlotID %in% .$PlotID],
       Pres = FALSE,
@@ -354,7 +354,7 @@ dsmart_polygons <- dplyr::select(
     SITE_SERIES_MAP_CDE_LBL_CPNT_1, 
     SITE_SERIES_MAP_CDE_LBL_CPNT_2,
     SITE_SERIES_MAP_CDE_LBL_CPNT_3) %>% 
-  rename(
+  dplyr::rename(
     Subzone = BIOGEOCLIMATIC_LBL, 
     MapUnit1 = SITE_SERIES_LBL_CPNT_1, 
     MapUnit2 = SITE_SERIES_LBL_CPNT_2, 
@@ -395,7 +395,8 @@ dsmart_polygons <- dplyr::select(
   mutate(
     MapUnit1 = as.factor(sub(".*NA\\.", NA, make.names(MapUnit1))), 
     MapUnit2 = as.factor(sub(".*NA\\.", NA, make.names(MapUnit2))), 
-    MapUnit3 = as.factor(sub(".*NA\\.", NA, make.names(MapUnit3)))) %>% 
+    MapUnit3 = as.factor(sub(".*NA\\.", NA, make.names(MapUnit3))),
+    Subzone = as.factor(Subzone)) %>% 
   dplyr::select(
     POLY_NO, Subzone, MAP_CODE, MapUnit1, Sdec1, MapUnit2, Sdec2, MapUnit3, Sdec3) %>% 
   replace(is.na(.), 0) %>% 
@@ -420,7 +421,7 @@ dsmart_composition <- st_drop_geometry(dsmart_polygons) %>%
          proportion = as.integer(value)) %>% 
   drop_na(MapUnit) %>% 
   mutate(MapUnit = as.factor(make.names(MapUnit)), 
-         Subzone = as.integer(as.factor(Subzone))) %>% 
+         Subzone = as.integer(Subzone)) %>% 
   dplyr::select(POLY_NO, MAP_CODE, Subzone, MapUnit, proportion) %>% 
   group_by(POLY_NO, MAP_CODE, Subzone, MapUnit) %>% 
   dplyr::summarise_at(vars(proportion), sum) %>% 
@@ -439,15 +440,13 @@ dsmart_observations <- lapply(list(sechelt_bec, tem_xls_bec, tem_mdb_bec), funct
   mutate(MapUnit = as.factor(make.names(MapUnit)))
 
 # From the TEM data, create a subzone layer which will be used to stratify sampling
-dsmart_strata <- ungroup(dsmart_polygons) %>% 
-  group_by(Subzone) %>% 
+dsmart_strata <- group_by(dsmart_polygons, Subzone) %>% 
   dplyr::summarise() %>% 
-  mutate(strata = as.numeric(Subzone)) %>% 
+  mutate(strata = as.integer(Subzone)) %>% 
   st_cast("MULTIPOLYGON")
 
 # Write DSMART outputs
-if(!dir.exists(file.path(dsmart_dir, "inputs"))) 
-  dir.create(file.path(dsmart_dir, "inputs"), recursive = TRUE)
+dir.create(file.path(dsmart_dir, "inputs"), recursive = TRUE, showWarnings = FALSE)
 
 st_write(dsmart_polygons, file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), delete_dsn = TRUE)
 st_write(dsmart_strata, file.path(dsmart_dir, "inputs", "dsmart_strata.gpkg"), delete_dsn = TRUE)
