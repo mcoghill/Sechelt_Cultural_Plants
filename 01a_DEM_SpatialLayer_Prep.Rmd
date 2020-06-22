@@ -36,7 +36,7 @@ Before getting started, the first thing to do is to load the required packages. 
 
 ```{r Load Packages, include=FALSE}
 
-ls <- c("tidyverse", "raster", "xml2", "sf", "lubridate", "foreach", "rvest", "httr", "tools")
+ls <- c("tidyverse", "raster", "xml2", "sf", "lubridate", "foreach", "rvest", "httr", "tools", "terra")
 new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new_packages)) install.packages(new_packages)
 lapply(ls, library, character.only = TRUE)[0]  # load the required packages
@@ -82,33 +82,138 @@ chm_raw <- rast(file.path(AOI.dir, "_original_files", "chm", "w001001.adf"))
 # extent for both the dem and chm are not the same so they will both need to be 
 # reset to have the correct resolution, crs, and extents. Want to reproject the
 # smaller raster to the larger one so that no data is accidentally lost
-if(ncell(dem_raw) > ncell(chm_raw)) {
-  dem <- project(dem_raw, projection(CRS(paste0("+init=epsg:", epsg)))) #%>% 
-  dem_ext <- ext(dem)
-  res(dem) <- 4
-  dem <- resample(dem, dem_ext)
-    resample()
-  , res = 1, 
-    filename = file.path(cov_1m, "dem.tif"), overwrite = TRUE)
-  chm <- projectRaster(
-    chm_raw, dem, filename = file.path(cov_1m, "chm.tif"), overwrite = TRUE)
-  
-} else if(ncell(dem_raw) < ncell(chm_raw) || any(
-  ncol(chm_raw) != ncol(dem_raw), 
-  nrow(chm_raw) != nrow(dem_raw),
-  res(chm_raw) != res(dem_raw), 
-  res(chm_raw) != c(1, 1),
-  !compareCRS(chm_raw, dem_raw), 
-  !compareCRS(chm_raw, CRS(paste0("+init=epsg:", epsg))))) {
-  
-  chm <- projectRaster(
-    chm_raw, crs = paste0("+init=epsg:", epsg), res = 1, 
-    filename = file.path(cov_1m, "chm.tif"), overwrite = TRUE)
-  dem <- projectRaster(
-    dem_raw, chm, filename = file.path(cov_1m, "dem.tif"), overwrite = TRUE)
-}
+# if(ncell(dem_raw) >= ncell(chm_raw)) {
+#   
+#   system2(saga_cmd, paste(
+#     "pj_proj4 4", 
+#     "-SOURCE", file.path(AOI.dir, "_original_files", "dem", "w001001.adf"),
+#     "-CRS_PROJ4", shQuote(projection(CRS(paste0("+init=epsg:", epsg)))), 
+#     "-TARGET_DEFINITION 0", 
+#     "-TARGET_USER_SIZE 1", 
+#     "-GRID", file.path(AOI.dir, "_original_files", "dem", "dem")
+#   ))
+#   system2(saga_cmd, paste(
+#     "pj_proj4 4", 
+#     "-SOURCE", file.path(AOI.dir, "_original_files", "chm", "w001001.adf"), 
+#     "-CRS_PROJ4", shQuote(projection(CRS(paste0("+init=epsg:", epsg)))),
+#     "-TARGET_DEFINITION 1", 
+#     "-TARGET_TEMPLATE",  file.path(AOI.dir, "_original_files", "dem", "dem.sdat"), 
+#     "-GRID", file.path(AOI.dir, "_original_files", "chm", "chm")
+#   ))
+#   
+# } else if(ncell(dem_raw) < ncell(chm_raw)) {
+#   
+#   system2(saga_cmd, paste(
+#     "pj_proj4 4", 
+#     "-SOURCE", file.path(AOI.dir, "_original_files", "chm", "w001001.adf"),
+#     "-CRS_PROJ4", shQuote(projection(CRS(paste0("+init=epsg:", epsg)))), 
+#     "-TARGET_DEFINITION 0", 
+#     "-TARGET_USER_SIZE 1", 
+#     "-GRID", file.path(AOI.dir, "_original_files", "chm", "chm")
+#   ))
+#   system2(saga_cmd, paste(
+#     "pj_proj4 4", 
+#     "-SOURCE", file.path(AOI.dir, "_original_files", "dem", "w001001.adf"), 
+#     "-CRS_PROJ4", shQuote(projection(CRS(paste0("+init=epsg:", epsg)))),
+#     "-TARGET_DEFINITION 1", 
+#     "-TARGET_TEMPLATE",  file.path(AOI.dir, "_original_files", "chm", "chm.sdat"), 
+#     "-GRID", file.path(AOI.dir, "_original_files", "dem", "dem")
+#   ))
+#   
+# }
+# 
+# writeRaster(rast(file.path(AOI.dir, "_original_files", "dem", "dem.sdat")), 
+#             file.path(covariate_file_path, "1m", "dem.tif"), overwrite = TRUE)
+# writeRaster(rast(file.path(AOI.dir, "_original_files", "chm", "chm.sdat")), 
+#             file.path(covariate_file_path, "1m", "chm.tif"), overwrite = TRUE)
 
-lidar <- try(stack(chm_raw, dem_raw))
+if(ncell(dem_raw) >= ncell(chm_raw)) {
+  in_1 <- "dem"; in_2 <- "chm"
+} else {
+  in_1 <- "chm"; in_2 <- "dem"
+}
+saga_ver <- system(paste(saga_cmd, "-v"), intern = TRUE)
+saga_ver <- unlist(regmatches(saga_ver, regexec("Version:\\s*(.*?)\\s*\\(", saga_ver)))[2]
+tool_list <- list(
+  header = paste0(
+    "<?xml version='1.0' encoding='UTF-8'?>
+          <toolchain saga-version='", saga_ver, "'>
+          <group>toolchains</group>
+          <identifier>reproject_original</identifier>
+          <name>Reproject and Save Original Grids (one step)</name>
+          <description>
+            Common DEM derivatives in SAGA GIS
+          </description>
+        
+          <parameters>
+            <option varname='GRID_SYSTEM' type='grid_system'>
+              <name>Grid System</name>
+            </option>
+            <option varname='TRANS_SYSTEM' type='grid_system'>
+              <name>Grid System</name>
+            </option>
+            <input varname='dem' type='grid' parent='GRID_SYSTEM'>
+                <name>DEM</name>
+            </input>
+            <input varname='chm' type='grid' parent='TRANS_SYSTEM'>
+                <name>CHM</name>
+            </input>
+      </parameters>
+          <tools>", sep = "\n"),
+  transform_grid_1 = paste0(
+    "<tool library='pj_proj4' tool='4' name='Coordinate Transformation (Grid)'>
+        <option id='CRS_PROJ4'>", projection(CRS(paste0("+init=epsg:", epsg))), "</option>
+        <input id='SOURCE'>", in_1, "</input>
+        <option id='RESAMPLING'>3</option>
+        <option id='TARGET_DEFINITION'>0</option>
+        <option id='TARGET_USER_SIZE'>1</option>
+        <output id='GRID'>", paste0(in_1, "_out"), "</output>
+      </tool>"
+  ), 
+  transform_grid_2 = paste0(
+    "<tool library='pj_proj4' tool='4' name='Coordinate Transformation (Grid)'>
+        <option id='CRS_PROJ4'>", projection(CRS(paste0("+init=epsg:", epsg))), "</option>
+        <input id='SOURCE'>", in_2, "</input>
+        <option id='RESAMPLING'>3</option>
+        <option id='TARGET_DEFINITION'>1</option>
+        <input id='TARGET_TEMPLATE'>", paste0(in_1, "_out"), "</input>
+        <output id='GRID'>", paste0(in_2, "_out"), "</output>
+      </tool>"
+  ),
+  export_1 = paste0(
+    "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
+        <input id='GRIDS'>dem_out</input>
+        <option id='FILE'>", file.path(covariate_file_path, "1m", "dem.tif"), "</option>
+      </tool>"
+  ), 
+  export_2 = paste0(
+    "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
+        <input id='GRIDS'>chm_out</input>
+        <option id='FILE'>", file.path(covariate_file_path, "1m", "chm.tif"), "</option>
+      </tool>"
+  ),
+  footer = paste0(
+    "</tools>
+      </toolchain>"
+  )
+)
+call <- paste0(tool_list, sep = "\n", collapse = " ")
+
+# Determine the toolchain directory based on your system
+xml_dir <- ifelse(
+  Sys.info()[["sysname"]] == "Windows", 
+  file.path(dirname(saga_cmd), "tools", "toolchains", "transform_original.xml"), 
+  file.path(dirname(dirname(saga_cmd)), "share", "saga", 
+            "toolchains", "transform_original.xml")
+)
+write_xml(read_xml(call), xml_dir)
+sys_cmd <- paste("toolchains reproject_original", 
+                 "-dem", file.path(AOI.dir, "_original_files", "dem", "w001001.adf"), 
+                 "-chm", file.path(AOI.dir, "_original_files", "chm", "w001001.adf"))
+system2(saga_cmd, sys_cmd)
+  
+lidar <- try(stack(file.path(covariate_file_path, "1m", "dem.tif"), 
+                   file.path(covariate_file_path, "1m", "chm.tif")))
 if(class(lidar) %in% "try-error") {
   stop("There is something wrong, please check the rasters to ensure they may be stacked")
 }
