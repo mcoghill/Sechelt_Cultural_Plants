@@ -183,13 +183,13 @@ tool_list <- list(
   export_1 = paste0(
     "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
         <input id='GRIDS'>dem_out</input>
-        <option id='FILE'>", file.path(covariate_file_path, "1m", "dem.tif"), "</option>
+        <option id='FILE'>", file.path(AOI.dir, "_original_files", "dem", "dem.tif"), "</option>
       </tool>"
   ), 
   export_2 = paste0(
     "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
         <input id='GRIDS'>chm_out</input>
-        <option id='FILE'>", file.path(covariate_file_path, "1m", "chm.tif"), "</option>
+        <option id='FILE'>", file.path(AOI.dir, "_original_files", "chm", "chm.tif"), "</option>
       </tool>"
   ),
   footer = paste0(
@@ -212,13 +212,21 @@ sys_cmd <- paste("toolchains reproject_original",
                  "-chm", file.path(AOI.dir, "_original_files", "chm", "w001001.adf"))
 system2(saga_cmd, sys_cmd)
   
-lidar <- try(stack(file.path(covariate_file_path, "1m", "dem.tif"), 
-                   file.path(covariate_file_path, "1m", "chm.tif")))
+lidar <- try(stack(file.path(cov_1m, "dem.tif"), 
+                   file.path(cov_1m, "chm.tif")))
 if(class(lidar) %in% "try-error") {
   stop("There is something wrong, please check the rasters to ensure they may be stacked")
 }
 
-lidar_layers <- list.files(cov_1m, pattern = "chm.tif|dem.tif", full.names = TRUE)
+lidar_layers <- rast(list.files(file.path(AOI.dir, "_original_files"), 
+                           pattern = "chm.tif|dem.tif", 
+                           full.names = TRUE, recursive = TRUE))
+crs(lidar_layers) <- projection(CRS(paste0("+init=epsg:", epsg)))
+for(i in names(lidar_layers)) {
+  writeRaster(subset(lidar_layers, i), 
+              file.path(cov_1m, paste0(i, ".tif")), 
+              overwrite = TRUE)
+}
 
 ```
 
@@ -1035,7 +1043,7 @@ All that is left to do now is run the functions!
 
 ```{r Run Functions, echo=TRUE}
 
-low_res <- foreach(grid = lidar_layers, .combine = c) %do% {
+low_res <- foreach(grid = lidar_layers@ptr$filenames, .combine = c) %do% {
   lower_resolutions(
     grid_1m = grid, 
     out_path = covariate_file_path, 
