@@ -28,13 +28,17 @@ This document is going to be used to pull in relevant satellite layers for analy
 The first thing that will be done is load in the required packages. We are relying on two packages not available on CRAN (getSpatialData and rgee) so they have to be downloaded and installed from github which may require the "devtools" package (not tested). getSpatialData is used to download a single scene whereas rgee harnesses the google earth engine to process large amounts of data.
 
 ```{r load library, echo = FALSE}
-ls <- c("stars", "raster", "tools", "xml2", "RStoolbox", "reticulate", 
+
+ls <- c("stars", "raster", "tools", "xml2", "RStoolbox", "reticulate", "terra",
         "googledrive", "tidyverse", "stringi", "rstudioapi", "foreach", "snow")
 new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new_packages))
   install.packages(new_packages)
 lapply(ls[ls != "reticulate"], library, character.only = TRUE)[0]
 rm(ls, new_packages)
+
+source(file.path('_functions', 'get_saga.R'))
+saga_cmd <- get_saga()
 
 ```
 
@@ -333,7 +337,8 @@ bands_to_indices <- function(
   satellite_files = NULL, 
   single_scene = FALSE, 
   output_path = NULL, 
-  remove_index = NULL) 
+  remove_index = NULL, 
+  saga_cmd = NULL) 
   {
   
   # Perform input checks
@@ -353,8 +358,9 @@ bands_to_indices <- function(
   
   process_path <- file.path(dirname(dirname(dirname(satellite_files[1]))), "2_reproject")
   
+  
   if(!dir.exists(process_path)) dir.create(process_path, recursive = TRUE)
-  ref <- raster(reference_raster)
+  ref <- rast(reference_raster)
   
   #############################################################################
   
@@ -363,8 +369,8 @@ bands_to_indices <- function(
   #https://www.mdpi.com/2072-4292/8/4/354/htm#B34-remotesensing-08-00354
   #https://www.researchgate.net/publication/323933204_Sentinel-2_Pan_Sharpening_-_Comparative_Analysis
   
-  res_10 <- stack(satellite_files[sapply(satellite_files, function(x) 
-    res(raster(x))[1], simplify = TRUE) %>% 
+  res_10 <- rast(satellite_files[sapply(satellite_files, function(x) 
+    res(rast(x))[1], simplify = TRUE) %>% 
       grep(pattern = 10, value = FALSE)])
   res_20 <- stack(satellite_files[sapply(satellite_files, function(x) 
     res(raster(x))[1], simplify = TRUE) %>% 
@@ -373,12 +379,13 @@ bands_to_indices <- function(
   # Band 8 only as pan band:
   # pan <- raster(grep("b08", satellite_files, value = TRUE))
   
-  # Mean of bands 2, 3, 4, and 8 as pan band:
-  raster::beginCluster(parallel::detectCores())
-  pan <- clusterR(res_10, mean, args = list(na.rm = TRUE))
-  raster::endCluster()
   
-  message("\rApplying pan sharpening to low resolution bands")
+  
+  # Mean of bands 2, 3, 4, and 8 as pan band, and convert to raster object:
+  pan <- mean(res_10, na.rm = TRUE) %>% raster()
+  res_10 <- stack(res_10@ptr$filenames)
+  
+  cat("\rApplying pan sharpening to low resolution bands")
   
   satellite_stack <- stack(
     res_10, panSharpen(res_20, pan = pan, method = "pca", norm = FALSE)
@@ -415,32 +422,132 @@ bands_to_indices <- function(
   if(!is.null(remove_index)) {
     satellite_indices <- dropLayer(satellite_indices, remove_index)
   }
-  message("\rMasking and writing ouputs")
   
-  # Unfortunately this step takes a while. Could perhaps move this over to SAGA...
-  satellite_indices <- projectRaster(satellite_indices, ref)
-  for(i in 1:nlayers(satellite_indices)) {
-    mask(
-      subset(satellite_indices, i), ref, format = "GTiff",
-      filename = file.path(
-        output_path,
-        tolower(paste0("sentinel2_", 
-                       names(satellite_indices)[i], "_", 
-                       basename(dirname(satellite_files[1]))))), 
+  # MOVE CODE TO SAGA GIS FOR FURTHER PROCESSING
+  for(i in names(satellite_indices)) {
+    writeRaster(
+      subset(satellite_indices, i), 
+      file.path(process_path, paste0(i, ".tif")), 
       overwrite = TRUE)
-    
   }
-  # Generare an RGB for background image
-  RGB <- subset(satellite_stack, c("red", "green", "blue"))
-  writeRaster(
-    RGB, 
-    file.path(
-      process_path, 
-      paste0("sentinel2_RGB_", basename(dirname(satellite_files[1])), ".tif")), 
-    overwrite = TRUE)
+  cat("\rMasking and writing ouputs")
   
-  return(satellite_indices)
+  
+  ##################
+  saga_ver <- system2(saga_cmd, "-v", stdout = TRUE)
+  saga_ver <- unlist(regmatches(saga_ver, regexec("Version:\\s*(.*?)\\s*\\(", saga_ver)))[2]
+  
+  tool_list <- list(
+    header = paste0(
+      "<?xml version='1.0' encoding='UTF-8'?>
+          <toolchain saga-version='", saga_ver, "'>
+          <group>toolchains</group>
+          <identifier>trans_mask</identifier>
+          <name>Transform and mask (one step)</name>
+          <description>
+            Common DEM derivatives in SAGA GIS
+          </description>
+        
+          <parameters>
+            <option varname='GRID_SYSTEM' type='grid_system'>
+              <name>Grid System</name>
+            </option>
+            <input varname='dem' type='grid' parent='GRID_SYSTEM'>
+                <name>DEM</name>
+            </input>
+            <input varname='sat' type='grid_list'>
+                <name>Satellite variables</name>
+            </input>
+          </parameters>
+          <tools>", sep = "\n"
+    ),
+    transform = paste0(
+      "<tool library='grid_tools' tool='0' name='Resampling'>
+        <input id='INPUT'>sat</input>
+        <output id='OUTPUT'>sat_rep</output>
+        <option id='KEEP_TYPE'>false</option>
+        <option id='SCALE_DOWN'>3</option>
+        <option id='TARGET_DEFINITION'>1</option>
+        <input id='TARGET_TEMPLATE'>dem</input>
+      </tool>"
+    ),
+    reps = foreach(grid = 1:length(names(satellite_indices)), .combine = paste) %do% {
+      select = paste0(
+        "<tool library='grid_tools' tool='32' name='Select Grid from List'>
+        <input id='GRIDS'>sat_rep</input>
+        <output id='GRID'>", names(satellite_indices)[grid], "</output>
+        <option id='INDEX'>", grid - 1, "</option>
+      </tool>"
+      )
+      mask = paste0(
+        "<tool library='grid_tools' tool='24' name='Grid Masking'>
+        <input id='GRID'>", names(satellite_indices)[grid], "</input>
+        <input id='MASK'>dem</input>
+        <output id='MASKED'>", paste(names(satellite_indices)[grid], "[masked]"), "</output>
+      </tool>"
+      )
+      export = paste0(
+        "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
+        <input id='GRIDS'>", paste(names(satellite_indices)[grid], "[masked]"), "</input>
+        <option id='FILE'>", file.path(
+        process_path,
+        tolower(paste0("sentinel2_", 
+                       names(satellite_indices)[grid], "_", 
+                       basename(dirname(satellite_files[1])), ".tif"))), "</option>
+      </tool>"
+      )
+      return(paste(select, mask, export, collapse = " ", sep = "\n"))}, 
+    footer = paste0(
+      "</tools>
+      </toolchain>"
+    )
+  )
+  call <- paste0(tool_list, sep = "\n", collapse = " ")
+  
+  # Determine the toolchain directory based on your system
+  xml_dir <- ifelse(
+    Sys.info()[["sysname"]] == "Windows", 
+    file.path(dirname(saga_cmd), "tools", "toolchains", "trans_mask.xml"), 
+    file.path(dirname(dirname(saga_cmd)), "share", "saga", 
+              "toolchains", "trans_mask.xml")
+  )
+  write_xml(read_xml(call), xml_dir)
+  sys_cmd <- paste("toolchains trans_mask",
+                   "-dem", reference_raster,
+                   "-sat", paste(list.files(file.path(process_path), 
+                                      pattern = paste0(names(satellite_indices), ".tif", collapse = "|"),
+                                      full.names = TRUE), collapse = ";")
+                   )
+  system2(saga_cmd, sys_cmd)
+  
+  # Projections are correct, but in case the proj4string is incorrect:
+  sat_indices <- rast(file.path(
+        process_path,
+        tolower(paste0("sentinel2_", 
+                       names(satellite_indices), "_", 
+                       basename(dirname(satellite_files[1])), ".tif"))))
+  
+  crs(sat_indices) <- crs(ref)
+  for(i in names(sat_indices)) {
+    writeRaster(subset(sat_indices, i),
+                file.path(output_path, paste0(i, ".tif")), 
+                overwrite = TRUE)
+  }
+  
+  #####################
+  
+  # Generare an RGB for background image
+  # RGB <- subset(satellite_stack, c("red", "green", "blue"))
+  # writeRaster(
+  #   RGB,
+  #   file.path(
+  #     process_path,
+  #     paste0("sentinel2_RGB_", basename(dirname(satellite_files[1])), ".tif")),
+  #   overwrite = TRUE)
+  
+  return(invisible())
 }
+
 ```
 
 Finally, we just need to run the function. I've included examples for processing this when a single scene is downloaded, and for when composite images from google earth engine have been downloaded
@@ -451,7 +558,7 @@ ee <- import("ee")
 ee$Initialize()
 
 # Create a bounding box of the AOI. Needs to be transformed to EPSG 4326
-AOI_bbox <- st_read(AOI_shapefile, quiet = TRUE) %>%
+AOI_bbox <- st_read(AOI_shapefile[1], quiet = TRUE) %>%
   st_bbox() %>%
   st_as_sfc() %>%
   st_buffer(dist = 250, joinStyle = "MITRE") %>%
@@ -478,7 +585,7 @@ ee_download <- get_sentinel_ee(
 season_dirs <- dir(file.path(raw_path, "1_download"), 
                    full.names = TRUE)[dir(file.path(raw_path, "1_download"))
                                       %in% seasons_df$season]
-dem_list <- dem_list[-1]
+dem_list <- dem_list[5]
 # Run the bands_to_indices function to produce satellite indices for each 
 # of the date ranges
 for(i in season_dirs) {
@@ -488,7 +595,8 @@ for(i in season_dirs) {
       satellite_files = list.files(i, full.names = TRUE),
       single_scene = FALSE,
       output_path = dirname(dem), 
-      remove_index = c("EVI2")
+      remove_index = c("EVI2"), 
+      saga_cmd = saga_cmd
     )
   }
 }
