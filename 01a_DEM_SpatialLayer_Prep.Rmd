@@ -1182,7 +1182,7 @@ for(i in clim_res) {
         mask(dem)
       writeRaster(p, file.path(
         covariate_file_path, res, 
-        paste0(basename(j), "_", basename(layer))), 
+        tolower(paste0(basename(j), "_", basename(layer)))), 
         overwrite = TRUE
       )
     }
