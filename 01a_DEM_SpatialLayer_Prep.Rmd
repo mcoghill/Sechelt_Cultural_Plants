@@ -72,7 +72,7 @@ In the next chunk, we want to specify where the raw files are located. For the S
 
 covariate_file_path <- file.path(AOI.dir, "1_map_inputs", "covariates")
 cov_1m <- file.path(covariate_file_path, "1m")
-if(!dir.exists(cov_1m)) dir.create(cov_1m, recursive = TRUE)
+dir.create(cov_1m, recursive = TRUE, showWarnings = FALSE)
 
 # Load files
 dem_raw <- rast(file.path(AOI.dir, "_original_files", "dem", "w001001.adf"))
@@ -132,7 +132,7 @@ if(ncell(dem_raw) >= ncell(chm_raw)) {
 } else {
   in_1 <- "chm"; in_2 <- "dem"
 }
-saga_ver <- system(paste(saga_cmd, "-v"), intern = TRUE)
+saga_ver <- system2(saga_cmd, "-v", stdout = TRUE)
 saga_ver <- unlist(regmatches(saga_ver, regexec("Version:\\s*(.*?)\\s*\\(", saga_ver)))[2]
 tool_list <- list(
   header = paste0(
@@ -211,19 +211,15 @@ sys_cmd <- paste("toolchains reproject_original",
                  "-dem", file.path(AOI.dir, "_original_files", "dem", "w001001.adf"), 
                  "-chm", file.path(AOI.dir, "_original_files", "chm", "w001001.adf"))
 system2(saga_cmd, sys_cmd)
-  
-lidar <- try(stack(file.path(cov_1m, "dem.tif"), 
-                   file.path(cov_1m, "chm.tif")))
-if(class(lidar) %in% "try-error") {
-  stop("There is something wrong, please check the rasters to ensure they may be stacked")
-}
 
-lidar_layers <- rast(list.files(file.path(AOI.dir, "_original_files"), 
-                           pattern = "chm.tif|dem.tif", 
-                           full.names = TRUE, recursive = TRUE))
-crs(lidar_layers) <- projection(CRS(paste0("+init=epsg:", epsg)))
-for(i in names(lidar_layers)) {
-  writeRaster(subset(lidar_layers, i), 
+lidar <- rast(list.files(file.path(AOI.dir, "_original_files"), 
+                         pattern = "chm.tif|dem.tif", 
+                         full.names = TRUE, recursive = TRUE))
+
+crs(lidar) <- projection(CRS(paste0("+init=epsg:", epsg)))
+
+for(i in names(lidar)) {
+  writeRaster(subset(lidar, i), 
               file.path(cov_1m, paste0(i, ".tif")), 
               overwrite = TRUE)
 }
@@ -261,7 +257,7 @@ lower_resolutions <- function(
     reference <- grid_1m
     grid_1m <- reference@file@name
   } else if(is.character(grid_1m) && length(grid_1m) == 1) {
-    reference <- raster(grid_1m)
+    reference <- rast(grid_1m)
   } else {
     stop(paste(
       "\rError: 'grid_1m' must either be a character string to a valid raster 
@@ -277,17 +273,17 @@ lower_resolutions <- function(
       "\r'out_path' must be a character string to a folder on your system"
     )
   
-  if(!dir.exists(out_path)) dir.create(out_path)
+  dir.create(out_path, showWarnings = FALSE)
   
   if(!file.exists(saga_cmd)) 
     stop("\rPlease provide a valid path to 'saga_cmd'")
   
-  saga_ver <- system(paste(saga_cmd, "-v"), intern = TRUE)
+  saga_ver <- system2(saga_cmd, "-v", stdout = TRUE)
   saga_ver <- unlist(regmatches(saga_ver, regexec("Version:\\s*(.*?)\\s*\\(", saga_ver)))[2]
   
   out_grids <- foreach(r = res_choices, .combine = c) %do% {
     covariate_out_path <- file.path(out_path, paste0(r, "m"))
-    if(!dir.exists(covariate_out_path)) dir.create(covariate_out_path)
+    dir.create(covariate_out_path, showWarnings = FALSE)
     tool_list <- list(
       # Different option names for this tool based on SAGA version
       focal_stats = paste0(
@@ -439,7 +435,6 @@ lower_resolutions <- function(
         }
       }
       
-      
       x$header <- paste0(
         "<?xml version='1.0' encoding='UTF-8'?>
           <toolchain saga-version='", saga_ver, "'>
@@ -491,8 +486,8 @@ lower_resolutions <- function(
     # Process SAGA toolchains in the list
     for(p in 1:length(xml_layout)) {
       write_xml(read_xml(xml_layout[[p]]$call), lower_res_xml)
-      sys_cmd <- paste(saga_cmd, "toolchains Downscale", cmd_text[[p]])
-      system(sys_cmd)
+      sys_cmd <- paste("toolchains Downscale", cmd_text[[p]])
+      system2(saga_cmd, sys_cmd)
     }
     
     # Remove intermediate files
@@ -506,10 +501,10 @@ lower_resolutions <- function(
       full.names = TRUE)
     )
     
-    output <- list.files(
+    output <- rast(list.files(
       covariate_out_path, 
       pattern = paste(basename(grid_1m), "grid_downscaled.tif", sep = "|"),
-      full.names = TRUE, ignore.case = TRUE)
+      full.names = TRUE, ignore.case = TRUE))
     
     file.rename(output, file.path(dirname(output), tolower(basename(output))))
     list.files(covariate_out_path, pattern = basename(grid_1m), full.names = TRUE)
@@ -556,6 +551,7 @@ This function requires that you specify an input file path to a DEM, not an inpu
 
 
 ```{r DEM Derived Layers, include=FALSE}
+
 dem_derived_layers <- function(
   dem_input = NULL, # Input DEM either as file path or raster layer
   out_path = NULL,  # output file path, will default to dem_input directory
@@ -585,7 +581,7 @@ dem_derived_layers <- function(
       "\r'out_path' must be a character string to a folder on your system"
     )
   
-  if(!dir.exists(out_path)) dir.create(out_path)
+  dir.create(out_path, showWarnings = FALSE)
   
   if(!file.exists(saga_cmd)) 
     stop("\rPlease provide a valid path to 'saga_cmd'")
@@ -593,7 +589,7 @@ dem_derived_layers <- function(
   # Define inputs used in some of the SAGA tools below
   reference_res <- res(reference)[1]
   covariate_out <- out_path
-  if(!dir.exists(covariate_out)) dir.create(covariate_out, recursive = TRUE)
+  dir.create(covariate_out, recursive = TRUE, showWarnings = FALSE)
   
   ## Sunrise/sunset time calculation for solar radiation tool:
   centroid <- data.frame(x = mean(xmax(reference), xmin(reference)),
@@ -602,37 +598,32 @@ dem_derived_layers <- function(
     st_transform(4326) %>% # needs lat/long for calculating sunlight times
     st_coordinates() %>%
     as.data.frame() %>%
-    mutate(X = as.character(round(X, digits = 2)),
-           Y = as.character(round(Y, digits = 2))) %>%
-    separate(X, into = c("Long_Hours", "Long_Mins"),
-             sep = "\\.", remove = TRUE) %>%
-    separate(Y, into = c("Lat_Hours", "Lat_Mins"),
-             sep = "\\.", remove = TRUE) %>%
-    mutate_all(.funs = as.numeric) %>%
-    mutate_all(abs)
-  
+    dplyr::rename_at(vars(names(.)), ~c("Longitude", "Latitude"))
+    
   # Using rvest to gather sunset/sunrise information
   session <- html_session(
     "https://www.nrc-cnrc.gc.ca/eng/services/sunrise/advanced.html")
-  form <- html_form(session)[[4]]
+  form <- html_form(session)
+  form <- form[lapply(form, function(x) x[["name"]]) == "sunrise-sunset"][[1]]
   filled_form <- set_values(
-    form, phlong = centroid$Long_Hours, pmlong = centroid$Long_Mins,
-    pdlat = centroid$Lat_Hours, pmlat = centroid$Lat_Mins, year = 2019,
-    month = "Jan", day = 1, timezone = "PST|8", sunmoon = "Sunrise/set_yhtml1",
-    ew = "West", sn = "North"
+    form, calcSubject = "ss-year-txt", calcMethod = "byLatLong",
+    calcDate = "01/01/2019", latitude = as.character(centroid$Latitude), 
+    longitude = as.character(centroid$Longitude),
+    timezone = "PST|8"
   )
+  filled_form$url <- session$url
   
   result <- submit_form(session, filled_form)
-  response <- content(result$response)
-  timetable <- html_table(html_node(response, "table")) %>%
-    mutate_all(~ifelse(. %in% c("N/A", "null", ""), NA, .)) %>%
+  response <- sub(".*Date?", "Date", content(result$response))
+  
+  timetable <- read_csv(response) %>% 
     na.omit() %>%
-    mutate(Month = match(trimws(gsub("[[:digit:]]+", "", Date)), month.abb),
+    mutate(Month = match(trimws(gsub("[[:digit:]]+|/", "", Date)), month.abb),
            Day = readr::parse_number(Date)) %>%
     mutate(rise = as_datetime(paste0(
-      "2019-", Month, "-", Day, " ", hm(Sunrise)), tz = "Canada/Pacific"),
+      "2019-", Month, "-", Day, " ", hms(`Sun rise`)), tz = "Canada/Pacific"),
       set = as_datetime(paste0(
-        "2019-", Month, "-", Day, " ", hm(Sunset)), tz = "Canada/Pacific")) %>%
+        "2019-", Month, "-", Day, " ", hms(`Sun set`)), tz = "Canada/Pacific")) %>%
     mutate(rise = floor_date(rise, "30 minutes"),
            set = ceiling_date(set, "30 minutes")) %>%
     mutate(rise = strftime(rise, format = "%H:%M:%S"),
@@ -655,10 +646,6 @@ dem_derived_layers <- function(
   mrvbf_param <- 116.57 * (reference_res ^ -0.62)
   tpi_param <- reference_res * 5
   openness_param <- as.numeric(ncol(reference) / 2)
-  vrm_param <- 10
-  vall_ridg_param <- 7
-  mpi_param <- 50
-  
   
   #############################################################################
   # Build the xml toolchain piece by piece (easier than previously)
@@ -812,6 +799,7 @@ dem_derived_layers <- function(
    # was just me trying things out and seeing what worked. The original paper for
    # calculating openness is:
    # https://www.asprs.org/wp-content/uploads/pers/2002journal/march/2002_mar_257-265.pdf
+  
    openness = paste0(
      "<tool library='ta_lighting' tool='5' name='Topographic Openness'>
            <input id='DEM'>dem</input>
@@ -853,7 +841,7 @@ dem_derived_layers <- function(
    # https://www.nrc-cnrc.gc.ca/eng/services/sunrise/advanced.html, where we get
    # official accurate representations of daily sunrise and sunset times
    # throughout a year at that centroid. Minimum sunrise and maximum sunset times
-   # are calculated for a givenstudy area in order to limit the amount of
+   # are calculated for a given study area in order to limit the amount of
    # calculations that occur while there would be no solar radiation at any given
    # time throughout a year. It also helps to decrease processing time.
    
@@ -1024,8 +1012,8 @@ dem_derived_layers <- function(
   # Process SAGA toolchains in the list
   for(p in 1:length(xml_layout)) {
     write_xml(read_xml(xml_layout[[p]]$call), dem_derived_xml)
-    sys_cmd <- paste(saga_cmd, "toolchains Derived", cmd_text[[p]])
-    system(sys_cmd)
+    sys_cmd <- paste("toolchains Derived", cmd_text[[p]])
+    system2(saga_cmd, sys_cmd)
   }
   
   # Remove intermediate files
@@ -1041,9 +1029,11 @@ dem_derived_layers <- function(
 
 All that is left to do now is run the functions!
 
-```{r Run Functions, echo=TRUE}
+```{r Run Functions }
 
-low_res <- foreach(grid = lidar_layers@ptr$filenames, .combine = c) %do% {
+lidar_layers <- list.files(cov_1m, pattern = "dem.tif|chm.tif", full.names = TRUE)
+
+low_res <- foreach(grid = lidar_layers, .combine = c) %do% {
   lower_resolutions(
     grid_1m = grid, 
     out_path = covariate_file_path, 
@@ -1062,28 +1052,29 @@ dl_path <- file.path(AOI.dir, "_original_files", "TRIM")
 trim_path <- file.path(covariate_file_path, "25m_TRIM")
 
 if(!dir.exists(dl_path) || dir.exists(trim_path)) {
-  if(!dir.exists(dl_path)) dir.create(dl_path)
-  if(!dir.exists(trim_path)) dir.create(trim_path)
-  dem_25 <- raster(file.path(covariate_file_path, "25m", "dem.tif"))
+  dir.create(dl_path, showWarnings = FALSE)
+  dir.create(trim_path, showWarnings = FALSE)
+  dem_25 <- rast(file.path(covariate_file_path, "25m", "dem.tif"))
   
   # URL's to download tiles for Sechelt
   urls <- c("https://pub.data.gov.bc.ca/datasets/175624/92f/092f09_e.dem.zip", 
             "https://pub.data.gov.bc.ca/datasets/175624/92g/092g12_w.dem.zip")
   
-  trim <- foreach(i = urls, .combine = function(x, y) mosaic(x, y, fun = "mean") ) %do% {
+  trim <- foreach(i = urls, .combine = merge) %do% { #function(x, y) merge(x, y)
     download.file(url = i, destfile = file.path(dl_path, basename(i)))
     unzip(file.path(dl_path, basename(i)), overwrite = TRUE, exdir = file.path(
       dl_path))
     unlink(file.path(dl_path, basename(i)))
-    raster(file.path(dl_path, basename(file_path_sans_ext(i))))
+    rast(file.path(dl_path, basename(file_path_sans_ext(i))))
   } %>% 
-    projectRaster(dem_25) %>% 
+    project(dem_25) %>% 
     mask(dem_25)
   writeRaster(trim, file.path(trim_path, "dem.tif"), overwrite = TRUE)
 }
 
-low_res <- c(low_res, list.files(trim_path, pattern = "dem.tif", full.names = TRUE))
-dem_files <- grep("dem.tif", low_res, value = TRUE)
+dem_files <- grep("1m", list.files(covariate_file_path, pattern = "dem.tif", 
+                                   full.names = TRUE, recursive = TRUE), 
+                  value = TRUE, invert = TRUE)
 
 covariate_list <- foreach(i = dem_files, .final = function(x) 
   setNames(x, basename(dirname(dem_files)))) %do% {
@@ -1091,13 +1082,11 @@ covariate_list <- foreach(i = dem_files, .final = function(x)
 }
 
 # Create DEM files for use with ClimateBC program:
-dem_files <- list.files(covariate_file_path, pattern = "dem.tif", full.names = TRUE, recursive = TRUE)
-dem_files <- dem_files[basename(dirname(dem_files)) != "1m"]
 clim_bc_path <- file.path(file.path(AOI.dir, "0_raw_inputs", "ClimateBC_Layers"))
-if(!dir.exists(clim_bc_path)) dir.create(clim_bc_path, recursive = TRUE)
+dir.create(clim_bc_path, recursive = TRUE, showWarnings = FALSE)
 
 for(i in dem_files) {
-  saga_ver <- system(paste(saga_cmd, "-v"), intern = TRUE)
+  saga_ver <- system2(saga_cmd, "-v", stdout = TRUE)
   saga_ver <- unlist(regmatches(saga_ver, regexec("Version:\\s*(.*?)\\s*\\(", saga_ver)))[2]
   
   tool_list <- list(
@@ -1121,7 +1110,7 @@ for(i in dem_files) {
       </parameters>
           <tools>", sep = "\n"),
     transform_grid = paste0(
-      "<tool library='pj_proj4' tool='4' name='Coordinate Transformation (Grid List)'>
+      "<tool library='pj_proj4' tool='4' name='Coordinate Transformation (Grid)'>
         <option id='CRS_PROJ4'>+proj=longlat +datum=WGS84 +no_defs </option>
         <option id='CRS_EPSG'>4326</option>
         <option id='CRS_EPSG_AUTH'>EPSG</option>
@@ -1156,8 +1145,8 @@ for(i in dem_files) {
               "toolchains", "transform_arc.xml")
   )
   write_xml(read_xml(call), xml_dir)
-  sys_cmd <- paste(saga_cmd, "toolchains reproject_arc -dem", i)
-  system(sys_cmd)
+  sys_cmd <- paste("toolchains reproject_arc -dem", i)
+  system2(saga_cmd, sys_cmd)
 }
 
 # Create climate layers for normal annual & seasonal 1961-1990, same for 1991-2010, 
