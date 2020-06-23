@@ -12,6 +12,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 
 ```{r packages, include=FALSE}
+
 ls <- c("bcdata", "bcmaps", "tidyverse", "raster", "stars", "foreach", 
         "doParallel", "fasterize", "xml2")
 github_ls <- c("bcmapsdata")
@@ -56,6 +57,7 @@ Finally, it is assumed that since you have an AOI shapefile that it was produced
 
 
 ```{r Parameters}
+
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 cov_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
@@ -67,7 +69,11 @@ saga_cmd <- get_saga()
 
 
 ```{r Raster to polygon}
-dem_files <- list.files(cov_dir, pattern = "dem.tif", full.names = TRUE, recursive = TRUE)
+
+dem_files <- grep("1m", list.files(cov_dir, pattern = "dem.tif", 
+                                   full.names = TRUE, recursive = TRUE), 
+                  value = TRUE, invert = TRUE)
+
 for(i in dem_files) {
   shape_subdir <- file.path(shape_dir, basename(dirname(i)))
   if(!dir.exists(shape_subdir)) dir.create(shape_subdir, recursive = TRUE)
@@ -157,8 +163,8 @@ for(i in dem_files) {
               "toolchains", "raster_poly_aoi.xml")
   )
   write_xml(read_xml(call), xml_dir)
-  sys_cmd <- paste(saga_cmd, "toolchains polygonize -dem", i)
-  system(sys_cmd)
+  sys_cmd <- paste("toolchains polygonize -dem", i)
+  system2(saga_cmd, sys_cmd)
 }
 
 ```
@@ -168,6 +174,7 @@ for(i in dem_files) {
 A single function is used to download BEC zone info, VRI shapes, TEM shapes (if applicable), water bodies, and roads all in one go. Each is clipped to the extent of the study area at each resolution, though this may not be very efficient. 
 
 ```{r Function}
+
 get_bc_shapes <- function(in_aoi = NULL, 
   out_path = NULL, 
   subzones = NULL, 
@@ -397,8 +404,11 @@ get_bc_shapes <- function(in_aoi = NULL,
 We can define the parameters and run the above function.
 
 ```{r Run Functions}
+
 # Define the input AOI file
-in_aoi <- list.files(shape_dir, pattern = "aoi.gpkg", recursive = TRUE, full.names = TRUE)
+in_aoi <- grep("1m", list.files(shape_dir, pattern = "aoi.gpkg", 
+                                full.names = TRUE, recursive = TRUE), 
+               value = TRUE, invert = TRUE)
 
 # Define output file path for downloaded shapes (function will default
 # to the folder of in_aoi)
@@ -409,7 +419,7 @@ out_path <- dirname(in_aoi)
 # that will find LiDAR derived files created from the 01_LiDAR script
 raster_files <- list.files( 
   file.path(cov_dir, res_name), 
-  pattern = "dem.tif|[[:digit:]]m.tif$", 
+  pattern = ".tif$", 
   full.names = TRUE)
 
 bc_shapes <- foreach(aoi = in_aoi, .final = function(x) 
