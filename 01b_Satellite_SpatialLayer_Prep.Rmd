@@ -136,6 +136,7 @@ python_setup(env)
 Here, we can load some local directories and file paths. SAGA will be used to process band images (reprojecting and clipping to an AOI) so it is necessary to have it installed on your system (could possibly be scripted to check for a valid SAGA installation and throw an error if it is missing)
 
 ```{r Set Directories, message=FALSE, warning=FALSE}
+
 # Define study area folder
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
@@ -146,8 +147,10 @@ AOI_res <- c(4, 25)
 map_res <- c(paste0(AOI_res, "m"), "25m_TRIM")
 AOI_shapefile <- file.path(AOI_dir, "0_raw_inputs", "base_layers", map_res, "aoi.gpkg")
 dem_hi_res <- file.path(AOI_dir, "1_map_inputs", "covariates", paste0(min(AOI_res), "m"), "dem.tif")
-dem_list <- list.files(file.path(AOI_dir, "1_map_inputs", "covariates"), pattern = "dem.tif",
-                       full.names = TRUE, recursive = TRUE)
+dem_list <- grep("1m", list.files(file.path(AOI_dir, "1_map_inputs", "covariates"), 
+                                   pattern = "dem.tif", full.names = TRUE, recursive = TRUE), 
+                  value = TRUE, invert = TRUE)
+
 
 # Define path for file processing (doesn't have to exist)
 raw_path <- file.path(AOI_dir, "0_raw_inputs", "satellite_layers")
@@ -167,10 +170,12 @@ The second function (get_sentinel_ee) provides a similar purpose; however it use
 # locally This is now the recommended function.
 get_sentinel_ee <- function(
   aoi = NULL, 
+  out_epsg = NULL,
   template_raster = NULL, 
   date_ranges = NULL, 
   drive_folder = NULL, 
-  download_folder = NULL) 
+  download_folder = NULL, 
+  gmail_address = NULL) 
   {
   # Perform checks of function inputs
   if(!any(class(aoi) %in% c("sf", "sfc", "sfg")) || is.null(aoi)) {
@@ -216,6 +221,9 @@ get_sentinel_ee <- function(
     )
   }
   
+  drive_find(n_max = 1)
+  #drive_auth(email = gmail_address)
+  
   # Create a cloud masking function which will run in GEE
   cloud_mask <- function(image) {
     qa <- image$select("QA60")
@@ -249,7 +257,7 @@ get_sentinel_ee <- function(
     
     # Create the folder for the seasonal downloads in your local folder
     out_dir <- file.path(download_folder, date_id)
-    if(!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+    dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
     
     # Perform filtering operations in GEE
     sen <- ee$ImageCollection("COPERNICUS/S2_SR")$
@@ -266,7 +274,7 @@ get_sentinel_ee <- function(
     for(j in 1:nrow(bands)) {
       task_img <- ee$batch$Export$image$toDrive(
         image = comp_clip$select(list(bands$band[j]))$
-          reproject("EPSG:3005", NULL, bands$res[j]),
+          reproject(paste0("EPSG:", out_epsg), NULL, bands$res[j]),
         folder = drive_get(paste0("Sentinel2/", date_id))$name,
         maxPixels = ncell(raster(template_raster)) * 2,
         fileNamePrefix = bands$new_name[j]
@@ -288,6 +296,7 @@ get_sentinel_ee <- function(
   return(list.files(download_folder, pattern = ".tif$", full.names = TRUE, 
                     recursive = TRUE))
 }
+
 ```
 
 The next chunk is an outline on how to prepare to use the function get_sentinel_scene. I've blanked it out here because I prefer using GEE to download images. First, we need to log in to Copernicus. If you don't have an account, you can create one here: https://scihub.copernicus.eu/dhus/
@@ -358,8 +367,7 @@ bands_to_indices <- function(
   
   process_path <- file.path(dirname(dirname(dirname(satellite_files[1]))), "2_reproject")
   
-  
-  if(!dir.exists(process_path)) dir.create(process_path, recursive = TRUE)
+  dir.create(process_path, recursive = TRUE, showWarnings = FALSE)
   ref <- rast(reference_raster)
   
   #############################################################################
@@ -576,16 +584,18 @@ seasons_df <- data.frame(
 # Run get_sentinel_ee function to process and download satellite images
 ee_download <- get_sentinel_ee(
   aoi = AOI_bbox,
+  out_epsg = AOI_epsg,
   template_raster = dem_hi_res,
   date_ranges = seasons_df,
   drive_folder = "Sentinel2",
-  download_folder = file.path(raw_path, "1_download")
+  download_folder = file.path(raw_path, "1_download"), 
+  gmail_address = "matthew0coghill@gmail.com"
 )
 
 season_dirs <- dir(file.path(raw_path, "1_download"), 
                    full.names = TRUE)[dir(file.path(raw_path, "1_download"))
                                       %in% seasons_df$season]
-dem_list <- dem_list[5]
+
 # Run the bands_to_indices function to produce satellite indices for each 
 # of the date ranges
 for(i in season_dirs) {
