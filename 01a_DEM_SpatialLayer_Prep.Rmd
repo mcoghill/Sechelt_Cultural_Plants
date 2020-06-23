@@ -1179,7 +1179,8 @@ for(i in clim_res) {
     for(layer in clim_layers) {
       p <- rast(layer) %>% 
         project(dem) %>% 
-        mask(dem)
+        mask(dem) %>% 
+        magrittr::set_names(tolower(paste0(basename(j), "_", file_path_sans_ext(basename(layer)))))
       writeRaster(p, file.path(
         covariate_file_path, res, 
         tolower(paste0(basename(j), "_", basename(layer)))), 
@@ -1188,6 +1189,5 @@ for(i in clim_res) {
     }
   }
 }
-
 
 ```
