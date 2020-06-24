@@ -14,12 +14,11 @@ June update: Thinking about this a bit, I have improved the DSMART algorithm int
 
 ```{r Load Packages}
 
-ls <- c("devtools", "sf", "raster", "fasterize", "rgdal", "caret", "randomForest", 
+ls <- c("sf", "raster", "fasterize", "rgdal", "caret", "ranger", 
         "tidyverse", "terra", "foreach", "GSIF")
 new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new.packages))
   install.packages(new.packages)
-#devtools::install_bitbucket("brendo1001/dsmart", upgrade = "always")
 lapply(ls, library, character.only = TRUE)[0]
 rm(ls, new.packages)
 
@@ -42,13 +41,8 @@ shapes_path <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
 dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
 
-stratified = TRUE
-
-# for(i in lsf.str(envir = asNamespace("rdsmart"), all = TRUE)) {
-#   if(!file.exists(file.path("./_functions", paste0(i, ".R"))))
-#     dump(i, file = file.path("./_functions", paste0(i, ".R")))
-#   source(file.path("./_functions", paste0(i, ".R")))
-# }
+stratified <- FALSE
+use_caret <- TRUE
 
 ```
 
@@ -125,6 +119,35 @@ observations <- read.csv(file.path(dsmart_dir, "inputs", "dsmart_observations.cs
 
 ```{r Editing the dsmart functions}
 
+# Note: for randomForest model method, you only need to have the mtry defined in 
+# the tuneGrid part. Also note that if class probabilities are requested, the 
+# value needs to be changed to TRUE and "type" in the disaggregate function 
+# needs to be changed to "prob".
+if(use_caret) {
+  method.model <- "ranger"
+  args.model <- list(
+    trControl = trainControl(
+      method = "repeatedcv", 
+      number = 3, 
+      repeats = 1, 
+      classProbs = FALSE,
+      p = 0.9, 
+      returnData = FALSE,
+      returnResamp = "final",
+      savePredictions = "final",
+      summaryFunction = multiClassSummary, # Adds a suite of performance metrics to the output
+      allowParallel = TRUE),
+    tuneGrid = expand.grid(
+      mtry = round(sqrt(nlayers(covariates))),
+      splitrule = "gini", 
+      min.node.size = 1
+    )
+  )
+} else {
+  method.model <- NULL
+  args.model <- NULL
+}
+
 disag <- disaggregate(
   covariates = covariates, 
   polygons = polygons, 
@@ -134,7 +157,9 @@ disag <- disaggregate(
   observations = observations, 
   method.sample = "by_polygon", 
   method.allocate = "weighted",
+  method.model = method.model,
   strata = strata, 
+  args.model = args.model,
   outputdir = file.path(AOI_dir, "1_map_inputs", "dsmart"), 
   cpus = parallel::detectCores(), 
   type = "raw"
@@ -162,23 +187,6 @@ Some ways in which this could be sped up:
 
 ```{r Run dsmart algorithm}
 
-fit_control <- trainControl(
-  method = "repeatedcv", 
-  number = 3, 
-  repeats = 1, 
-  classProbs = FALSE,
-  p = 0.9, 
-  returnData = FALSE,
-  returnResamp = "final",
-  savePredictions = "final",
-  summaryFunction = multiClassSummary, # Adds a suite of performance metrics to the output
-  allowParallel = TRUE)
-
-tune_grid <- expand.grid(
-  mtry = round(sqrt(nlayers(covariates))),
-  splitrule = "gini", 
-  min.node.size = 1
-)
 
 site_series <- dsmart(covariates = dsmart_covariates, 
                       polygons = dsmart_polygons, 
