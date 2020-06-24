@@ -155,20 +155,21 @@ predict_landscape <- function(model, covariates, tilesize = 500,
   ## Mosaic Tiles ---------------
   
   cat("\nGenerating raster mosaics")
+  
   for (k in keep) {
     # get list of tiles
     #k = "response" # testing
-    r_tiles <- list.files(paste(outDir, k, sep = "/"),
+    r_tiles <- list.files(file.path(outDir, k),
                           pattern = ".tif$",
                           full.names = TRUE)
     
     ## mosaic
-    mos <- gdalUtils::mosaic_rasters(
-      gdalfile = r_tiles, ## list of rasters to mosaic
-      dst_dataset = paste0(outDir, "/", k, ".tif"),  #output: dir and filename
-      output_Raster = TRUE) %>% ## saves the raster (not just a virtual raster)
-      rast() %>% 
+    mos <- foreach(tile = r_tiles, .combine = terra::merge) %do% {
+      rast(tile)
+    } %>% 
       mask(rast(subset(covariates, 1)))
+    
+    writeRaster(mos, file.path(outDir, paste0(k, ".tif")), overwrite = TRUE)
   }
   
   if(length(keep) == 1) {
