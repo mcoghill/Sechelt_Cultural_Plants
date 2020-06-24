@@ -264,9 +264,7 @@ tem_xls_bec <- dplyr::select(tem_xls[[1]], Poly_Nbr, ECI_Tag, `BGC Zone`,
   mutate(Variant = str_replace_na(Variant, replacement = ""),
          Sser1 = substr(Sser1, start = 1, stop = 2), 
          Subzone = tolower(Subzone)) %>% 
-  mutate(MapUnit = ifelse(grepl("^[A-Za-z]+$", Sser1), Sser1, 
-                          paste0(`BGC Zone`, Subzone, Variant, "/", Sser1))) %>% 
-  mutate(MapUnit = as.factor(make.names(MapUnit))) %>% 
+  mutate(MapUnit = as.factor(make.names(paste0(`BGC Zone`, Subzone, Variant, "/", Sser1)))) %>% 
   st_sf()
 
 # MDB_tblPlotData has way too many columns, keep only important ones for BEC
@@ -420,6 +418,7 @@ dsmart_composition <- st_drop_geometry(dsmart_polygons) %>%
          POLY_NO = as.integer(POLY_NO), 
          proportion = as.integer(value)) %>% 
   drop_na(MapUnit) %>% 
+  mutate(MapUnit = ifelse(nchar(MapUnit) <= 4, paste0(Subzone, ".", MapUnit), MapUnit)) %>% 
   mutate(MapUnit = as.factor(make.names(MapUnit)), 
          Subzone = as.integer(Subzone)) %>% 
   dplyr::select(POLY_NO, MAP_CODE, Subzone, MapUnit, proportion) %>% 
