@@ -1,8 +1,6 @@
-summarise <-
-function (realisations, lookup, n.realisations = raster::nlayers(realisations), 
+summarise <- function (realisations, lookup, n.realisations = raster::nlayers(realisations), 
     nprob = 3, cpus = 1, outputdir = getwd(), stub = NULL, type = "raw") 
 {
-    source("./_functions/dsmart_custom/order_stack_values.R")
     
     output <- base::list()
     output$timing <- base::list(start = base::date())
