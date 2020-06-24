@@ -56,13 +56,13 @@ Next, important data is loaded. There are a lot of covariate layers created from
 
 # Load covariates
 res_folder <- paste0(map_res, "m")
-terrain_covariates <- grep(pattern = "Normal|sentinel2", list.files(
+terrain_covariates <- grep(pattern = "normal|sentinel2", list.files(
   file.path(covariate_dir, res_folder), full.names = TRUE, pattern = ".tif$"), invert = TRUE, 
   value = TRUE)
 sentinel_covariates <- list.files(file.path(covariate_dir, res_folder), 
                                   pattern = "^sentinel2.*.summer.tif$", full.names = TRUE)
 climate_covariates <- list.files(file.path(covariate_dir, res_folder), 
-                                 pattern = "^Normal.*._sm.tif$", full.names = TRUE)
+                                 pattern = "^normal.*._sm.tif$", full.names = TRUE)
 covariates <- raster::stack(c(terrain_covariates, sentinel_covariates, climate_covariates))
 
 # Load the polygons and associated observations
@@ -128,8 +128,8 @@ if(use_caret) {
   args.model <- list(
     trControl = trainControl(
       method = "repeatedcv", 
-      number = 3, 
-      repeats = 1, 
+      number = 10, 
+      repeats = 5, 
       classProbs = FALSE,
       p = 0.9, 
       returnData = FALSE,
@@ -164,6 +164,20 @@ disag <- disaggregate(
   cpus = parallel::detectCores(), 
   type = "raw"
 )
+
+summ <- summarise(
+  realisations = raster::stack(list.files(
+    file.path(AOI_dir, "1_map_inputs", "dsmart", "output", "realisations"), 
+    full.names = TRUE, pattern = ".tif$")),
+  lookup = read.table(
+    file.path(AOI_dir, "1_map_inputs", "dsmart", "output", "lookup.txt"), 
+    header = TRUE, sep = ","),
+  outputdir = file.path(AOI_dir, "1_map_inputs", "dsmart"), 
+  nprob = 1,
+  cpus = parallel::detectCores(), 
+  type = "raw"
+)
+
 
 ```
 
