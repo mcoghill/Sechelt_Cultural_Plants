@@ -42,7 +42,7 @@ Additionally, we need to set the directory for where the 32-bit version of R is 
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 25
+map_res <- 4
 
 shapes_path <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
 field_data_dir <- file.path(AOI_dir, "1_map_inputs", "field_data")
