@@ -2,7 +2,7 @@ summarise <-
 function (realisations, lookup, n.realisations = raster::nlayers(realisations), 
     nprob = 3, cpus = 1, outputdir = getwd(), stub = NULL, type = "raw") 
 {
-    source("./_functions/order_stack_values.R")
+    source("./_functions/dsmart_custom/order_stack_values.R")
     
     output <- base::list()
     output$timing <- base::list(start = base::date())
@@ -64,25 +64,34 @@ function (realisations, lookup, n.realisations = raster::nlayers(realisations),
     param <- nrow(lookup)
     assign("param", param, envir = .GlobalEnv)
     if (type != "prob") {
-        raster::beginCluster(cpus)
-        counts <- raster::clusterR(realisations, calc, args = list(fun = function(x) {
-            if (is.na(sum(x))) {
-                rep(NA, param)
-            } else {
-                tabulate(x, nbins = param)
-            }
-        }), export = "param")
-        raster::endCluster()
-        assign("n.realisations", n.realisations, envir = .GlobalEnv)
-        raster::beginCluster(cpus)
-        probs <- raster::clusterR(counts, calc, args = list(fun = function(x) {
-            x/n.realisations
-        }), export = "n.realisations")
-        raster::endCluster()
+        
+        counts <- app(rast(realisations), tabulate, nbins = param)
+        names(counts) <- lookup$name
+        probs <- counts / n.realisations
+        names(probs) <- lookup$name
+        
+        # terra::modal(realisations, ties = "first", na.rm = TRUE)
+        
+        # raster::beginCluster(cpus)
+        # counts <- raster::clusterR(realisations, calc, args = list(fun = function(x) {
+        #     if (is.na(sum(x))) {
+        #         rep(NA, param)
+        #     } else {
+        #         tabulate(x, nbins = param)
+        #     }
+        # }), export = "param")
+        # raster::endCluster()
+        # assign("n.realisations", n.realisations, envir = .GlobalEnv)
+        # raster::beginCluster(cpus)
+        # probs <- raster::clusterR(counts, calc, args = list(fun = function(x) {
+        #     x/n.realisations
+        # }), export = "n.realisations")
+        # raster::endCluster()
     } else {
         if (length(realisations) == 1 | n.realisations == 1) {
             probs <- realisations[[1]]
         } else {
+            # Code for probability estimation not edited in this loop
             raster::beginCluster(cpus)
             probs <- list()
             for (i in 1:param) {
@@ -97,52 +106,68 @@ function (realisations, lookup, n.realisations = raster::nlayers(realisations),
             probs <- stack(probs)
         }
     }
-    for (i in 1:raster::nlayers(probs)) {
-        raster::writeRaster((probs[[i]]), filename = file.path(outputdir, 
+    for (i in 1:terra::nlyr(probs)) {
+        terra::writeRaster((probs[[i]]), filename = file.path(outputdir, 
             "output", "probabilities", paste0(stub, "prob_", 
                 lookup$name[which(lookup$code == i)], ".tif")), 
-            format = "GTiff", overwrite = TRUE)
+            overwrite = TRUE)
     }
-    if (type != "prob") {
-        ordered.indices <- order_stack_values(counts, cpus, n = nprob)
-    } else {
-        ordered.indices <- order_stack_values(probs, cpus, n = nprob)
-    }
-    raster::beginCluster(cpus)
-    ordered.probs = raster::clusterR(probs, calc, args = list(fun = function(x) {
-        if (is.na(sum(x))) {
-            rep(NA, max(2, nprob))
+    if(nprob > 1) {
+        if (type != "prob") {
+            ordered.indices <- app(counts, order, decreasing = TRUE, na.last = TRUE)[[1:nlyr(counts)]]
         } else {
-            sort(x, decreasing = TRUE, na.last = TRUE)[1:max(2, 
-                nprob)]
+            ordered.indices <- app(probs, order, decreasing = TRUE, na.last = TRUE)[[1:nlyr(counts)]]
         }
-    }))
-    raster::endCluster()
+    } else {
+        ordered.indices <- terra::modal(realisations, ties = "first", na.rm = TRUE)
+    }
+    ordered.probs <- app(probs, sort, decreasing = TRUE, na.last = TRUE)[[1:max(2, nprob)]]
+    
+    # raster::beginCluster(cpus)
+    # ordered.probs = raster::clusterR(probs, calc, args = list(fun = function(x) {
+    #     if (is.na(sum(x))) {
+    #         rep(NA, max(2, nprob))
+    #     } else {
+    #         sort(x, decreasing = TRUE, na.last = TRUE)[1:max(2, 
+    #             nprob)]
+    #     }
+    # }))
+    # raster::endCluster()
     for (i in 1:nprob) {
-        raster::writeRaster(ordered.indices[[i]], filename = file.path(outputdir, 
+        terra::writeRaster(ordered.indices[[i]], filename = file.path(outputdir, 
             "output", "mostprobable", paste0(stub, "mostprob_", 
                 formatC(i, width = nchar(nrow(lookup)), format = "d", 
-                  flag = "0"), "_class.tif")), format = "GTiff", 
+                  flag = "0"), "_class.tif")),
             overwrite = TRUE)
-        raster::writeRaster(ordered.probs[[i]], filename = file.path(outputdir, 
+        terra::writeRaster(ordered.probs[[i]], filename = file.path(outputdir, 
             "output", "mostprobable", paste0(stub, "mostprob_", 
                 formatC(i, width = nchar(nrow(lookup)), format = "d", 
-                  flag = "0"), "_probs.tif")), format = "GTiff", 
+                  flag = "0"), "_probs.tif")),
             overwrite = TRUE)
     }
-    raster::beginCluster(cpus)
-    confusion <- raster::clusterR(ordered.probs, fun = function(x) {
+    confusion <- app(ordered.probs, function(x) {
         (1 - (x[[1]] - x[[2]]))
     }, filename = file.path(outputdir, "output", "mostprobable", 
-        paste0(stub, "confusion.tif")), format = "GTiff", overwrite = TRUE, 
-        NAflag = -9999)
-    shannon <- raster::clusterR(ordered.probs, fun = function(x) {
+       paste0(stub, "confusion.tif")), overwrite = TRUE)
+    shannon <- app(ordered.probs, function(x) {
         x %>% magrittr::multiply_by(log(x, base = length(x))) %>% 
             sum(na.rm = TRUE) %>% magrittr::multiply_by(-1)
     }, filename = file.path(outputdir, "output", "mostprobable", 
-        paste0(stub, "shannon.tif")), format = "GTiff", overwrite = TRUE, 
-        NAflag = -9999)
-    raster::endCluster()
+       paste0(stub, "shannon.tif")), overwrite = TRUE)
+    
+    # raster::beginCluster(cpus)
+    # confusion <- raster::clusterR(ordered.probs, fun = function(x) {
+    #     (1 - (x[[1]] - x[[2]]))
+    # }, filename = file.path(outputdir, "output", "mostprobable", 
+    #     paste0(stub, "confusion.tif")), format = "GTiff", overwrite = TRUE, 
+    #     NAflag = -9999)
+    # shannon <- raster::clusterR(ordered.probs, fun = function(x) {
+    #     x %>% magrittr::multiply_by(log(x, base = length(x))) %>% 
+    #         sum(na.rm = TRUE) %>% magrittr::multiply_by(-1)
+    # }, filename = file.path(outputdir, "output", "mostprobable", 
+    #     paste0(stub, "shannon.tif")), format = "GTiff", overwrite = TRUE, 
+    #     NAflag = -9999)
+    # raster::endCluster()
     output$timing$finish <- base::date()
     return(output)
 }
