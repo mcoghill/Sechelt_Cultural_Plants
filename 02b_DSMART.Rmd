@@ -10,23 +10,30 @@ Additionally, this script assumes that all data manipulation and pre-processing 
 
 First, libraries are loaded and data directories are defined. The rdsmart package comes from BitBucket (similar to GitHub) and it is not on CRAN, so it must be downloaded separately and an installation of the devtools package is required for that. The rdsmart package has also been recently updated to streamline the process of making these spatial predictions; by combining the caret package and rdsmart, it is now much quicker to produce a map than it was previously. The whole process takes ~12 hours now on a machine running with 4 cores which is much quicker than previous trials which took upwards of 4 days.
 
+June update: Thinking about this a bit, I have improved the DSMART algorithm internally so that it runs much quicker now. The base way of producing a map through the DSMART algorithm is to generate "n.reals" amounts of predictions using C50 tree models and then calculate the best map it could from the realilsations at hand. The other way that I was doing involved using a RandomForest approach in either the caret or mlr3 packages. If this is the way it's going to be created, THIS SHOULD ONLY NEED TO HAVE A SINGLE REALISATION since it creates predictions based on multiple resamplings etc.
+
 ```{r Load Packages}
-ls <- c("devtools", "sf", "raster", "fasterize", "rgdal", "caret", "randomForest")
-bitbucket.packages <- c("rdsmart")
+
+ls <- c("devtools", "sf", "raster", "fasterize", "rgdal", "caret", "randomForest", 
+        "tidyverse", "terra", "foreach", "GSIF")
 new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
-new.bitbucket.packages <- bitbucket.packages[!bitbucket.packages %in% installed.packages()[, "Package"]]
 if(length(new.packages))
   install.packages(new.packages)
-if(length(new.bitbucket.packages))
-  devtools::install_bitbucket("brendo1001/dsmart")
-ls <- c(ls, bitbucket.packages)
-lapply(ls, library, character.only = TRUE)
-rm(ls, bitbucket.packages, new.packages, new.bitbucket.packages)
+#devtools::install_bitbucket("brendo1001/dsmart", upgrade = "always")
+lapply(ls, library, character.only = TRUE)[0]
+rm(ls, new.packages)
+
+# Load custom DSMART files
+for(i in list.files("./_functions/dsmart_custom", full.names = TRUE, 
+                    all.files = TRUE, no.. = TRUE))
+  source(i)
+
 ```
 
 Next, file paths are defined.
 
 ```{r Set directories}
+
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 map_res <- 4
@@ -35,42 +42,107 @@ shapes_path <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
 dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
 
-stratified = FALSE
+stratified = TRUE
+
+# for(i in lsf.str(envir = asNamespace("rdsmart"), all = TRUE)) {
+#   if(!file.exists(file.path("./_functions", paste0(i, ".R"))))
+#     dump(i, file = file.path("./_functions", paste0(i, ".R")))
+#   source(file.path("./_functions", paste0(i, ".R")))
+# }
+
 ```
+
+
+
+
 
 Next, important data is loaded. There are a lot of covariate layers created from DEM derivatives, satellite imagery, and climate data layers; however, in order to speed up processing, the amount of covariates are limited to only DEM derivatives and satellite imagery indices.
 
 ```{r Load data}
+
 # Load covariates
 res_folder <- paste0(map_res, "m")
-all_covariates <- list.files(file.path(covariate_dir, res_folder), full.names = TRUE)
-covariate_index <- starts_with("normal", vars = basename(all_covariates)) # Limit the inputs
-covariates <- all_covariates[-covariate_index]
-dsmart_covariates <- raster::stack(covariates)
+terrain_covariates <- grep(pattern = "Normal|sentinel2", list.files(
+  file.path(covariate_dir, res_folder), full.names = TRUE, pattern = ".tif$"), invert = TRUE, 
+  value = TRUE)
+sentinel_covariates <- list.files(file.path(covariate_dir, res_folder), 
+                                  pattern = "^sentinel2.*.summer.tif$", full.names = TRUE)
+climate_covariates <- list.files(file.path(covariate_dir, res_folder), 
+                                 pattern = "^Normal.*._sm.tif$", full.names = TRUE)
+covariates <- raster::stack(c(terrain_covariates, sentinel_covariates, climate_covariates))
 
 # Load the polygons and associated observations
-dsmart_polygons <- readOGR(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), layer = "dsmart_polygons")
+polygons <- readOGR(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), layer = "dsmart_polygons")
 
 if(stratified == TRUE) {
-  dsmart_strata_sf <- st_read(file.path(dsmart_dir, "inputs", "dsmart_strata.gpkg"))
+  dsmart_strata_sf <- st_read(file.path(dsmart_dir, "inputs", "dsmart_strata.gpkg")) %>% 
+    mutate(Subzone = as.factor(Subzone))
   level_table <- data.frame(ID = 1:nlevels(dsmart_strata_sf$Subzone), 
                             Subzone = levels(dsmart_strata_sf$Subzone))
-  dsmart_strata_raster <- asFactor(fasterize(dsmart_strata_sf, dsmart_covariates$dem, field = "Subzone"))
-  levels(dsmart_strata_raster) <- level_table
-  dsmart_composition <- read.csv(file.path(dsmart_dir, "inputs", "dsmart_composition.csv")) %>% 
+  strata <- asFactor(fasterize(dsmart_strata_sf, covariates[[1]], field = "Subzone"))
+  levels(strata) <- level_table
+  
+  # File needs to be written to disk and then reloaded back into R for proper 
+  # feature assignments
+  writeRaster(strata, file.path(dsmart_dir, "inputs", "dsmart_strata.tif"), overwrite = TRUE)
+  strata <- raster(file.path(dsmart_dir, "inputs", "dsmart_strata.tif"))
+  composition <- read.csv(file.path(dsmart_dir, "inputs", "dsmart_composition.csv")) %>% 
     mutate(Subzone = sub("\\..*", "", MapUnit)) %>% 
     merge(level_table) %>% 
     dplyr::select(POLY_NO, MAP_CODE, ID, MapUnit, proportion)
   
 } else {
-  dsmart_strata_raster <- NULL
-  dsmart_composition <- read.csv(file.path(dsmart_dir, "inputs", "dsmart_composition.csv"))
+  strata <- NULL
+  composition <- read.csv(file.path(dsmart_dir, "inputs", "dsmart_composition.csv")) %>% 
+    dplyr::select(-Subzone)
 }
 
 # Load additional observations
-dsmart_observations <- read.csv(file.path(dsmart_dir, "inputs", "dsmart_observations.csv"))
+observations <- read.csv(file.path(dsmart_dir, "inputs", "dsmart_observations.csv"))
+
+# Read all other variables needed by function arguments
+# rate = 15
+# reals = 5
+# n.realisations <- reals
+# method.sample = "by_polygon"
+# method.allocate = "weighted"
+# method.model = NULL
+# args.model = NULL
+# outputdir = file.path(AOI_dir, "1_map_inputs", "dsmart")
+# stub = NULL
+# cpus = parallel::detectCores()
+# factors = NULL
+# type = "raw"
+# predict = TRUE
+# poly.id = polygons@data[, 1][1]
+
 
 ```
+
+
+
+
+
+```{r Editing the dsmart functions}
+
+disag <- disaggregate(
+  covariates = covariates, 
+  polygons = polygons, 
+  composition = composition,
+  rate = 15, # How many samples to draw per polygon
+  reals = 5, # How many models to produce from the modelling run
+  observations = observations, 
+  method.sample = "by_polygon", 
+  method.allocate = "weighted",
+  strata = strata, 
+  outputdir = file.path(AOI_dir, "1_map_inputs", "dsmart"), 
+  cpus = parallel::detectCores(), 
+  type = "raw"
+)
+
+```
+
+
 
 Finally, we need to run the algorithm. This version of DSMART has implementation allowing the use of the caret package to make models, and that functionality is leveraged here. We will use a parallelized implementation of Random Forest modelling in order to predict site series fore each pixel.
 
@@ -89,23 +161,24 @@ Some ways in which this could be sped up:
 6. Decrease the nprob parameter to generate only the most probable map instead of the top 3 most probable maps.
 
 ```{r Run dsmart algorithm}
-fit_control <- trainControl(method = "repeatedcv", 
-                            number = 10, 
-                            repeats = 5, 
-                            p = 0.9, 
-                            returnData = TRUE,
-                            returnResamp = "all",
-                            savePredictions = "final",
-                            classProbs = TRUE,
-                            summaryFunction = multiClassSummary, # Adds a suite of performance metrics to the output
-                            preProcOptions = list(cutoff = 0.9), # Defines the correlation cutoff for the covariate layers
-                            search = "grid",
-                            allowParallel = TRUE)
 
-# Create tuning grid
-tune_grid <- expand.grid(mtry = round(seq(2, nlayers(dsmart_covariates), length.out = sqrt(nlayers(dsmart_covariates)))), 
-                        splitrule = c("gini", "extratrees"))
+fit_control <- trainControl(
+  method = "repeatedcv", 
+  number = 3, 
+  repeats = 1, 
+  classProbs = FALSE,
+  p = 0.9, 
+  returnData = FALSE,
+  returnResamp = "final",
+  savePredictions = "final",
+  summaryFunction = multiClassSummary, # Adds a suite of performance metrics to the output
+  allowParallel = TRUE)
 
+tune_grid <- expand.grid(
+  mtry = round(sqrt(nlayers(covariates))),
+  splitrule = "gini", 
+  min.node.size = 1
+)
 
 site_series <- dsmart(covariates = dsmart_covariates, 
                       polygons = dsmart_polygons, 
@@ -120,11 +193,8 @@ site_series <- dsmart(covariates = dsmart_covariates,
                       nprob = 1, 
                       outputdir = file.path(AOI_dir, "1_map_inputs", "dsmart"), 
                       cpus = detectCores() - 1, 
-                      args.model = list(preProcess = c("center", "scale", "nzv", "corr"), 
-                                        num.trees = 101, 
-                                        trControl = fit_control, 
-                                        tuneGrid = tune_grid, 
-                                        metric = "logLoss"))
+                      args.model = list(trControl = fit_control,  
+                                        tuneGrid = tune_grid))
 
 # Last run took about 9 hours to complete
 # If the above process finishes the disaggregation process and hangs on the summarise process, use the following part to get going again.
