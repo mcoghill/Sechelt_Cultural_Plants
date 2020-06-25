@@ -47,9 +47,6 @@ use_caret <- TRUE
 ```
 
 
-
-
-
 Next, important data is loaded. There are a lot of covariate layers created from DEM derivatives, satellite imagery, and climate data layers; however, in order to speed up processing, the amount of covariates are limited to only DEM derivatives and satellite imagery indices.
 
 ```{r Load data}
@@ -94,27 +91,17 @@ if(stratified == TRUE) {
 # Load additional observations
 observations <- read.csv(file.path(dsmart_dir, "inputs", "dsmart_observations.csv"))
 
-# Read all other variables needed by function arguments
-# rate = 15
-# reals = 5
-# n.realisations <- reals
-# method.sample = "by_polygon"
-# method.allocate = "weighted"
-# method.model = NULL
-# args.model = NULL
-# outputdir = file.path(AOI_dir, "1_map_inputs", "dsmart")
-# stub = NULL
-# cpus = parallel::detectCores()
-# factors = NULL
-# type = "raw"
-# predict = TRUE
-# poly.id = polygons@data[, 1][1]
-
-
 ```
 
 
+```{r Simple TEM rasterization}
 
+tem_sf <- st_read(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg")) %>% 
+  mutate(MapUnit1 = as.factor(MapUnit1))
+tem_r <- fasterize(tem_sf, covariates$dem, field = "MapUnit1")
+writeRaster(tem_r, file.path(dsmart_dir, "output", "site_series_simple.tif"))
+
+```
 
 
 ```{r Editing the dsmart functions}
@@ -153,7 +140,7 @@ disag <- disaggregate(
   polygons = polygons, 
   composition = composition,
   rate = 15, # How many samples to draw per polygon
-  reals = 5, # How many models to produce from the modelling run
+  reals = 5, # How many models to produce from the modelling run? Gets overridden by number of repeats if model type is ranger
   observations = observations, 
   method.sample = "by_polygon", 
   method.allocate = "weighted",
@@ -178,9 +165,19 @@ summ <- summarise(
   type = "raw"
 )
 
+# Save the file to a better location
+covariates_t <- rast(covariates)
+site_series <- rast(file.path(dsmart_dir, "output", "mostprobable", "mostprob_01_class.tif")) %>% 
+  terra::resample(covariates_t, method = "near")
+
+names(site_series) <- "site_series_dsmart"
+
+writeRaster(site_series, 
+            file.path(dsmart_dir, "output", "site_series_dsmart.tif"), 
+            overwrite = TRUE, wopt = list(datatype = "INT2S"))
 
 ```
-
+USING RANGER METHOD, TOOK A TOTAL OF 6 HOURS TO COMPLETE
 
 
 Finally, we need to run the algorithm. This version of DSMART has implementation allowing the use of the caret package to make models, and that functionality is leveraged here. We will use a parallelized implementation of Random Forest modelling in order to predict site series fore each pixel.
@@ -199,37 +196,4 @@ Some ways in which this could be sped up:
 5. Find a way to parallelize the caret::train function within dsmart (a cluster may need to be created prior to running the algorithm)
 6. Decrease the nprob parameter to generate only the most probable map instead of the top 3 most probable maps.
 
-```{r Run dsmart algorithm}
 
-
-site_series <- dsmart(covariates = dsmart_covariates, 
-                      polygons = dsmart_polygons, 
-                      composition = dsmart_composition,
-                      rate = 10, # How many samples to draw per polygon
-                      reals = 5, # How many models to produce from the modelling run
-                      observations = dsmart_observations, 
-                      method.sample = "by_polygon", 
-                      method.allocate = "weighted", 
-                      method.model = "ranger", 
-                      strata = dsmart_strata_raster, 
-                      nprob = 1, 
-                      outputdir = file.path(AOI_dir, "1_map_inputs", "dsmart"), 
-                      cpus = detectCores() - 1, 
-                      args.model = list(trControl = fit_control,  
-                                        tuneGrid = tune_grid))
-
-# Last run took about 9 hours to complete
-# If the above process finishes the disaggregation process and hangs on the summarise process, use the following part to get going again.
-#dsmart_disagg_path <- list.files(file.path(AOI_dir, "1_map_inputs", "dsmart", "output", "realisations"), full.names = TRUE)
-#dsmart_reals <- raster::stack(dsmart_disagg_path)
-#dsmart_lookup <- read.table(file.path(AOI_dir, "1_map_inputs", "dsmart", "output", "lookup.txt"), sep = ",", header = TRUE)
-#site_series_summ <- rdsmart::summarise(realisations = dsmart_reals, 
-#                                       lookup = dsmart_lookup, 
-#                                       nprob = 1, 
-#                                       cpus = detectCores() - 1, 
-#                                       outputdir = file.path(AOI_dir, "1_map_inputs", "dsmart"))
-
-# Save the file to a better location
-file.copy(from = file.path(AOI_dir, "1_map_inputs", "dsmart", "output", "mostprobable", "mostprob_01_class.tif"), 
-            to = file.path(AOI_dir, "1_map_inputs", "covariates", "4m", "site_series.tif"))
-```
