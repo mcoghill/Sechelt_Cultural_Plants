@@ -18,6 +18,16 @@ predict_landscape <- function(model, covariates, tilesize = 500,
   
   cov <- sapply(covariates@layers, function(x) x@file@name)
   
+  na_freq <- foreach(i = 1:nlayers(covariates), .combine = rbind) %do% {
+    cat(paste0("\nCounting NA values in ", names(covariates)[i], " [", i, " of ", nlayers(covariates), "]"))
+    covariate_t <- 1 + (0 * rast(covariates[[i]]))
+    global(covariate_t, "sum", na.rm = TRUE)
+  } %>% rownames_to_column("layer")
+  least_na <- na_freq[which.min(na_freq$sum)[1], ]
+  
+  covariates_t <- 1+ (0 * rast(covariates))
+  na_freq <- global(covariates_t, "sum", na.rm = TRUE)
+  
   ## create output dir -----------
   dir.create(outDir, recursive = TRUE, showWarnings = FALSE)
   
@@ -167,7 +177,9 @@ predict_landscape <- function(model, covariates, tilesize = 500,
     mos <- foreach(tile = r_tiles, .combine = terra::merge) %do% {
       rast(tile)
     } %>% 
-      mask(rast(subset(covariates, 1)))
+      terra::resample(covariates, method = "near") %>% 
+      mask(rast(subset(covariates, least_na$layer))) %>% 
+      magrittr::set_names("model_prediction")
     
     writeRaster(mos, file.path(outDir, paste0(k, ".tif")), overwrite = TRUE)
   }
