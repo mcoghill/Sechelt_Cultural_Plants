@@ -270,7 +270,7 @@ tem_xls_bec <- dplyr::select(tem_xls[[1]], Poly_Nbr, ECI_Tag, `BGC Zone`,
 # MDB_tblPlotData has way too many columns, keep only important ones for BEC
 tem_mdb_bec <- dplyr::select(
   tem_mdb$MDB_tblPlotData, PlotID, PlotNumber, BECUnit, SiteSeries, SiteSeriesSymbol, 
-  UTMNorthing, UTMEasting) %>% 
+  UTMNorthing, UTMEasting, StructuralStage) %>% 
   dplyr::rename(MapUnit = BECUnit) %>% 
   mutate(MapUnit = ifelse(SiteSeries == 0, as.character(SiteSeriesSymbol), 
                           as.character(MapUnit))) %>% 
@@ -338,7 +338,10 @@ It's pretty much a melted data frame from the polygon data, though I've adjusted
 
 ```{r DSMART TEM processing}
 
-tem_sf <- st_read(file.path(shapes_path, paste0(map_res, "m"), "tem.gpkg"), quiet = TRUE)
+tem_sf <- st_read(file.path(shapes_path, paste0(map_res, "m"), "tem.gpkg"), quiet = TRUE) %>% 
+  select_if(function(x) !all(is.na(x)))
+aoi_sf <- st_read(file.path(shapes_path, paste0(map_res, "m"), "aoi.gpkg"), quiet = TRUE) %>% 
+  st_geometry() %>% st_make_valid()
 
 # TEM polygon processing as a DSMART input
 dsmart_polygons <- dplyr::select(
@@ -367,11 +370,11 @@ dsmart_polygons <- dplyr::select(
   drop_na(MapUnit1) %>% 
   mutate(
     Sdec1 = Sdec1 * 10, Sdec2 = Sdec2 * 10, Sdec3 = Sdec3 * 10, 
-    MapUnit1 = ifelse(MapUnit1 == "00", as.character(NFMapUnit1), 
+    MapUnit1 = ifelse(MapUnit1 == "00", paste0(Subzone, "/", as.character(NFMapUnit1)), 
                       paste0(Subzone, "/", MapUnit1)),
-    MapUnit2 = ifelse(MapUnit2 == "00", as.character(NFMapUnit2), 
+    MapUnit2 = ifelse(MapUnit2 == "00", paste0(Subzone, "/", as.character(NFMapUnit2)), 
                       paste0(Subzone, "/", MapUnit2)),
-    MapUnit3 = ifelse(MapUnit3 == "00", as.character(NFMapUnit3), 
+    MapUnit3 = ifelse(MapUnit3 == "00", paste0(Subzone, "/", as.character(NFMapUnit3)), 
                       paste0(Subzone, "/", MapUnit3)),
     POLY_NO = as.integer(sub(".*_", "", MAP_CODE))) %>% 
   replace_na(list(MapUnit1 = 0, MapUnit2 = 0, MapUnit3 = 0)) %>% 
@@ -390,6 +393,11 @@ dsmart_polygons <- dplyr::select(
   mutate(
     MapUnit2 = na_if(MapUnit2, "0"), 
     MapUnit3 = na_if(MapUnit3, "0")) %>% 
+  mutate(
+    MapUnit2 = ifelse((is.na(MapUnit2) & !is.na(MapUnit3)), MapUnit3, MapUnit2), 
+    MapUnit3 = ifelse(MapUnit2 == MapUnit3, NA, MapUnit3), 
+    Sdec2 = ifelse((is.na(Sdec2) & !is.na(Sdec3)), Sdec3, Sdec2),
+    Sdec3 = ifelse(MapUnit2 == MapUnit3, NA, Sdec3)) %>% 
   mutate(
     MapUnit1 = as.factor(sub(".*NA\\.", NA, make.names(MapUnit1))), 
     MapUnit2 = as.factor(sub(".*NA\\.", NA, make.names(MapUnit2))), 
@@ -418,7 +426,6 @@ dsmart_composition <- st_drop_geometry(dsmart_polygons) %>%
          POLY_NO = as.integer(POLY_NO), 
          proportion = as.integer(value)) %>% 
   drop_na(MapUnit) %>% 
-  mutate(MapUnit = ifelse(nchar(MapUnit) <= 4, paste0(Subzone, ".", MapUnit), MapUnit)) %>% 
   mutate(MapUnit = as.factor(make.names(MapUnit)), 
          Subzone = as.integer(Subzone)) %>% 
   dplyr::select(POLY_NO, MAP_CODE, Subzone, MapUnit, proportion) %>% 
@@ -430,7 +437,7 @@ dsmart_composition <- st_drop_geometry(dsmart_polygons) %>%
 dsmart_observations <- lapply(list(sechelt_bec, tem_xls_bec, tem_mdb_bec), function(x) 
   dplyr::select(x, MapUnit) %>% 
     st_transform(crs = st_crs(tem_sf)) %>% 
-    st_intersection(tem_sf) %>% 
+    st_intersection(aoi_sf) %>% 
     droplevels()) %>% 
   do.call(what = rbind, args = .) %>%
   cbind(st_coordinates(.)) %>% 
@@ -447,8 +454,8 @@ dsmart_strata <- group_by(dsmart_polygons, Subzone) %>%
 # Write DSMART outputs
 dir.create(file.path(dsmart_dir, "inputs"), recursive = TRUE, showWarnings = FALSE)
 
-st_write(dsmart_polygons, file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), delete_dsn = TRUE)
-st_write(dsmart_strata, file.path(dsmart_dir, "inputs", "dsmart_strata.gpkg"), delete_dsn = TRUE)
+st_write(dsmart_polygons, file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), delete_layer = TRUE)
+st_write(dsmart_strata, file.path(dsmart_dir, "inputs", "dsmart_strata.gpkg"), delete_layer = TRUE)
 write.csv(dsmart_composition, file.path(dsmart_dir, "inputs", "dsmart_composition.csv"), row.names = FALSE)
 write.csv(dsmart_observations, file.path(dsmart_dir, "inputs", "dsmart_observations.csv"), row.names = FALSE)
 
@@ -471,26 +478,34 @@ covars <- terra::rast(list.files(file.path(covariate_dir, paste0(map_res, "m")),
 
 # Combine them all
 pres_abs <- sapply(c("RUBUSPE", "CORNCAN", "LEDUGRO", "VERAVIR"), function(x) {
-  rbind(sechelt_pres_cov[[x]][, "Pres"], tem_xls_pres[[x]][, "Pres"], tem_mdb_pres_cov[[x]][, "Pres"]) %>% 
-    st_transform(crs = st_crs(tem_sf)) %>% 
-    st_intersection(tem_sf) %>% 
-    dplyr::select(Pres) %>% 
+  rbind(sechelt_pres_cov[[x]][, "Pres"], tem_xls_pres[[x]][, "Pres"], 
+        tem_mdb_pres_cov[[x]][, "Pres"]) %>% 
+    st_transform(crs = st_crs(aoi_sf)) %>% 
+    st_intersection(aoi_sf) %>% 
     cbind(terra::extract(covars, st_coordinates(.))) %>% 
     drop_na()
 }, simplify = FALSE, USE.NAMES = TRUE)
 
 cover <- sapply(c("RUBUSPE", "CORNCAN", "LEDUGRO", "VERAVIR"), function(x) {
-  rbind(sechelt_pres_cov[[x]][, "Cover"],tem_mdb_pres_cov[[x]][, "Cover"]) %>% 
-    st_transform(crs = st_crs(tem_sf)) %>% 
-    st_intersection(tem_sf) %>% 
-    dplyr::select(Cover) %>% 
+  rbind(sechelt_pres_cov[[x]][, "Cover"], tem_mdb_pres_cov[[x]][, "Cover"]) %>% 
+    st_transform(crs = st_crs(aoi_sf)) %>% 
+    st_intersection(aoi_sf) %>% 
     cbind(terra::extract(covars, st_coordinates(.))) %>% 
     drop_na()
 }, simplify = FALSE, USE.NAMES = TRUE)
 
+struct_stage <- dplyr::select(sechelt_bec_full, `Structural Stage`) %>% 
+  dplyr::rename(StructuralStage = `Structural Stage`) %>% 
+  bind_rows(dplyr::select(tem_mdb_bec, StructuralStage)) %>% 
+  mutate(StructuralStage = trimws(StructuralStage)) %>% 
+  mutate(StructuralStage = gsub("^$", NA, StructuralStage)) %>% 
+  st_transform(crs = st_crs(aoi_sf)) %>% 
+  st_intersection(aoi_sf) %>% 
+  cbind(terra::extract(covars, st_coordinates(.))) %>% 
+  drop_na()
+
 # Write training data outputs
-if(!dir.exists(file.path(field_data_dir, "processed"))) 
-  dir.create(file.path(field_data_dir, "processed"), recursive = TRUE)
+dir.create(file.path(field_data_dir, "processed"), recursive = TRUE, showWarnings = FALSE)
 
 for(layer in names(pres_abs)) {
   st_write(pres_abs[[layer]], file.path(field_data_dir, "processed", "pres_abs.gpkg"), 
@@ -498,6 +513,9 @@ for(layer in names(pres_abs)) {
   st_write(cover[[layer]], file.path(field_data_dir, "processed", "cover.gpkg"), 
            layer = layer, delete_layer = TRUE)
 }
+
+st_write(struct_stage, file.path(field_data_dir, "processed", "struct_stage.gpkg"), 
+         delete_layer = TRUE)
 
 ```
 
