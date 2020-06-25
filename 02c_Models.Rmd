@@ -16,7 +16,7 @@ This script uses the mlr package (machine learning R) in order to make models. I
 ```{r Load Packages}
 
 ls <- c("tidyverse", "tools", "terra", "sf", "ranger", "mlr3verse", "parallel", 
-        "parallelMap", "randomForest", "ModelMap")
+        "parallelMap", "randomForest", "ModelMap", "foreach")
 new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new.packages))
   install.packages(new.packages)
@@ -42,6 +42,8 @@ ss_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart", "output")
 output_dir <- file.path(AOI_dir, "2_map_predictions")
 tile_dir <- file.path(output_dir, "tiles")
 dir.create(tile_dir, showWarnings = FALSE)
+dir.create(file.path(output_dir, "pres_abs_maps"), showWarnings = FALSE)
+dir.create(file.path(output_dir, "cover_maps"), showWarnings = FALSE)
 
 ss <- "dsmart" # The two options are currently simple or dsmart
 
@@ -130,30 +132,22 @@ cover_importance <- lapply(seq_along(cover_models), function(x) {
 for(i in 1:length(pres_models)) {
   cov_important <- raster::stack(subset(covariates, pres_importance[[i]]$covariates))
   out <- predict_landscape(pres_models[[i]], cov_important, tilesize = 500,
+                           outDir = tile_dir, type = "prob")
+  
+  # with predict_landscape type set to "prob", the output is a list of files
+  for(j in out) {
+    file.copy(
+      from = j, 
+      to = file.path(output_dir, "pres_abs_maps", paste0(names(pres_models)[i], "_", basename(j))))
+  }
+  
+}
+for(i in 1:length(cover_models)) {
+  cov_important <- raster::stack(subset(covariates, cover_importance[[i]]$covariates))
+  out <- predict_landscape(cover_models[[i]], cov_important, tilesize = 500,
                            outDir = tile_dir)
+  writeRaster(out, file.path(output_dir, "cover_maps", paste0(names(pres_models)[i], "_cover.tif")))
 }
-
-anc_dat_important <- subset(anc_dat, mod$learner.model$next.model$learner.model$next.model$features)
-
-# Ranger doesn't natively make maps from their predictions
-# This is a workaround to get it to work.
-beginCluster()
-if(endsWith(model_run, "cover")) {
-  pred_raster <- clusterR(anc_dat_important, predict, 
-                          args = list(model = model_ranger, 
-                                      type = "response",
-                                      fun = function(model, ...) 
-                                        raster::predict(model, ...)$predictions))
-} else if(endsWith(model_run, "PresAbs")) {
-  conf_matrix <- as.data.frame(calculateConfusionMatrix(mod_pred)$result)
-  write.csv(conf_matrix, file.path(output_dir, paste0(model_run, "_confusion.csv")))
-  pred_raster <- clusterR(anc_dat_important, predict, 
-                          args = list(model = model_ranger, 
-                                      type = "response",
-                                      fun = function(model, ...) 
-                                        raster::predict(model, ...)$predictions[, "TRUE."]))
-}
-endCluster()
 
 # After the raster is made, perform some zonal statistics by site series
 zonal_stats <- cbind(zonal(pred_raster, site_series, fun = "mean"), 
