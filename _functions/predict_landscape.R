@@ -19,13 +19,13 @@ predict_landscape <- function(model, covariates, tilesize = 500,
   # Count NA values in the covariate data to determine best layer to use for masking later on
   cov <- sapply(covariates@layers, function(x) x@file@name)
   
-  least_na <- foreach(i = 1:length(cov), .combine = rbind) %do% {
-    cat(paste0("Counting NA values in ", names(covariates)[i], 
+  least_na <- foreach(i = 1:nlayers(covariates), .combine = rbind) %do% {
+    cat(paste0("Counting NA values in ", names(covariates[[i]]), 
                " [", i, " of ", nlayers(covariates), "]\n"))
-    covariate_t <- 1 + (0 * rast(cov[i]))
-    global(covariate_t, "sum", na.rm = TRUE)
-  } %>% rownames_to_column("layer") %>% 
-    dplyr::slice(which.min(sum))
+    data.frame(layer = names(covariates[[i]]), 
+               na_cells = freq(covariates[[i]], value = NA))
+  } %>% mutate(na_cells = ifelse(na_cells == 0, Inf, na_cells)) %>% 
+    dplyr::slice(which.min(na_cells))
   
   ## create output dir -----------
   dir.create(outDir, recursive = TRUE, showWarnings = FALSE)
