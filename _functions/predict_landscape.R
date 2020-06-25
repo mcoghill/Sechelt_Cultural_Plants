@@ -16,17 +16,16 @@
 predict_landscape <- function(model, covariates, tilesize = 500,
                               outDir = "./predicted", type = "raw") {
   
+  # Count NA values in the covariate data to determine best layer to use for masking later on
   cov <- sapply(covariates@layers, function(x) x@file@name)
   
-  na_freq <- foreach(i = 1:nlayers(covariates), .combine = rbind) %do% {
-    cat(paste0("\nCounting NA values in ", names(covariates)[i], " [", i, " of ", nlayers(covariates), "]"))
-    covariate_t <- 1 + (0 * rast(covariates[[i]]))
+  least_na <- foreach(i = 1:length(cov), .combine = rbind) %do% {
+    cat(paste0("Counting NA values in ", names(covariates)[i], 
+               " [", i, " of ", nlayers(covariates), "]\n"))
+    covariate_t <- 1 + (0 * rast(cov[i]))
     global(covariate_t, "sum", na.rm = TRUE)
-  } %>% rownames_to_column("layer")
-  least_na <- na_freq[which.min(na_freq$sum)[1], ]
-  
-  covariates_t <- 1+ (0 * rast(covariates))
-  na_freq <- global(covariates_t, "sum", na.rm = TRUE)
+  } %>% rownames_to_column("layer") %>% 
+    dplyr::slice(which.min(sum))
   
   ## create output dir -----------
   dir.create(outDir, recursive = TRUE, showWarnings = FALSE)
@@ -42,7 +41,7 @@ predict_landscape <- function(model, covariates, tilesize = 500,
   ta <- sum(as.numeric(sf::st_area(tiles)))
   wkey <- 0
   
-  for (i in 1:nrow(tiles)) {   ## testing first 2 tiles       ##nrow(tiles)) {e
+  for (i in 1:nrow(tiles)) {
     
     t <- tiles[i, ]  ## get tile
     cat(paste("\nWorking on tile", i, "of", nrow(tiles)))
@@ -50,13 +49,13 @@ predict_landscape <- function(model, covariates, tilesize = 500,
     ## * load tile area---------
     cat("\n...loading new data (from rasters)...")
     r <- stars::read_stars(cov,
-                           RasterIO = list(nXOff  = t$offset.x[1] + 1, ## hack -- stars and tile_maker issue??
+                           RasterIO = list(nXOff  = t$offset.x[1] + 1, 
                                            nYOff  = t$offset.y[1] + 1,
                                            nXSize = t$region.dim.x[1],
                                            nYSize = t$region.dim.y[1]))
     
     ## * update names ---------
-    names(r) <- tools::file_path_sans_ext(basename(cov))
+    names(r) <- names(covariates)
     
     ## * convert tile to dataframe ---------
     rsf <- sf::st_as_sf(r, as_points = TRUE)
@@ -166,6 +165,13 @@ predict_landscape <- function(model, covariates, tilesize = 500,
   
   cat("\nGenerating raster mosaics")
   
+  resamp_method <- if(
+    class(model) == "ranger" && (type == "prob" || model$treetype == "Regression")) {
+    "bilinear"
+  } else if(class(model) == "ranger" && (type != "prob" || model$treetype != "Regression")) {
+    "near"
+  } else "bilinear"
+  
   for (k in keep) {
     # get list of tiles
     #k = "response" # testing
@@ -177,8 +183,8 @@ predict_landscape <- function(model, covariates, tilesize = 500,
     mos <- foreach(tile = r_tiles, .combine = terra::merge) %do% {
       rast(tile)
     } %>% 
-      terra::resample(covariates, method = "near") %>% 
-      mask(rast(subset(covariates, least_na$layer))) %>% 
+      terra::resample(rast(subset(covariates, least_na$layer[1])), method = resamp_method) %>% 
+      mask(rast(subset(covariates, least_na$layer[1]))) %>% 
       magrittr::set_names("model_prediction")
     
     writeRaster(mos, file.path(outDir, paste0(k, ".tif")), overwrite = TRUE)
