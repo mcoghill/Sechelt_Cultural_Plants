@@ -116,10 +116,40 @@ summarise <- function (realisations, lookup, n.realisations = raster::nlayers(re
         } else {
             ordered.indices <- app(probs, order, decreasing = TRUE, na.last = TRUE)[[1:nlyr(counts)]]
         }
+        ordered.probs <- app(probs, sort, decreasing = TRUE, na.last = TRUE)[[1:max(2, nprob)]]
+        
+        for (i in 1:nprob) {
+            terra::writeRaster(ordered.indices[[i]], filename = file.path(outputdir, 
+                               "output", "mostprobable", paste0(stub, "mostprob_", 
+                               formatC(i, width = nchar(nrow(lookup)), format = "d", 
+                               flag = "0"), "_class.tif")),
+                               overwrite = TRUE)
+            terra::writeRaster(ordered.probs[[i]], filename = file.path(outputdir, 
+                               "output", "mostprobable", paste0(stub, "mostprob_", 
+                               formatC(i, width = nchar(nrow(lookup)), format = "d", 
+                               flag = "0"), "_probs.tif")),
+                               overwrite = TRUE)
+        }
+        confusion <- app(ordered.probs, function(x) {
+            (1 - (x[[1]] - x[[2]]))
+        }, filename = file.path(outputdir, "output", "mostprobable", 
+                                paste0(stub, "confusion.tif")), overwrite = TRUE)
+        shannon <- app(ordered.probs, function(x) {
+            x %>% magrittr::multiply_by(log(x, base = length(x))) %>% 
+                sum(na.rm = TRUE) %>% magrittr::multiply_by(-1)
+        }, filename = file.path(outputdir, "output", "mostprobable", 
+                                paste0(stub, "shannon.tif")), overwrite = TRUE)
     } else {
+        message("Since nprob = 1, only the modal map of the realisations will be output.")
+        message("nprob must be > 1 to calculate Shannon and confusion indices")
         ordered.indices <- terra::modal(realisations, ties = "first", na.rm = TRUE)
+        terra::writeRaster(ordered.indices, filename = file.path(outputdir, 
+                           "output", "mostprobable", paste0(stub, "mostprob_", 
+                           formatC(1, width = nchar(nrow(lookup)), format = "d", 
+                           flag = "0"), "_class.tif")),
+                           overwrite = TRUE)
     }
-    ordered.probs <- app(probs, sort, decreasing = TRUE, na.last = TRUE)[[1:max(2, nprob)]]
+    
     
     # raster::beginCluster(cpus)
     # ordered.probs = raster::clusterR(probs, calc, args = list(fun = function(x) {
@@ -131,27 +161,7 @@ summarise <- function (realisations, lookup, n.realisations = raster::nlayers(re
     #     }
     # }))
     # raster::endCluster()
-    for (i in 1:nprob) {
-        terra::writeRaster(ordered.indices[[i]], filename = file.path(outputdir, 
-            "output", "mostprobable", paste0(stub, "mostprob_", 
-                formatC(i, width = nchar(nrow(lookup)), format = "d", 
-                  flag = "0"), "_class.tif")),
-            overwrite = TRUE)
-        terra::writeRaster(ordered.probs[[i]], filename = file.path(outputdir, 
-            "output", "mostprobable", paste0(stub, "mostprob_", 
-                formatC(i, width = nchar(nrow(lookup)), format = "d", 
-                  flag = "0"), "_probs.tif")),
-            overwrite = TRUE)
-    }
-    confusion <- app(ordered.probs, function(x) {
-        (1 - (x[[1]] - x[[2]]))
-    }, filename = file.path(outputdir, "output", "mostprobable", 
-       paste0(stub, "confusion.tif")), overwrite = TRUE)
-    shannon <- app(ordered.probs, function(x) {
-        x %>% magrittr::multiply_by(log(x, base = length(x))) %>% 
-            sum(na.rm = TRUE) %>% magrittr::multiply_by(-1)
-    }, filename = file.path(outputdir, "output", "mostprobable", 
-       paste0(stub, "shannon.tif")), overwrite = TRUE)
+    
     
     # raster::beginCluster(cpus)
     # confusion <- raster::clusterR(ordered.probs, fun = function(x) {
