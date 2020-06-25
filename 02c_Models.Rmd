@@ -92,12 +92,20 @@ cover <- sapply(st_layers(file.path(input_dir, "cover.gpkg"))$name, function(x) 
 
 
 
-```{r mlr modelling}
+```{r mlr3 pres/abs probability modelling}
 
+# Use mlr3 to create the best models
+# The function does everything needed and outputs a list of the best models
+# for each plant species. Function uses mlr3 to do 10 fold cross validaion
+# repeated 5 times for each iteration of the model. There are 10 iterations which
+# are different combinations of covariate layers (in attempts to find the best 
+# feature set). This results in 500 models per species. The function is also aware
+# of what the prediction types should be: for pres/abs, we want a probability 
+# output from classification modelling, whereas for cover we want the raw 
+# predictions created from regression modelling
 pres_models <- model_gen_mlr3(pres_abs, "Pres")
-cover_models <- model_gen_mlr3(cover, "Cover")
 
-# Extract the ranger model from the mlr model
+# Save some relevant data from the models
 pres_importance <- lapply(seq_along(pres_models), function(x) {
   write.csv(
     pres_models[[x]]$confusion.matrix, 
@@ -113,22 +121,7 @@ pres_importance <- lapply(seq_along(pres_models), function(x) {
   return(y)
   }) %>% magrittr::set_names(names(pres_models))
 
-cover_importance <- lapply(seq_along(cover_models), function(x) {
-  write.csv(
-    cover_models[[x]]$confusion.matrix, 
-    file.path(output_dir, paste0(names(cover_models)[x], "_cover_confusion.csv")))
-  y <- data.frame(importance = ranger::importance(cover_models[[x]])) %>% 
-    rownames_to_column() %>% 
-    rename(covariates = rowname) %>% 
-    arrange(desc(importance))
-  write.csv(
-    y, 
-    file.path(output_dir, paste0(names(cover_models)[x], "_cover_var_importance.csv")), 
-    row.names = FALSE)
-  return(y)
-  }) %>% magrittr::set_names(names(cover_models))
-
-# Subset only the important rasters that the final model used
+# Map the predictions using the predict_landscape function
 for(i in 1:length(pres_models)) {
   cov_important <- raster::stack(subset(covariates, pres_importance[[i]]$covariates))
   out <- predict_landscape(pres_models[[i]], cov_important, tilesize = 500,
@@ -141,12 +134,6 @@ for(i in 1:length(pres_models)) {
       to = file.path(output_dir, "pres_abs_maps", paste0(names(pres_models)[i], "_", basename(j))))
   }
   
-}
-for(i in 1:length(cover_models)) {
-  cov_important <- raster::stack(subset(covariates, cover_importance[[i]]$covariates))
-  out <- predict_landscape(cover_models[[i]], cov_important, tilesize = 500,
-                           outDir = tile_dir)
-  writeRaster(out, file.path(output_dir, "cover_maps", paste0(names(pres_models)[i], "_cover.tif")))
 }
 
 # After the raster is made, perform some zonal statistics by site series
@@ -166,6 +153,39 @@ write.csv(model_importance, file.path(output_dir, paste0(model_run, "_importance
 write.csv(zonal_stats, file.path(output_dir, paste0(model_run, "_zonal_stats.csv")), row.names = FALSE)
 
 ```
+
+```{r mlr3 cover modelling}
+
+# Use mlr3 to create the best models
+cover_models <- model_gen_mlr3(cover, "Cover")
+
+# Save some relevant data from the models
+cover_importance <- lapply(seq_along(cover_models), function(x) {
+  write.csv(
+    cover_models[[x]]$confusion.matrix, 
+    file.path(output_dir, paste0(names(cover_models)[x], "_cover_confusion.csv")))
+  y <- data.frame(importance = ranger::importance(cover_models[[x]])) %>% 
+    rownames_to_column() %>% 
+    rename(covariates = rowname) %>% 
+    arrange(desc(importance))
+  write.csv(
+    y, 
+    file.path(output_dir, paste0(names(cover_models)[x], "_cover_var_importance.csv")), 
+    row.names = FALSE)
+  return(y)
+  }) %>% magrittr::set_names(names(cover_models))
+
+# Map the predictions using the predict_landscape function
+for(i in 1:length(cover_models)) {
+  cov_important <- raster::stack(subset(covariates, cover_importance[[i]]$covariates))
+  out <- predict_landscape(cover_models[[i]], cov_important, tilesize = 500,
+                           outDir = tile_dir)
+  writeRaster(out, file.path(output_dir, "cover_maps", paste0(names(cover_models)[i], "_cover.tif")))
+}
+
+```
+
+
 
 ```{r ModelMap testing}
 
