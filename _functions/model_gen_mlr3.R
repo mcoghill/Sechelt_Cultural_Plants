@@ -100,8 +100,8 @@
 
 model_gen_mlr3 <- function(traindat, target, feature_selection = "filter") {
   library(mlr3verse)
-  #traindat <- cover
-  #target <- "Cover"
+  #traindat <- pres_abs
+  #target <- "Pres"
   #feature_selection = "filter"
   
   # perform input checks
@@ -132,7 +132,11 @@ model_gen_mlr3 <- function(traindat, target, feature_selection = "filter") {
   if(all(sapply(traindat, function(x) 
     class(x[, target])) == "factor")) {
     mod_type <- "classif.ranger"
-  } else mod_type <- "regr.ranger"
+    predict_type <- "prob"
+  } else {
+    mod_type <- "regr.ranger"
+    predict_type <- "response"
+  }
   
   # Create pipeop learner, note I had some issues with this, error included duplicated value
   # in "name" column, but if the mlr3spatiaotempcv package is not loaded here, this 
@@ -145,7 +149,7 @@ model_gen_mlr3 <- function(traindat, target, feature_selection = "filter") {
     mod_type, 
     num.threads = parallel::detectCores(),
     importance = "impurity",
-    predict_type = "response"
+    predict_type = predict_type
   )
   
   po_lrn <- po("learner", lrn)
