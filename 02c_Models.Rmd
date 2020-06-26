@@ -109,15 +109,18 @@ cover_points <- sapply(st_layers(file.path(input_dir, "cover.gpkg"))$name, funct
 pres_abs <- c(
   sapply(paste0(names(pres_abs_points), "_no_tem"), function(x) {
     y <- gsub("_no_tem", "", x)
-    dplyr::select(pres_abs_points[[y]], -c(site_series_dsmart, site_series_simple))
+    dplyr::select(pres_abs_points[[y]], -c(site_series_dsmart, site_series_simple)) %>% 
+      drop_na()
     }, simplify = FALSE, USE.NAMES = TRUE),
   sapply(paste0(names(pres_abs_points), "_simple_tem"), function(x) {
     y <- gsub("_simple_tem", "", x)
-    dplyr::select(pres_abs_points[[y]], -site_series_dsmart)
+    dplyr::select(pres_abs_points[[y]], -site_series_dsmart) %>% 
+      drop_na()
     }, simplify = FALSE, USE.NAMES = TRUE), 
   sapply(paste0(names(pres_abs_points), "_dsmart_tem"), function(x) {
     y <- gsub("_dsmart_tem", "", x)
-    dplyr::select(pres_abs_points[[y]], -site_series_simple)
+    dplyr::select(pres_abs_points[[y]], -site_series_simple) %>% 
+      drop_na()
     }, simplify = FALSE, USE.NAMES = TRUE))
 
 pres_models <- model_gen_mlr3(pres_abs, "Pres")
@@ -177,15 +180,18 @@ write.csv(zonal_stats, file.path(output_dir, paste0(model_run, "_zonal_stats.csv
 cover <- c(
   sapply(paste0(names(cover_points), "_no_tem"), function(x) {
     y <- gsub("_no_tem", "", x)
-    dplyr::select(cover_points[[y]], -c(site_series_dsmart, site_series_simple))
+    dplyr::select(cover_points[[y]], -c(site_series_dsmart, site_series_simple)) %>% 
+      drop_na()
     }, simplify = FALSE, USE.NAMES = TRUE),
   sapply(paste0(names(cover_points), "_simple_tem"), function(x) {
     y <- gsub("_simple_tem", "", x)
-    dplyr::select(cover_points[[y]], -site_series_dsmart)
+    dplyr::select(cover_points[[y]], -site_series_dsmart) %>% 
+      drop_na()
     }, simplify = FALSE, USE.NAMES = TRUE), 
   sapply(paste0(names(cover_points), "_dsmart_tem"), function(x) {
     y <- gsub("_dsmart_tem", "", x)
-    dplyr::select(cover_points[[y]], -site_series_simple)
+    dplyr::select(cover_points[[y]], -site_series_simple) %>% 
+      drop_na()
     }, simplify = FALSE, USE.NAMES = TRUE))
 
 cover_models <- model_gen_mlr3(cover, "Cover")
