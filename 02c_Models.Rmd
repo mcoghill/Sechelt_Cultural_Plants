@@ -69,18 +69,18 @@ sentinel_covariates <- list.files(file.path(covariate_dir, res_folder),
                                   pattern = "^sentinel2.*.summer.tif$", full.names = TRUE)
 climate_covariates <- list.files(file.path(covariate_dir, res_folder), 
                                  pattern = "^normal.*._sm.tif$", full.names = TRUE)
-site_series <- file.path(ss_dir, paste0("site_series_", ss, ".tif"))
+site_series <- list.files(ss_dir, pattern = "site_series_.*..tif", full.names = TRUE)
 covariates <- rast(c(terrain_covariates, sentinel_covariates, climate_covariates, site_series))
 
 # Attributed point data
-pres_abs <- sapply(st_layers(file.path(input_dir, "pres_abs.gpkg"))$name, function(x) {
+pres_abs_points <- sapply(st_layers(file.path(input_dir, "pres_abs.gpkg"))$name, function(x) {
   st_read(file.path(input_dir, "pres_abs.gpkg"), layer = x, quiet = TRUE) %>% 
     cbind(st_coordinates(.), terra::extract(rast(site_series), st_coordinates(.))) %>% 
     st_drop_geometry() %>% 
     mutate(Pres = as.factor(Pres)) %>% 
     dplyr::select(Pres, names(covariates), X, Y)
   }, simplify = FALSE, USE.NAMES = TRUE)
-cover <- sapply(st_layers(file.path(input_dir, "cover.gpkg"))$name, function(x) {
+cover_points <- sapply(st_layers(file.path(input_dir, "cover.gpkg"))$name, function(x) {
   st_read(file.path(input_dir, "cover.gpkg"), layer = x, quiet = TRUE) %>% 
     cbind(st_coordinates(.), terra::extract(rast(site_series), st_coordinates(.))) %>% 
     st_drop_geometry() %>% 
@@ -103,6 +103,23 @@ cover <- sapply(st_layers(file.path(input_dir, "cover.gpkg"))$name, function(x) 
 # of what the prediction types should be: for pres/abs, we want a probability 
 # output from classification modelling, whereas for cover we want the raw 
 # predictions created from regression modelling
+
+# To assess how useful the TEM is, I've made different models using a simiple
+# rasterized version, the DSMART version, and models that don't use it as well.
+pres_abs <- c(
+  sapply(paste0(names(pres_abs_points), "_no_tem"), function(x) {
+    y <- gsub("_no_tem", "", x)
+    dplyr::select(pres_abs_points[[y]], -c(site_series_dsmart, site_series_simple))
+    }, simplify = FALSE, USE.NAMES = TRUE),
+  sapply(paste0(names(pres_abs_points), "_simple_tem"), function(x) {
+    y <- gsub("_simple_tem", "", x)
+    dplyr::select(pres_abs_points[[y]], -site_series_dsmart)
+    }, simplify = FALSE, USE.NAMES = TRUE), 
+  sapply(paste0(names(pres_abs_points), "_dsmart_tem"), function(x) {
+    y <- gsub("_dsmart_tem", "", x)
+    dplyr::select(pres_abs_points[[y]], -site_series_simple)
+    }, simplify = FALSE, USE.NAMES = TRUE))
+
 pres_models <- model_gen_mlr3(pres_abs, "Pres")
 
 # Save some relevant data from the models
@@ -157,6 +174,20 @@ write.csv(zonal_stats, file.path(output_dir, paste0(model_run, "_zonal_stats.csv
 ```{r mlr3 cover modelling}
 
 # Use mlr3 to create the best models
+cover <- c(
+  sapply(paste0(names(cover_points), "_no_tem"), function(x) {
+    y <- gsub("_no_tem", "", x)
+    dplyr::select(cover_points[[y]], -c(site_series_dsmart, site_series_simple))
+    }, simplify = FALSE, USE.NAMES = TRUE),
+  sapply(paste0(names(cover_points), "_simple_tem"), function(x) {
+    y <- gsub("_simple_tem", "", x)
+    dplyr::select(cover_points[[y]], -site_series_dsmart)
+    }, simplify = FALSE, USE.NAMES = TRUE), 
+  sapply(paste0(names(cover_points), "_dsmart_tem"), function(x) {
+    y <- gsub("_dsmart_tem", "", x)
+    dplyr::select(cover_points[[y]], -site_series_simple)
+    }, simplify = FALSE, USE.NAMES = TRUE))
+
 cover_models <- model_gen_mlr3(cover, "Cover")
 
 # Save some relevant data from the models
