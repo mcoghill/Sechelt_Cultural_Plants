@@ -123,13 +123,11 @@ pres_abs <- c(
       drop_na()
     }, simplify = FALSE, USE.NAMES = TRUE))
 
-pres_models <- model_gen_mlr3(pres_abs, "Pres")
+pres_models <- model_gen_mlr3(traindat = pres_abs, target = "Pres", feature_selection = "rfe", type = "prob")
+saveRDS(pres_models, file.path(output_dir, "pres_abs_maps", "cover_models.RDS"))
 
 # Save some relevant data from the models
 pres_importance <- lapply(seq_along(pres_models), function(x) {
-  write.csv(
-    pres_models[[x]]$confusion.matrix, 
-    file.path(output_dir, paste0(names(pres_models)[x], "_pres_abs_confusion.csv")))
   y <- data.frame(importance = ranger::importance(pres_models[[x]])) %>% 
     rownames_to_column() %>% 
     rename(covariates = rowname) %>% 
@@ -151,7 +149,8 @@ for(i in 1:length(pres_models)) {
   for(j in out) {
     file.copy(
       from = j, 
-      to = file.path(output_dir, "pres_abs_maps", paste0(names(pres_models)[i], "_", basename(j))))
+      to = file.path(output_dir, "pres_abs_maps", paste0(names(pres_models)[i], "_", basename(j))), 
+      overwrite = TRUE)
   }
   
 }
@@ -195,6 +194,7 @@ cover <- c(
     }, simplify = FALSE, USE.NAMES = TRUE))
 
 cover_models <- model_gen_mlr3(cover, "Cover")
+saveRDS(cover_models, file.path(output_dir, "cover_maps", "cover_models.RDS"))
 
 # Save some relevant data from the models
 cover_importance <- lapply(seq_along(cover_models), function(x) {
@@ -217,7 +217,8 @@ for(i in 1:length(cover_models)) {
   cov_important <- raster::stack(subset(covariates, cover_importance[[i]]$covariates))
   out <- predict_landscape(cover_models[[i]], cov_important, tilesize = 500,
                            outDir = tile_dir)
-  writeRaster(out, file.path(output_dir, "cover_maps", paste0(names(cover_models)[i], "_cover.tif")))
+  writeRaster(out, file.path(output_dir, "cover_maps", paste0(names(cover_models)[i], "_cover.tif")), 
+              overwrite = TRUE)
 }
 
 ```
