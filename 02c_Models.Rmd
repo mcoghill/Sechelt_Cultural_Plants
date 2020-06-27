@@ -24,7 +24,7 @@ lapply(ls, library, character.only = TRUE)[0]
 rm(ls, new.packages)
 
 source("./_functions/model_gen_mlr3.R")
-source("./_functions/predict_landscape.R")
+source("./_functions/predict_landscape_mlr3.R")
 
 ```
 
@@ -123,37 +123,50 @@ pres_abs <- c(
       drop_na()
     }, simplify = FALSE, USE.NAMES = TRUE))
 
-pres_models <- model_gen_mlr3(traindat = pres_abs, target = "Pres", feature_selection = "rfe", type = "prob")
+pres_models <- model_gen_mlr3(traindat = pres_abs, target = "Pres", feature_selection = "filter", type = "prob")
 saveRDS(pres_models, file.path(output_dir, "pres_abs_maps", "cover_models.RDS"))
 
 # Save some relevant data from the models
-pres_importance <- lapply(seq_along(pres_models), function(x) {
-  y <- data.frame(importance = ranger::importance(pres_models[[x]])) %>% 
-    rownames_to_column() %>% 
-    rename(covariates = rowname) %>% 
-    arrange(desc(importance))
-  write.csv(
-    y, 
-    file.path(output_dir, paste0(names(pres_models)[x], "_pres_abs_var_importance.csv")), 
-    row.names = FALSE)
-  return(y)
-  }) %>% magrittr::set_names(names(pres_models))
+# pres_importance <- lapply(seq_along(pres_models), function(x) {
+#   y <- data.frame(importance = ranger::importance(pres_models[[x]])) %>% 
+#     rownames_to_column() %>% 
+#     rename(covariates = rowname) %>% 
+#     arrange(desc(importance))
+#   write.csv(
+#     y, 
+#     file.path(output_dir, paste0(names(pres_models)[x], "_pres_abs_var_importance.csv")), 
+#     row.names = FALSE)
+#   return(y)
+#   }) %>% magrittr::set_names(names(pres_models))
 
 # Map the predictions using the predict_landscape function
-for(i in 1:length(pres_models)) {
-  cov_important <- raster::stack(subset(covariates, pres_importance[[i]]$covariates))
-  out <- predict_landscape(pres_models[[i]], cov_important, tilesize = 500,
-                           outDir = tile_dir, type = "prob")
-  
-  # with predict_landscape type set to "prob", the output is a list of files
-  for(j in out) {
-    file.copy(
-      from = j, 
-      to = file.path(output_dir, "pres_abs_maps", paste0(names(pres_models)[i], "_", basename(j))), 
-      overwrite = TRUE)
-  }
-  
-}
+cov_raster <- raster::stack(covariates)
+
+lapply(seq_along(pres_models$learners), function(x) {
+  predict_landscape_mlr3(
+    learner = pres_models$learners[[x]],
+    task = pres_models$tasks[[x]], 
+    type = "prob",
+    covariates = cov_raster,
+    tilesize = 500, 
+    outDir = tile_dir
+  )
+})
+
+# for(i in 1:length(pres_models)) {
+#   
+#   out <- predict_landscape(pres_models[[i]], cov_important, tilesize = 500,
+#                            outDir = tile_dir, type = "prob")
+#   
+#   # with predict_landscape type set to "prob", the output is a list of files
+#   for(j in out) {
+#     file.copy(
+#       from = j, 
+#       to = file.path(output_dir, "pres_abs_maps", paste0(names(pres_models)[i], "_", basename(j))), 
+#       overwrite = TRUE)
+#   }
+#   
+# }
 
 # After the raster is made, perform some zonal statistics by site series
 zonal_stats <- cbind(zonal(pred_raster, site_series, fun = "mean"), 
