@@ -79,23 +79,24 @@ model_gen_mlr3 <- function(
     resampling_outer <- rsmp("repeated-spcv-coords", folds = 10, repeats = 5)
     
     if(mod_type == "regr.ranger") {
-      tasks <- sapply(seq_along(traindat), function(x) {
+      tasks <- lapply(seq_along(traindat), function(x) {
         TaskRegrST$new(id = gsub(".gpkg$", "", basename(names(traindat[x]))), 
                        backend = traindat[[x]], 
                        target = target, 
                        coords_as_features = FALSE, 
                        crs = st_crs(3005)$proj4string, 
                        coordinate_names = coordinate_cols[[x]])
-      }, simplify = FALSE, USE.NAMES = TRUE)
+      })
     } else {
-      tasks <- sapply(seq_along(traindat), function(x) {
+      tasks <- lapply(seq_along(traindat), function(x) {
         TaskClassifST$new(id = gsub(".gpkg$", "", basename(names(traindat[x]))), 
                           backend = traindat[[x]], 
                           target = target, 
                           coords_as_features = FALSE, 
                           crs = st_crs(3005)$proj4string, 
+                          positive = "TRUE",
                           coordinate_names = coordinate_cols[[x]])
-      }, simplify = FALSE, USE.NAMES = TRUE)
+      })
     }
     
   } else {
@@ -112,19 +113,21 @@ model_gen_mlr3 <- function(
     resampling_outer <- rsmp("repeated_cv", folds = 10, repeats = 5)
     
     if(mod_type == "regr.ranger") {
-      tasks <- sapply(seq_along(traindat), function(x) {
+      tasks <- lapply(seq_along(traindat), function(x) {
         TaskRegr$new(id = gsub(".gpkg$", "", basename(names(traindat[x]))), 
                      backend = traindat[[x]], 
                      target = target)
-      }, simplify = FALSE, USE.NAMES = TRUE)
+      })
     } else {
-      tasks <- sapply(seq_along(traindat), function(x) {
+      tasks <- lapply(seq_along(traindat), function(x) {
         TaskClassif$new(id = gsub(".gpkg$", "", basename(names(traindat[x]))), 
                         backend = traindat[[x]], 
+                        positive = "TRUE",
                         target = target)
-      }, simplify = FALSE, USE.NAMES = TRUE)
+      })
     }
   }
+  names(tasks) <- names(traindat)
   
   # Create pipeop learner, note I had some issues with this, error included duplicated value
   # in "name" column, but if the mlr3spatiaotempcv package is not loaded here, this 
@@ -150,12 +153,15 @@ model_gen_mlr3 <- function(
     
     # Create process (new learner) for filtering the task
     glrn <- GraphLearner$new(filter %>>% po_lrn)
+    glrn$predict_type <- type
     
     # Create filter parameters (i.e.: filter the top features of importance using
     # a given percentage of total features)
     param_set <- ParamSet$new(
       params = list(ParamDbl$new("importance.filter.frac", 
-                                 lower = 2 / length(tasks[[1]]$feature_names), 
+                                 lower = min(
+                                   10 / length(tasks[[1]]$feature_names), 
+                                   0.1), 
                                  upper = 1))
     )
     
@@ -176,17 +182,8 @@ model_gen_mlr3 <- function(
     
     design <- benchmark_grid(tasks, feature_sel, resamplings = rsmp("holdout", ratio = 1))
     bmr <- benchmark(design, store_models = TRUE)
-    
-    # Extract models...not sure if I should have function return the mlr3 result
-    # (the bmr variable) or if it should return the extracted ranger model (below)
-    if(mod_type == "regr.ranger") {
-      all_results <- lapply(1:bmr$n_resample_results, function(x) 
-        bmr$resample_result(x)$learners[[1]]$model$learner$model$regr.ranger$model)
-    } else {
-      all_results <- lapply(1:bmr$n_resample_results, function(x) 
-        bmr$resample_result(x)$learners[[1]]$model$learner$model$classif.ranger$model)
-    }
-    
+    all_results <- lapply(1:bmr$n_resample_results, function(x)
+      bmr$resample_result(x)$learners[[1]])
     names(all_results) <- names(traindat)
     
   } else {
@@ -218,56 +215,16 @@ model_gen_mlr3 <- function(
         store_models = TRUE
       )
       f_select$optimize(feature_sel)
-      model_set <- feature_sel$archive$data()[which.min(feature_sel$archive$data()[[measures]]), ]$resample_result[[1]]
-      model <- model_set$learners[[which.min(sapply(model_set$learners, function(x) x$oob_error()))]]$model
-      return(model)
+      
+      find_feats <- lapply(feature_sel$archive$data()$x_domain, unlist)
+      feature_sel_id <- which(unlist(lapply(find_feats, function(y)
+        all(y == unlist(feature_sel$result$x_domain[[1]])))))
+      
+      model_set <- feature_sel$archive$data()[feature_sel_id, ]$resample_result[[1]]
+      best_learner <- model_set$learners[[which.min(lapply(model_set$learners, function(y) y$oob_error()))]]
+      return(best_learner)
     })
+    names(all_results) <- names(tasks)
   }
-  
-  return(all_results)
-  
-  # # Compare best results
-  # all_results <- lapply(1:bmr$n_resample_results, function(x) 
-  #   bmr$resample_result(x)$learners[[1]]$tuning_instance)
-  # 
-  # best_features <- lapply(1:bmr$n_resample_results, function(x)
-  #   bmr$resample_result(x)$learners[[1]]$model$learner$model$importance$features)
-  # 
-  # best_tasks <- lapply(1:length(tasks), function(x)
-  #   tasks[[x]]$select(best_features[[x]]))
-  # 
-  # rr_design <- benchmark_grid(best_tasks, lrn, resamplings = rsmp("holdout"))
-  # rr <- benchmark(rr_design, store_models = TRUE)
-  # 
-  # # Extract best model for evaluation
-  # mod <- bmr$resample_result(which.min(best_results))$learners[[1]]
-  # features <- mod$model$learner$model$importance$features
-  # 
-  # ######################################################################
-  # # Perform resampling
-  # best_task <- tasks[[which.min(best_results)]]
-  # rr <- resample(
-  #   task = best_task$select(features), 
-  #   learner = lrn, 
-  #   resampling = resampling_outer,
-  #   store_models = TRUE
-  # )
-  # 
-  # # Compare best results
-  # all_results_rr <- lapply(1:length(rr$learners), function(x) 
-  #   rr$learners[[x]])
-  # 
-  # best_results_rr <- lapply(all_results_rr, function(x) 
-  #   x$model$prediction.error)
-  # 
-  # best_model <- rr$learners[[which.min(best_results_rr)]]$model
-  # best_mod_train <- rr$resampling$train_set(which.min(best_results_rr))
-  # best_mod_test <- rr$resampling$test_set(which.min(best_results_rr))
-  # 
-  # # Extract aggregated confusion matrix from all resampling iterations
-  # conf_mat <- as.data.frame.matrix(rr$prediction()$confusion)
-  
-  # Return a list of variables from the run
-  # return(list(benchmark = bmr, resampleresult = rr, bestmodel = best_model, 
-  #             trainset = best_mod_train, testset = best_mod_test, confusion = conf_mat))
+  return(list(learners = all_results, tasks = tasks))
 }
