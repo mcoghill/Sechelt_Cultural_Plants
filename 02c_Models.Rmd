@@ -5,18 +5,18 @@ date: "2/19/2020"
 output: html_document
 ---
 
-This document is meant to generate models of either binary classification of presence / absence, or regression models of plant cover. This script should be the last script ran in the whole process as it depends on:
+This document is meant to generate models and predictions of either binary classification of presence / absence, or regression models of plant cover. This script should be the last script ran in the whole process as it depends on:
 
 1. Covariate layers generated in 01 scripts;
 2. Proper datasets generated in the 02a script; and
 3. The site series raster generated in the 02b script.
 
-This script uses the mlr package (machine learning R) in order to make models. It's very powerful and can evaluate a lot of different models at the same time. I'll attempt to explain things each step of the way. First, we will load the packages used in this script.
+This script uses the mlr3 package (machine learning R) in order to make models. It's very powerful and can evaluate a lot of different models at the same time. I'll attempt to explain things each step of the way. First, we will load the packages used in this script.
 
 ```{r Load Packages}
 
 ls <- c("tidyverse", "tools", "terra", "sf", "ranger", "mlr3verse", "parallel", 
-        "parallelMap", "randomForest", "ModelMap", "foreach")
+        "parallelMap", "randomForest", "ModelMap", "foreach", "gdalUtils")
 new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new.packages))
   install.packages(new.packages)
@@ -30,7 +30,7 @@ source("./_functions/predict_landscape_mlr3.R")
 
 Next, directories and certain files are defined.
 
-```{r}
+```{r Define directories}
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
@@ -49,7 +49,7 @@ ss <- "dsmart" # The two options are currently simple or dsmart
 
 ```
 
-It is highly anticipated that a site series layer will have a high degree of importance in predicting the locations of these culturally sensitive plants. We will let the models decide whether that is true or not, but it will always be kept in the model regardless.
+It is highly anticipated that a site series layer will have a high degree of importance in predicting the locations of these culturally sensitive plants. We will let the models decide whether that is true or not, but it is possible to always be kept in the model by defining one of the options (not incorporated here).
 
 The only step in this script that requires you changing anything is the first line, model_run. Change this parameter to be whatever model you want to generate results for. Cover models will be a regression and presence / absence models will be a classification.
 
@@ -87,6 +87,16 @@ cover_points <- sapply(st_layers(file.path(input_dir, "cover.gpkg"))$name, funct
     dplyr::select(Cover, names(covariates), X, Y)
   }, simplify = FALSE, USE.NAMES = TRUE)
 
+# Find the best masking layer to use in the predict_landscape algorithm
+cov_raster <- raster::stack(covariates)
+mask_layer <- foreach(i = 1:nlayers(cov_raster), .combine = rbind) %do% {
+  cat(paste0("Counting NA values in ", names(cov_raster[[i]]), 
+             " [", i, " of ", nlayers(cov_raster), "]\n"))
+  data.frame(layer = names(cov_raster[[i]]), 
+             na_cells = freq(cov_raster[[i]], value = NA))
+} %>% mutate(na_cells = ifelse(na_cells == 0, Inf, na_cells)) %>% 
+  dplyr::slice(which.min(na_cells))
+
 ```
 
 
@@ -123,66 +133,46 @@ pres_abs <- c(
       drop_na()
     }, simplify = FALSE, USE.NAMES = TRUE))
 
-pres_models <- model_gen_mlr3(traindat = pres_abs, target = "Pres", feature_selection = "filter", type = "prob")
-saveRDS(pres_models, file.path(output_dir, "pres_abs_maps", "cover_models.RDS"))
+if(!file.exists(file.path(output_dir, "pres_abs_maps", "pres_abs_models.RDS"))) {
+  pres_models <- model_gen_mlr3(traindat = pres_abs, target = "Pres", feature_selection = "filter", type = "prob")
+  saveRDS(pres_models, file.path(output_dir, "pres_abs_maps", "pres_abs_models.RDS"))
+} else pres_models <- readRDS(file.path(output_dir, "pres_abs_maps", "pres_abs_models.RDS"))
 
 # Save some relevant data from the models
-# pres_importance <- lapply(seq_along(pres_models), function(x) {
-#   y <- data.frame(importance = ranger::importance(pres_models[[x]])) %>% 
-#     rownames_to_column() %>% 
-#     rename(covariates = rowname) %>% 
-#     arrange(desc(importance))
-#   write.csv(
-#     y, 
-#     file.path(output_dir, paste0(names(pres_models)[x], "_pres_abs_var_importance.csv")), 
-#     row.names = FALSE)
-#   return(y)
-#   }) %>% magrittr::set_names(names(pres_models))
+pres_importance <- sapply(names(pres_models$learners), function(x) {
+  imp <- data.frame(pres_models$learners[[x]]$learner$model$classif.ranger$model$variable.importance) %>% 
+    rownames_to_column() %>% 
+    dplyr::rename_at(vars(names(.)), ~c("layer", "importance"))
+  write.csv(imp, file.path(output_dir, paste0(x, "_pres_abs_var_importance.csv")), 
+            row.names = FALSE)
+  return(imp)
+}, simplify = FALSE, USE.NAMES = TRUE)
 
-# Map the predictions using the predict_landscape function
-cov_raster <- raster::stack(covariates)
-
-lapply(seq_along(pres_models$learners), function(x) {
-  predict_landscape_mlr3(
+# Run the map predictions
+pres_abs_predictions <- sapply(names(pres_models$learners), function(x) {
+  
+  cov_sub <- subset(cov_raster, pres_models$tasks[[x]]$col_roles$feature)
+  
+  out <- predict_landscape_mlr3(
     learner = pres_models$learners[[x]],
     task = pres_models$tasks[[x]], 
     type = "prob",
-    covariates = cov_raster,
+    covariates = cov_sub,
     tilesize = 500, 
-    outDir = tile_dir
+    outDir = tile_dir, 
+    mask_layer = mask_layer$layer
   )
-})
+  
+  # with predict_landscape_mlr3 type set to "prob", the output is a list of files
+  for(j in out) {
+    file.copy(
+      from = j,
+      to = file.path(output_dir, "pres_abs_maps", paste0(names(pres_models$learners[x]), "_", basename(j))),
+      overwrite = TRUE)
+  }
+  return(out)
+}, simplify = FALSE, USE.NAMES = TRUE)
 
-# for(i in 1:length(pres_models)) {
-#   
-#   out <- predict_landscape(pres_models[[i]], cov_important, tilesize = 500,
-#                            outDir = tile_dir, type = "prob")
-#   
-#   # with predict_landscape type set to "prob", the output is a list of files
-#   for(j in out) {
-#     file.copy(
-#       from = j, 
-#       to = file.path(output_dir, "pres_abs_maps", paste0(names(pres_models)[i], "_", basename(j))), 
-#       overwrite = TRUE)
-#   }
-#   
-# }
-
-# After the raster is made, perform some zonal statistics by site series
-zonal_stats <- cbind(zonal(pred_raster, site_series, fun = "mean"), 
-                     min = zonal(pred_raster, site_series, fun = "min")[, "min"], 
-                     max = zonal(pred_raster, site_series, fun = "max")[, "max"], 
-                     sd = zonal(pred_raster, site_series, fun = "sd")[, "sd"], 
-                     n_cells = zonal(pred_raster, site_series, fun = "count")[, "count"]) %>% 
-  merge(dsmart_lookup, by.x = "zone", by.y = "code") %>% 
-  dplyr::select(name, mean, min, max, sd, n_cells) %>% 
-  dplyr::rename(site_series = name)
-
-# Write final outputs
-writeRaster(pred_raster, file.path(output_dir, paste0(model_run, ".tif")), overwrite = TRUE)
-write.csv(mod_perform, file.path(output_dir, paste0(model_run, "_performance.csv")), row.names = FALSE)
-write.csv(model_importance, file.path(output_dir, paste0(model_run, "_importance.csv")), row.names = FALSE)
-write.csv(zonal_stats, file.path(output_dir, paste0(model_run, "_zonal_stats.csv")), row.names = FALSE)
 
 ```
 
@@ -206,33 +196,90 @@ cover <- c(
       drop_na()
     }, simplify = FALSE, USE.NAMES = TRUE))
 
-cover_models <- model_gen_mlr3(cover, "Cover")
-saveRDS(cover_models, file.path(output_dir, "cover_maps", "cover_models.RDS"))
+if(!file.exists(file.path(output_dir, "cover_maps", "cover_models.RDS"))) {
+  cover_models <- model_gen_mlr3(traindat = cover, target = "Cover", feature_selection = "filter", type = "response")
+  saveRDS(cover_models, file.path(output_dir, "cover_maps", "cover_models.RDS"))
+} else cover_models <- readRDS(file.path(output_dir, "cover_maps", "cover_models.RDS"))
 
 # Save some relevant data from the models
-cover_importance <- lapply(seq_along(cover_models), function(x) {
-  write.csv(
-    cover_models[[x]]$confusion.matrix, 
-    file.path(output_dir, paste0(names(cover_models)[x], "_cover_confusion.csv")))
-  y <- data.frame(importance = ranger::importance(cover_models[[x]])) %>% 
+cover_importance <- sapply(names(cover$learners), function(x) {
+  imp <- data.frame(cover$learners[[x]]$learner$model$regr.ranger$model$variable.importance) %>% 
     rownames_to_column() %>% 
-    rename(covariates = rowname) %>% 
-    arrange(desc(importance))
-  write.csv(
-    y, 
-    file.path(output_dir, paste0(names(cover_models)[x], "_cover_var_importance.csv")), 
-    row.names = FALSE)
-  return(y)
-  }) %>% magrittr::set_names(names(cover_models))
+    dplyr::rename_at(vars(names(.)), ~c("layer", "importance"))
+  write.csv(imp, file.path(output_dir, paste0(x, "_cover_var_importance.csv")), 
+            row.names = FALSE)
+  return(imp)
+}, simplify = FALSE, USE.NAMES = TRUE)
 
-# Map the predictions using the predict_landscape function
-for(i in 1:length(cover_models)) {
-  cov_important <- raster::stack(subset(covariates, cover_importance[[i]]$covariates))
-  out <- predict_landscape(cover_models[[i]], cov_important, tilesize = 500,
-                           outDir = tile_dir)
-  writeRaster(out, file.path(output_dir, "cover_maps", paste0(names(cover_models)[i], "_cover.tif")), 
-              overwrite = TRUE)
-}
+# Run the map predictions
+cover_predictions <- sapply(names(cover_models$learners), function(x) {
+  
+  cov_sub <- subset(cov_raster, cover_models$tasks[[x]]$col_roles$feature)
+  
+  out <- predict_landscape_mlr3(
+    learner = cover_models$learners[[x]],
+    task = cover_models$tasks[[x]], 
+    type = "response",
+    covariates = cov_sub,
+    tilesize = 500, 
+    outDir = tile_dir, 
+    mask_layer = mask_layer$layer
+  )
+  
+  # with predict_landscape_mlr3 type set to "response", the output is a single raster image
+  writeRaster(
+    out, 
+    file.path(output_dir, "cover_maps", paste0(names(cover_models$learners[x]), "_cover.tif")), 
+    overwrite = TRUE)
+  
+  return(out)
+  
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+```
+
+```{r Zonal statistics}
+
+site_series_t <- terra::rast(file.path(ss_dir, grep(ss, basename(site_series), value = TRUE)))
+dsmart_lookup <- read.csv(file.path(ss_dir, "lookup.txt"))
+
+pres_zonal <- sapply(gsub("..tif", "", basename(list.files(
+  file.path(output_dir, "pres_abs_maps"), full.names = TRUE, 
+  pattern = "_TRUE"))), function (x) {
+    t <- rast(list.files(
+      file.path(output_dir, "pres_abs_maps"), 
+      pattern = x, full.names = TRUE))
+    zonal_stats <- cbind(
+      zonal(t, site_series_t, fun = "mean", na.rm = TRUE), 
+      min = zonal(t, site_series_t, fun = "min", na.rm = TRUE)[, names(t)], 
+      max = zonal(t, site_series_t, fun = "max", na.rm = TRUE)[,  names(t)],
+      sd = zonal(t, site_series_t, fun = "sd", na.rm = TRUE)[,  names(t)]) %>% 
+      merge(dsmart_lookup, by.x = "zone", by.y = "code") %>% 
+      dplyr::rename_at(vars(names(t), name), ~c("mean", "site_series")) %>% 
+      dplyr::select(site_series, mean, min, max, sd)
+    write.csv(zonal_stats, file.path(output_dir, paste0(x, "_zonal_stats.csv")), row.names = FALSE)
+    return(zonal_stats)
+  }, simplify = FALSE, USE.NAMES = TRUE
+)
+
+cover_zonal <- lapply(gsub(".tif", "", basename(list.files(
+  file.path(output_dir, "cover_maps"), full.names = TRUE, 
+  pattern = "_cover"))), function (x) {
+    t <- rast(list.files(
+      file.path(output_dir, "cover_maps"), 
+      pattern = x, full.names = TRUE))
+    zonal_stats <- cbind(
+      zonal(t, site_series_t, fun = "mean", na.rm = TRUE), 
+      min = zonal(t, site_series_t, fun = "min", na.rm = TRUE)[, names(t)], 
+      max = zonal(t, site_series_t, fun = "max", na.rm = TRUE)[,  names(t)],
+      sd = zonal(t, site_series_t, fun = "sd", na.rm = TRUE)[,  names(t)]) %>% 
+      merge(dsmart_lookup, by.x = "zone", by.y = "code") %>% 
+      dplyr::rename_at(vars(names(t), name), ~c("mean", "site_series")) %>% 
+      dplyr::select(site_series, mean, min, max, sd)
+    write.csv(zonal_stats, file.path(output_dir, paste0(x, "_zonal_stats.csv")), row.names = FALSE)
+    return(zonal_stats)
+  }, simplify = FALSE, USE.NAMES = TRUE
+)
 
 ```
 
@@ -257,42 +304,6 @@ mmap_test <- model.build(
 )
 
 write.csv(mmap_test$confusion, file.path(output_dir, paste0(model_run, "_MMap_confusion.csv")))
-
-```
-
-```{r ranger package testing}
-
-important_vars <- names(model_ranger$variable.importance)
-ranger_mod <- ranger(response ~., 
-                     data = raw_data[, c("response", important_vars)], 
-                     num.trees = model_ranger$num.trees, 
-                     mtry = model_ranger$mtry, 
-                     importance = "impurity", 
-                     write.forest = TRUE, 
-                     probability = FALSE, 
-                     min.node.size = model_ranger$min.node.size, 
-                     replace = TRUE, 
-                     keep.inbag = TRUE, 
-                     oob.error = TRUE, 
-                     classification = TRUE)
-write.csv(ranger_mod$confusion.matrix, file.path(output_dir, paste0(model_run, "_ranger_confusion.csv")))
-
-```
-
-
-```{r randomForest package testing}
-
-important_vars <- names(model_ranger$variable.importance)
-rf_mod <- randomForest(response ~.,
-                       data = raw_data[, c("response", important_vars)],
-                       ntree = model_ranger$num.trees, 
-                       mtry = model_ranger$mtry, 
-                       replace = TRUE, 
-                       nodesize = model_ranger$min.node.size, 
-                       importance = TRUE, 
-                       keep.forest = TRUE, 
-                       keep.inbag = TRUE)
-write.csv(rf_mod$confusion, file.path(output_dir, paste0(model_run, "_randomForest_confusion.csv")))
 
 ```
 
