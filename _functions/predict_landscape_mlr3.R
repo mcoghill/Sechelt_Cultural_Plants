@@ -19,18 +19,12 @@ predict_landscape_mlr3 <- function(
   covariates, 
   tilesize = 500,
   outDir = "./predicted", 
-  type = "raw") {
+  type = "raw", 
+  mask_layer) {
   
+  if(!is.character(mask_layer)) stop("mask_layer variable needs to be a character vector of length 1")
   # Count NA values in the covariate data to determine best layer to use for masking later on
   cov <- sapply(covariates@layers, function(x) x@file@name)
-  
-  least_na <- foreach(i = 1:nlayers(covariates), .combine = rbind) %do% {
-    cat(paste0("Counting NA values in ", names(covariates[[i]]), 
-               " [", i, " of ", nlayers(covariates), "]\n"))
-    data.frame(layer = names(covariates[[i]]), 
-               na_cells = freq(covariates[[i]], value = NA))
-  } %>% mutate(na_cells = ifelse(na_cells == 0, Inf, na_cells)) %>% 
-    dplyr::slice(which.min(na_cells))
   
   ## create output dir -----------
   dir.create(outDir, recursive = TRUE, showWarnings = FALSE)
@@ -49,6 +43,7 @@ predict_landscape_mlr3 <- function(
   for (i in 1:nrow(tiles)) {
     
     t <- tiles[i, ]  ## get tile
+    a <- a + as.numeric(sf::st_area(t))
     cat(paste("\nWorking on tile", i, "of", nrow(tiles)))
     
     ## * load tile area---------
@@ -102,7 +97,12 @@ predict_landscape_mlr3 <- function(
       # }
       pred <- learner$predict_newdata(newdata = rsf.df, task = task)
       
-      pred_dat <- pred$prob
+      if(type == "prob") {
+        pred_dat <- pred$prob
+      } else {
+        pred_dat <- pred$response
+      }
+      
       pred_dat[is.na(st_drop_geometry(rsf_bk)[, 1])] <- NA
       pred <- pred_dat
       
@@ -131,7 +131,9 @@ predict_landscape_mlr3 <- function(
       ## The levels are in the multiclass 'response'
       if(wkey == 0) {
         if(type != "prob") {
-          respNames <- levels(r_out$pred) ## this becomes the dictionary to describe the raster values
+          if(is.numeric(r_out$pred)) {
+            respNames <- "pred"
+          } else respNames <- levels(r_out$pred) ## this becomes the dictionary to describe the raster values
         } else {
           respNames <- keep ## this becomes the dictionary to describe the raster values
         }
@@ -163,7 +165,6 @@ predict_landscape_mlr3 <- function(
       }
       
       ## * report progress -----
-      a <- a + as.numeric(sf::st_area(t))
       cat(paste0("\n", round(a / ta * 100, 1), "% completed at ", format(Sys.time(), "%X %b %d %Y")))
       
     } ## end if statement -- for when tile is empty
@@ -175,10 +176,9 @@ predict_landscape_mlr3 <- function(
   
   cat("\nGenerating raster mosaics")
   
-  resamp_method <- if(
-    class(model) == "ranger" && (type == "prob" || model$treetype == "Regression")) {
+  resamp_method <- if(learner$predict_type == "prob" || learner$task_type == "regr") {
     "bilinear"
-  } else if(class(model) == "ranger" && (type != "prob" || model$treetype != "Regression")) {
+  } else if(learner$predict_type != "prob" || learner$task_type != "regr") {
     "near"
   } else "bilinear"
   
@@ -190,11 +190,11 @@ predict_landscape_mlr3 <- function(
                           full.names = TRUE)
     
     ## mosaic
-    mos <- foreach(tile = r_tiles, .combine = terra::merge) %do% {
-      rast(tile)
-    } %>% 
-      terra::resample(rast(subset(covariates, least_na$layer[1])), method = resamp_method) %>% 
-      mask(rast(subset(covariates, least_na$layer[1]))) %>% 
+    mos <- rast(gdalUtils::mosaic_rasters(gdalfile = r_tiles, ## list of rasters to mosaic
+                              dst_dataset = file.path(outDir, paste0(k, ".tif")),  #output: dir and filename
+                              output_Raster = TRUE)) %>% 
+      terra::resample(rast(subset(covariates, mask_layer)), method = resamp_method) %>% 
+      mask(rast(subset(covariates, mask_layer))) %>% 
       magrittr::set_names("model_prediction")
     
     writeRaster(mos, file.path(outDir, paste0(k, ".tif")), overwrite = TRUE)
