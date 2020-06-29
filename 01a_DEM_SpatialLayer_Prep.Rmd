@@ -11,13 +11,12 @@ require(knitr)
 #knitr::opts_knit$set(progress=TRUE, root.dir = 'relative_path_to_root_from_Rmd')
 ```
 
-## Introduction
+# Introduction
 This document describes the steps required to prepare spatial layers to be used in machine-learning based predictive ecosystem map method. The code used here is largely pawned from PEM project coding, but with adjustments made to suit this project more accurately.
 
 This method is scripted in R, but uses other open source packages, predominently SAGA :  (https://sourceforge.net/projects/saga-gis/). 
 
-
-###Preparation steps. 
+##Preparation steps. 
 
 ### Software
 Prior to running this script you will need to download SAGA[https://sourceforge.net/projects/saga-gis/] and know its location. SAGA can be downloaded on an external drive and run independent of pemissions. Additionally, a source script may be called in R to install it to your system.
@@ -25,18 +24,18 @@ Prior to running this script you will need to download SAGA[https://sourceforge.
 ### Data 
 To run this script you will need a base digital elevation model (digital terrain model) at 1m resolution. 
 
-
 ### 1) Set up link between Saga and R. 
 This is taken care of with the saga_cmd function
 
 ### Matt's Notes
-The purpose of this document is to derive desired lower resolution DEM's from a 1m DEM, and subsequently create covariate layers for the PEM project. This document uses three coding languages: R, cmd (aka batch), and XML. Command line functions will call individual functions to SAGA, while the XML scripts allow for "chaining" tools together for more efficient processing in SAGA so that SAGA doesn't continuously stop and start. It also prevents the creation of intermediate files. The big benefit of using SAGA is that it automatically uses all cores on the machine you're using. In this manner, SAGA will utilize available RAM on your machine for storing files until the very end when they are written to the disk so in some instances you may be limited in its use depending on the specs of your machine.
+The purpose of this document is to derive desired lower resolution DEM's from a 1m DEM, and subsequently create covariate terrain layers for this project. This document uses three coding languages: R, cmd (aka batch), and XML. Command line functions will call individual functions to SAGA, while the XML scripts allow for "chaining" tools together for more efficient processing in SAGA so that SAGA doesn't continuously stop and start. It also prevents the creation of intermediate files. The big benefit of using SAGA is that it automatically uses all cores on the machine you're using. In this manner, SAGA will utilize available RAM on your machine for storing files until the very end when they are written to the disk so in some instances you may be limited in its use depending on the specs of your machine; however, a built in algorithm should be able to adjust how the processing will continue in the event your machine is limited.
 
 Before getting started, the first thing to do is to load the required packages. Most of the processing work will actually be accomplished by SAGA GIS, thus there are only a few packages required here.
 
 ```{r Load Packages, include=FALSE}
 
-ls <- c("tidyverse", "raster", "xml2", "sf", "lubridate", "foreach", "rvest", "httr", "tools", "terra")
+ls <- c("tidyverse", "terra", "xml2", "sf", "lubridate", "foreach", "rvest", 
+        "httr", "tools")
 new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new_packages)) install.packages(new_packages)
 lapply(ls, library, character.only = TRUE)[0]  # load the required packages
@@ -53,10 +52,12 @@ Run the below function to detect and install SAGA GIS if necessary for your syst
 # too old (< 7.3.0), it will download and install 7.3.0 (latest lts)
 
 saga_cmd <- get_saga()
+saga_ver <- system2(saga_cmd, "-v", stdout = TRUE)
+saga_ver <- unlist(regmatches(saga_ver, regexec("Version:\\s*(.*?)\\s*\\(", saga_ver)))[2]
 
 ```
 
-In this next chunk, you enter the only input data required for this sheet to function, the rest is (mostly) automated! Simply input the AOI, the choice of resolutions you want outputted, and a projection code.
+In this next chunk, you enter the only input data required for this sheet to function, the rest is (mostly) automated! Simply input the name of the AOI folder, and a projection code.
 
 ```{r R Data Objects, include=FALSE}
 
@@ -82,58 +83,12 @@ chm_raw <- rast(file.path(AOI.dir, "_original_files", "chm", "w001001.adf"))
 # extent for both the dem and chm are not the same so they will both need to be 
 # reset to have the correct resolution, crs, and extents. Want to reproject the
 # smaller raster to the larger one so that no data is accidentally lost
-# if(ncell(dem_raw) >= ncell(chm_raw)) {
-#   
-#   system2(saga_cmd, paste(
-#     "pj_proj4 4", 
-#     "-SOURCE", file.path(AOI.dir, "_original_files", "dem", "w001001.adf"),
-#     "-CRS_PROJ4", shQuote(projection(CRS(paste0("+init=epsg:", epsg)))), 
-#     "-TARGET_DEFINITION 0", 
-#     "-TARGET_USER_SIZE 1", 
-#     "-GRID", file.path(AOI.dir, "_original_files", "dem", "dem")
-#   ))
-#   system2(saga_cmd, paste(
-#     "pj_proj4 4", 
-#     "-SOURCE", file.path(AOI.dir, "_original_files", "chm", "w001001.adf"), 
-#     "-CRS_PROJ4", shQuote(projection(CRS(paste0("+init=epsg:", epsg)))),
-#     "-TARGET_DEFINITION 1", 
-#     "-TARGET_TEMPLATE",  file.path(AOI.dir, "_original_files", "dem", "dem.sdat"), 
-#     "-GRID", file.path(AOI.dir, "_original_files", "chm", "chm")
-#   ))
-#   
-# } else if(ncell(dem_raw) < ncell(chm_raw)) {
-#   
-#   system2(saga_cmd, paste(
-#     "pj_proj4 4", 
-#     "-SOURCE", file.path(AOI.dir, "_original_files", "chm", "w001001.adf"),
-#     "-CRS_PROJ4", shQuote(projection(CRS(paste0("+init=epsg:", epsg)))), 
-#     "-TARGET_DEFINITION 0", 
-#     "-TARGET_USER_SIZE 1", 
-#     "-GRID", file.path(AOI.dir, "_original_files", "chm", "chm")
-#   ))
-#   system2(saga_cmd, paste(
-#     "pj_proj4 4", 
-#     "-SOURCE", file.path(AOI.dir, "_original_files", "dem", "w001001.adf"), 
-#     "-CRS_PROJ4", shQuote(projection(CRS(paste0("+init=epsg:", epsg)))),
-#     "-TARGET_DEFINITION 1", 
-#     "-TARGET_TEMPLATE",  file.path(AOI.dir, "_original_files", "chm", "chm.sdat"), 
-#     "-GRID", file.path(AOI.dir, "_original_files", "dem", "dem")
-#   ))
-#   
-# }
-# 
-# writeRaster(rast(file.path(AOI.dir, "_original_files", "dem", "dem.sdat")), 
-#             file.path(covariate_file_path, "1m", "dem.tif"), overwrite = TRUE)
-# writeRaster(rast(file.path(AOI.dir, "_original_files", "chm", "chm.sdat")), 
-#             file.path(covariate_file_path, "1m", "chm.tif"), overwrite = TRUE)
-
 if(ncell(dem_raw) >= ncell(chm_raw)) {
   in_1 <- "dem"; in_2 <- "chm"
 } else {
   in_1 <- "chm"; in_2 <- "dem"
 }
-saga_ver <- system2(saga_cmd, "-v", stdout = TRUE)
-saga_ver <- unlist(regmatches(saga_ver, regexec("Version:\\s*(.*?)\\s*\\(", saga_ver)))[2]
+
 tool_list <- list(
   header = paste0(
     "<?xml version='1.0' encoding='UTF-8'?>
@@ -206,16 +161,22 @@ xml_dir <- ifelse(
   file.path(dirname(dirname(saga_cmd)), "share", "saga", 
             "toolchains", "transform_original.xml")
 )
+
+# Write the toolchain xml to a writeable folder
 write_xml(read_xml(call), xml_dir)
+
+# Create the system command and run it
 sys_cmd <- paste("toolchains reproject_original", 
                  "-dem", file.path(AOI.dir, "_original_files", "dem", "w001001.adf"), 
                  "-chm", file.path(AOI.dir, "_original_files", "chm", "w001001.adf"))
 system2(saga_cmd, sys_cmd)
 
+# Try stacking the outputs
 lidar <- rast(list.files(file.path(AOI.dir, "_original_files"), 
                          pattern = "chm.tif|dem.tif", 
                          full.names = TRUE, recursive = TRUE))
 
+# Reset the CRS to have the correct parameters and re-save those files
 crs(lidar) <- projection(CRS(paste0("+init=epsg:", epsg)))
 
 for(i in names(lidar)) {
@@ -225,7 +186,6 @@ for(i in names(lidar)) {
 }
 
 ```
-
 
 This next chunk is a function which will start the pre-processing of a 1m resolution DEM into your desired DEM resolutions. This is following the examples set out by Lucas Jarron and Nicholas Coops, except this time R will be used to call SAGA GIS functions rather than using ArcGIS or QGIS.
 
@@ -237,11 +197,7 @@ Next, points are placed in the middle of these grid cells using "Grid values to 
 
 Now that we have points where we want them, they can be attributed using the "Add grid values to shapes" tool. Overlaying the points on the smoothed DEM, the elevations are extracted to the point data. Source: http://www.saga-gis.org/saga_tool_doc/7.4.0/shapes_grid_1.html
 
-Resampling was left to the default setting of B-spline interpolation. I'm not familiar with the different resampling techniques but I've seen this used widely for floating point data so I felt it was fine to leave it as it is.
-
-The resulting DEM finally cropped to the data in case there was any shrinkage occurring during the processing. If there was, it saves it as a separate geotiff file.
-
-The XML code is processed and written to the "<SAGA_PATH>/tools/toolchains" folder. Each time it loops through for a different resolution, some of the parameters are recalculated based on the desired resolution and the XML file gets re-written. SAGA is called after the XML file is written to process the toolchain XML, and all output DEM's will be located in the DEM folder.
+A grid was then created from the points layer at the specified resolution. The grid was then cropped to the edges of where data is present in order to speed up processing time as much as possible downstream.
 
 ```{r Derive Lower Resolutions, include=FALSE}
 
@@ -501,10 +457,11 @@ lower_resolutions <- function(
       full.names = TRUE)
     )
     
-    output <- rast(list.files(
+    # Rename output files
+    output <- list.files(
       covariate_out_path, 
       pattern = paste(basename(grid_1m), "grid_downscaled.tif", sep = "|"),
-      full.names = TRUE, ignore.case = TRUE))
+      full.names = TRUE, ignore.case = TRUE)
     
     file.rename(output, file.path(dirname(output), tolower(basename(output))))
     list.files(covariate_out_path, pattern = basename(grid_1m), full.names = TRUE)
@@ -514,9 +471,11 @@ lower_resolutions <- function(
 
 ```
 
-Below is the function which generates all SAGA covariate layers used in the PEM project. The first part of this chunk is the XML code for creating the tool chain. Within the function, this only needs to be ran once since it gets changed based on resolution with a much simpler function below it.
+Below is the function which generates all SAGA covariate terrain layers used in this project. The first part of this chunk is the XML code for creating the tool chain. Within the function, this only needs to be ran once since it gets changed based on resolution with a much simpler function below it.
 
 Certain parameters are defined within the toolchain which are important for some of the SAGA layers in order to keep things relatively efficient as well as accurate. These parameters include:
+
+min_sunrise/max_sunset: Calculations for the minimum sunrise and maximum sunset times over the course of one year. This helps to keep the time for potential incoming solar radiation layer at reasonable levels so that it doesn't take forever creating the layer.
 
 scale_param: This defines the TRI (ruggedness) search area and channel network length. Essentially, the function scales up the resulting value at low resolutions and scales it down at higher resolutions. Since ruggedness looks at an area around the focal cell, it's important to scale this based on resolution since differences will be miniscule at low resolutions, but more dramatic at higher resolutions. This is also used in the "channel network" grid tool to define how long a channel needs to be before it is no longer considered a channel, thus at high resolutions channels need to be continuous for a longer segment before they are considered a channel.
 
@@ -527,28 +486,42 @@ tpi_param: This defines a search radius around a cell. I figured since it has to
 openness_param: This parameter is for using the multi-scaled approach to defining openness. I found through exhaustive testing that this parameter is best defined by half the number of columns, which produced the best looking (least blocky) result out of the plethora of other trials ran.
 
 The workflow for this function is as follows:
-1. Script the XML code used for the SAGA toolchain which includes the following tools:
+I. Perform sanity checks on the function inputs
+II. Define the tool specific parameters using R language
+III. Build the XML code used for the SAGA toolchain which includes the following tools:
 
-1. Fill Sinks XXL (Wang & Liu): For filling sinks in the DEM and only returning a DEM
+1. Fill Sinks in a DEM using the Sink Drainage Route Detection, and subsequent Sink removal tools: For filling sinks in the DEM and only returning a DEM
+
 2. Slope, Aspect, Curvature: returns Slope, Aspect, General Curvature, and Total Curvature rasters
-3. Flow Accumulation (Recursive): Creates the "total catchment area" (TCA) intermediate layer. This layer is only used in the generation of the TWI, and not in the final rasterstack.
+
+3. Flow Accumulation (Recursive): Creates the "total catchment area" (TCA) intermediate layer. This layer is only used in the generation of the TWI, and not in the final raster stack.
+
 4. Topographic wetness index (TWI): Creates the TWI for the study area. I found these to be the best methods based on exhaustive testing of many other methods. Rather than using the specific catchment area, TCA is used and converted all at once within this tool thus it is more efficient. My methods are based on those found here: https://gracilis.carleton.ca/CUOSGwiki/index.php/Enhanced_Wetness_Modelling_in_SAGA_GIS 
+
 5. Channel Network: This creates a channel network grid using the filled DEM and the TCA layer as an initiation grid. I found that using the initiaion value of 1,000,000 worked to create channels consistently at all scales, thus I propose using that here as well. scale_param is used here to define how long a stream needs to be in pixels before it is considered a stream. Source: https://sourceforge.net/projects/saga-gis/files/SAGA%20-%20Documentation/SAGA%20Documents/SagaManual.pdf/download 
-Note: This is an intermediate layer and is not used in the final rasterstack
+Note: This is an intermediate layer and is not used in the final raster stack
+
 6. Overland Flow Distance to Channel Network: This tool draws the overland flow distance to the channel network created in step 5. In order to create a raster that is used to the borders of the grid, the "boundary" option had to be set to "true" This may not give a realistic representation of this variable at a given study area, but without this it constricts the final grid.
+
 7. Multiresolution Index of Valley Bottom Flatness (MRVBF): Looks at valley bottom flatness and ridge top flatness and uses the mrvbf_param to define the "initial threshold for slope" parameter. The input DEM's used from here all use the original, unfilled DEM.
+
 8. Terrain Ruggedness Index (TRI): Looks at ruggedness at a specified distance away from a focal cell.
+
 9. Convergence index: This tool is unchanged from the parameters defined by Lucas and Nicholas (uses 3x3 gradient to determind convergence)
+
 10. Topographic Openness: Calculates openness across a landscape at multiple scales. The advantage to the multi-scale approach is that it calculates the values at the edges of the map, whereas the line-tracing method does not. Multi-scale keeps things more consistent I would wager. This outputs both negative and positive openness.
+
 11. Diurnal Anisotropic Heat: The settings are unchanged from the default.
+
 12. Topographic Position Index (TPI): This calculates the position of a cell relative to neighboring cells in a defined vicinity. This value could easily change depending on the scale of interest. When running this tool, it pastes the default search parameters; however, it actually runs the ones defined by the tpi_param code. This is a bug from SAGA, but has no effect on the outcome of the TPI, it outputs it properly.
+
 13. Potential Incoming Solar Radiation: This calculates direct and diffuse insolation from a range of days spanning a whole year. I've restricted the time from between 3:30am and 8:30pm which encompasses the earliest sunrise and latest sunset of 2018 in the Kamloops area, rounded to the nearest 30 minutes. Source: https://www.nrc-cnrc.gc.ca/eng/services/sunrise/advanced.html
-Note: It would be good to automate that step somehow.
+
 14. Change Grid Value: Changes the grid values of 0 to -99999 (i.e.: no data) for the insolation grids
+
 15. Export Raster: The final output(s)
 
-This function requires that you specify an input file path to a DEM, not an input raster (same for all functions in this document).
-
+This function requires that you specify an input file DEM either as a raster file or a file path to a raster file. The files will be written in a path either specified or relative to the input DEM.
 
 ```{r DEM Derived Layers, include=FALSE}
 
@@ -673,7 +646,7 @@ dem_derived_layers <- function(
     </tool>"
     ),
     
-    #    Can script more output curvature types, see:
+    # Can script more output curvature types, see:
     # http://www.saga-gis.org/saga_tool_doc/7.3.0/ta_morphometry_0.html
     slope = paste0(
       "<tool library='ta_morphometry' tool='0' name='Slope, Aspect, Curvature'>
@@ -1079,7 +1052,14 @@ dem_files <- grep("1m", list.files(covariate_file_path, pattern = "dem.tif",
 covariate_list <- foreach(i = dem_files, .final = function(x) 
   setNames(x, basename(dirname(dem_files)))) %do% {
   dem_derived_layers(i, saga_cmd = saga_cmd)
-}
+  }
+
+```
+
+Additionally, we need to produce some raster layers from the ClimateBC program: http://climatebc.ca/
+The program takes as an input a DEM provided as a .asc file in the 4326 projection. Unfortunately, the program has no CLI and I'm not familiar with how to create one from a given program, so as a user you will need to build those layers yourself in the program and then come back here to the code and run the processing to reproject the layers back to your desired EPSG.
+
+```{r ClimateBC rasters}
 
 # Create DEM files for use with ClimateBC program:
 clim_bc_path <- file.path(file.path(AOI.dir, "0_raw_inputs", "ClimateBC_Layers"))
@@ -1152,6 +1132,9 @@ for(i in dem_files) {
 # Create climate layers for normal annual & seasonal 1961-1990, same for 1991-2010, 
 # for each resolution using the ClimateBC program. When that finishes, come back 
 # here for renaming and saving the variables to their final location.
+# ______________________________________________________________________________
+# ______________________________________________________________________________
+# ______________________________________________________________________________
 
 # Use SAGA to bulk transform grids
 # Folders indicate resolutions, subfolders are the data attribute

@@ -1,6 +1,6 @@
 ---
 title: "Download base data from BC data catalogue"
-author: "Matt Coghill and Gen Perkins"
+author: "Matt Coghill"
 script author: "Matt Coghill"
 output: html_document
 ---
@@ -9,11 +9,11 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-
+The purpose of this script is to download the relevant spatial data for BEC zones, VRI, TEM, waterbodies and the road network. Data is downloaded directly from the [BC Data Catalogue](https://catalogue.data.gov.bc.ca/dataset?download_audience=Public) using the [bcdata](https://github.com/bcgov/bcdata) package.
 
 ```{r packages, include=FALSE}
 
-ls <- c("bcdata", "bcmaps", "tidyverse", "raster", "stars", "foreach", 
+ls <- c("bcdata", "bcmaps", "tidyverse", "terra", "stars", "foreach", 
         "doParallel", "fasterize", "xml2")
 github_ls <- c("bcmapsdata")
 new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
@@ -30,31 +30,30 @@ source(file.path('_functions', 'get_saga.R'))
 
 ```
 
-## Overview 
-
-This script downloads the relevant spatial data for BEC zones, VRI, TEM, waterbodies and the road network used in stage 1 of PEM processing. Data is downloaded directly from the [BC Data Catalogue](https://catalogue.data.gov.bc.ca/dataset?download_audience=Public) using the [bcdata](https://github.com/bcgov/bcdata) package.
-
 ### Datasets to download 
 
 * BEC - [Biogeoclimatic Ecosystems Classification](https://catalogue.data.gov.bc.ca/dataset/bec-map) are used to define and/or select specific "subzones" within a defined study area. 
 
 * Vegetation Resource Inventory (VRI) - This layer includes a variety of vegetation measure, including cutblock age, TEM data and ..... Detailed data standards can be found [here](https://www2.gov.bc.ca/gov/content/industry/forestry/managing-our-forest-resources/forest-inventory/data-management-and-access/vri-data-standards).  
 
-* Freshwater Atlas -  The atlas is separated into the different types of waterbodies (lakes, rivers, wetlands, streams, man made, etc.), which requires a seperate download per type. Alternatively a single combined layer can be downloaded by is limited to linear data type. A parameter within the function can be set to "polygon" (the default option) or "linear".  
+* Freshwater Atlas -  The atlas is separated into the different types of waterbodies (lakes, rivers, wetlands, streams, man made, etc.), which requires a seperate download per type. Alternatively a single combined layer can be downloaded but is limited to linear data type. A parameter within the function can be set to "polygon" (the default option) or "linear".  
 
-* Road network 
+* Road network - In previous works, the raw road network was found to be too detailed. The raw road network is filtered to only keep named roads, and then the up to date FSR layer is downloaded and merged with the filtered road network to produce a really good representation of where roads are actually located on the landscape.
+
+* Terrestrial Ecosystem Map (TEM) - If a study area contains a TEM from a previous project, it is downloaded here. A TEM is similar to a PEM, though it is a more expert based approach, whereas a PEM uses machine learning to find the site series.
+
+* Cutblocks - This augments the VRI layer to highlight cutblock polygons in the area which may be useful for determining where/where not to sample
 
 
 
 
 ## Work-flow
 
-This script relies on having a spatial file (AOI.gpkg) defining the study area (area of interest - AOI). Firstly the area of interest is defined along with input and output folders. 
+This script relies on having a spatial file (AOI.gpkg) defining the study area (area of interest - AOI). This will need to be created from your DEM file.
 
 Where a subset of the study area is being used (ie. by subzone), a character string is used to define the subzone(s) of interest and filter only the areas you specify. The default value (NULL) will include all subzones. 
 
 Finally, it is assumed that since you have an AOI shapefile that it was produced in the initial LiDAR script, implying that some raster files were produced (height metrics and dem). If a subzone filter was applied, you may want to mask your raster to the new AOI shape so that they are excluded from further analysis.
-
 
 ```{r Parameters}
 
@@ -67,6 +66,7 @@ saga_cmd <- get_saga()
 
 ```
 
+In order to get accurate polygon edges for each raster resolution, they need to be individually created and saved. The polygonization of a raster will take place using SAGA GIS (chosen for speed). It first replaces values in a raster with 0's, and then polygonizes the "grid classes" (of which there would only be a single class, 0). The output raster is saved as a geopackage.
 
 ```{r Raster to polygon}
 
@@ -78,7 +78,7 @@ for(i in dem_files) {
   shape_subdir <- file.path(shape_dir, basename(dirname(i)))
   if(!dir.exists(shape_subdir)) dir.create(shape_subdir, recursive = TRUE)
   # First, crop grids to data
-  saga_ver <- system(paste(saga_cmd, "-v"), intern = TRUE)
+  saga_ver <- system2(saga_cmd, "-v", stdout = TRUE)
   saga_ver <- unlist(regmatches(saga_ver, regexec("Version:\\s*(.*?)\\s*\\(", saga_ver)))[2]
   
   tool_list <- list(
@@ -168,8 +168,6 @@ for(i in dem_files) {
 }
 
 ```
-
-
 
 A single function is used to download BEC zone info, VRI shapes, TEM shapes (if applicable), water bodies, and roads all in one go. Each is clipped to the extent of the study area at each resolution, though this may not be very efficient. 
 
@@ -385,7 +383,7 @@ get_bc_shapes <- function(in_aoi = NULL,
   
   # Mask raster files with updated study area shape
   if(isTRUE(update_raster_extents) && !is.null(subzones)) {
-    message("\rUpdating raster shapes")
+    message("\rThis section needs updating to use the 'terra' package!\nUpdating raster shapes")
     study_area_rast <- fasterize(study_area, raster(raster_files[1]))
     in_stack <- foreach(i = raster_files, .combine = c) %do% {
       r <- raster(i)
@@ -401,7 +399,7 @@ get_bc_shapes <- function(in_aoi = NULL,
 
 ```
 
-We can define the parameters and run the above function.
+We can define input AOI's at each resolution and run the function to save all of the downloaded files. If there are only some subzones of interest, the raster files can be updated to that extent here.
 
 ```{r Run Functions}
 
@@ -424,14 +422,8 @@ raster_files <- list.files(
 
 bc_shapes <- foreach(aoi = in_aoi, .final = function(x) 
   setNames(x, basename(dirname(in_aoi)))) %do% {
-  download_shapes <- get_bc_shapes(in_aoi = aoi)
-  list.files(dirname(in_aoi))
-}
+    download_shapes <- get_bc_shapes(in_aoi = aoi)
+    list.files(dirname(in_aoi))
+  }
 
-
-## Can throw the whole chunk above into a loop to get exact clipping boundaries for multiple resolutions
 ```
-
-* Accessing the [consolidated cutblock layer](https://catalogue.data.gov.bc.ca/dataset/harvested-areas-of-bc-consolidated-cutblocks-) using the bcdata package 
-
-* Using satelite imagery to identify recent cutblocks (this can also be used to mask large waterbodies. ).

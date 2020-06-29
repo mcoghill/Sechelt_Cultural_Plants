@@ -1,21 +1,13 @@
 ---
 title: "Satellite Derived Covariates Prep"
-subtitle: "by Will MacKenzie"
-Script author: "Gen Perkins"
-date: "01/01/2020"
+author: "Matt Coghill"
+script author: "Matt Coghill"
 output: html_document
-
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
-
-## Sentinel 
-
-Much of the original script written by Gen has been modified by myself (Matt) and scripted as functions below. Anything that I wasn't sure on deleting I have commented out. I've included as much detail as I can to justify the reasoning behind the code I've written.
-
-
 
 # Format sentinel dataset
 
@@ -23,9 +15,9 @@ Once the data has been downloaded, the layers are clipped to a template raster (
 
 
 
-This document is going to be used to pull in relevant satellite layers for analysis. This is heavily adapted from the Hackathon in Prince George (https://github.com/bcgov-datasci-labs/BCForestNonForestPEM/blob/master/01_Load_Sentinel.R) and from conversations I had with Tom Hengl regarding satellite imagery. I have provided functions to download a single sentinel scene (the original way and no longer recommended to use) and for downloading cloud free medians of bands as they span across a given time frame (ex: spring). This is the recommended path to choose now, but I will walk through both functions regardless.
+This document is going to be used to pull in relevant satellite layers for analysis. This is heavily adapted from the Hackathon in Prince George (https://github.com/bcgov-datasci-labs/BCForestNonForestPEM/blob/master/01_Load_Sentinel.R) and from conversations I had with Tom Hengl regarding satellite imagery. I have provided functions for downloading cloud free medians of satellite bands as they span across a given time frame (ex: spring). This requires an interface to Google Earth Engine.
 
-The first thing that will be done is load in the required packages. We are relying on two packages not available on CRAN (getSpatialData and rgee) so they have to be downloaded and installed from github which may require the "devtools" package (not tested). getSpatialData is used to download a single scene whereas rgee harnesses the google earth engine to process large amounts of data.
+The first thing that will be done is load in the required packages. SAGA CMD is required here for spatial processing as well, so it is important that it is loaded here too.
 
 ```{r load library, echo = FALSE}
 
@@ -126,14 +118,14 @@ python_setup <- function(x) {
     }
     terminalKill(term_id)
   }
-  return(character())
+  return(invisible())
 }
 
 env <- "sentinel_sechelt"
 python_setup(env)
 ```
 
-Here, we can load some local directories and file paths. SAGA will be used to process band images (reprojecting and clipping to an AOI) so it is necessary to have it installed on your system (could possibly be scripted to check for a valid SAGA installation and throw an error if it is missing)
+Here, we can load some local directories and file paths. SAGA will be used to process band images (reprojecting and clipping to an AOI) so it is necessary to have it installed on your system.
 
 ```{r Set Directories, message=FALSE, warning=FALSE}
 
@@ -157,11 +149,17 @@ raw_path <- file.path(AOI_dir, "0_raw_inputs", "satellite_layers")
 
 ```
 
-The chunk below is provides two functions to download and extract the relevant bands from the Sentinel-2 satellites. In the first function (get_sentinel_scene), we have capabilities to download a single scene from a given date; however, I stress that it's not recommended to use that function anymore. I'll walk through the steps though. 
+The chunk below is provides the first of two major functions in this script. In this case, get_sentinel_ee() is used to download cloud free processed images from Google Earth Engine to your machine. The function needs an AOI input as an sf object, an ouptut EPSG code for transforming if necessary, a template raster which helps to determine the maximum download size, the date ranges provided as a table (id, from, to), the name of the Google Drive folder for downloading the files (a subfolder will be created within this folder for each of the date ranges specified), and a download folder to your PC.
 
-First, you need to provide it a table created by the getSentinel_query function (in the getSpatialData package). You will also provide row ID's that specify which records you wish to download from the sentinel_query_table. You can provide one ID if your AOI is encompassed by the scene, or multiple ID's if your AOI is encompassed by multiple scenes. You also need to provide a download folder and an extraction folder path (self explanatory). The function first checks your arguments to make sure that you've provided enough and the right type of data, and then proceeds with the function (downloads data from Copernicus, extracts the files from the zip files to a destination folder) 
+This function requires that you have a google earth engine account created using a valid GMail account: https://code.earthengine.google.com/#
 
-The second function (get_sentinel_ee) provides a similar purpose; however it uses Google Earth Engine to do the processing and you need to download a result rather than the raw data. You need to provide the function with an AOI (sf dataframe or sfc object), a template raster that is simply used to adjust the maximum allowable pixels to process, a table of date ranges, and a path to a download folder. This is the recommended function to use for processing satellite imagery because it can capture differences in seasons, for example.
+First, you must "initialize" the earth engine environment. This will open your web browser to a couple of pages asking for permission to write to your google drive folders. In the end, you will be given a key to copy and paste into a popup window in this R session, and initializaiton should be complete. Note that in the end the files written to Google Drive should not be very large, likely less than 500 Mb total, so that would be a good amount of available space to have on hand. It would also be possible to script automatic deletion of files after they are downloaded as well.
+
+Next, provide the AOI shape as either an sf or sfc object. Note: It's a good idea to buffer the AOI in order to capture the edge effects in processing.
+
+You need to create a dataframe with three columns: The first is an ID column, which will be used for creating subfolders in your downloads folder later. The second column is a start date column, and the third is an end date column. The example given here separates the dates by season; however, you can use as many or as little as you wish.
+
+Finally the function is ran. You should specify a drive_folder for where outputs will be stored to on Google Drive as well as a download folder for when files are downloaded locally. The function takes sentinel 2 images from a specified date range (ex: winter), performs a cloud masking function to remove clouds from an image stack, and then calculates the median across that date range. The final image is clipped to your AOI, reprojected in BC Albers, and then saved to your google drive folder. Lastly, the image is downloaded locally to your machine where you specify.
 
 ```{r Satellite Download}
 # This is a new function, allowing users to process Sentinel 2 bands in an area 
@@ -174,8 +172,7 @@ get_sentinel_ee <- function(
   template_raster = NULL, 
   date_ranges = NULL, 
   drive_folder = NULL, 
-  download_folder = NULL, 
-  gmail_address = NULL) 
+  download_folder = NULL) 
   {
   # Perform checks of function inputs
   if(!any(class(aoi) %in% c("sf", "sfc", "sfg")) || is.null(aoi)) {
@@ -221,8 +218,8 @@ get_sentinel_ee <- function(
     )
   }
   
-  drive_find(n_max = 1)
-  #drive_auth(email = gmail_address)
+  # Authorize R to view/edit your Google Drive folders
+  drive_auth()
   
   # Create a cloud masking function which will run in GEE
   cloud_mask <- function(image) {
@@ -299,36 +296,11 @@ get_sentinel_ee <- function(
 
 ```
 
-The next chunk is an outline on how to prepare to use the function get_sentinel_scene. I've blanked it out here because I prefer using GEE to download images. First, we need to log in to Copernicus. If you don't have an account, you can create one here: https://scihub.copernicus.eu/dhus/
-
-Next, we want to set some parameters. The getSpatialData package requires that an area of interest (AOI) be set prior to beginning a session to search and download records. Here, we are loading in the AOI shapefile and simply telling R what the proj4 code for the AOI is. The getSpatialData uses this for querying purposes. 
-
-Next, a date range is supplied in order to filter down the results from either copernicus or USGS. Enter dates in the YYYY-MM-DD format.
-
-Finally the function is ran. If multiple scenes are downloaded because there was no single scene that encompassed an AOI, they are automatically mosaicked together.
-
-Finally, we can plot the RGB layers to make sure that the outputs are correct
-
-
-The following chunk builds a function that calls SAGA GIS to perform bulk transformations of the raw satellite files to the projection used in the PEM project. It is used in concert with other chunks below to build a larger toolchain which will be dependent on the files extracted.
-
-A quick note regarding SAGA versions: SAGA 7.5.0 has a bug in the coordinate transformation algorithm which is producing a lot of spots on the resulting maps. 7.4.0 is recommended to be used instead; however, if this is fixed in the next version, the script should be updated to change the clipping mechanism: currently, the way this works is that all of the grids are transformed at once, and then after that they are individually clipped and saved; however, 7.5.0 introduced that the grids could be clipped all at once which is much more efficient. If the transformation issue is fixed in a future released, this functionality should be incorporated which would negate the use for the "Mask_Input" variable to be pasted in the toolchain in a loop.
-
-
-This next chunk will perform a similar process using the Google Earth Engine (again, the recommeded process). First, you must "initialize" the earth engine environment. This will open your web browser to a couple of pages asking for permission to write to your google drive folders. In the end, you will be given a key to copy and paste into a popup window in this R session, and initializaiton should be complete. Note that in the end the files written to Google Drive should not be very large, likely less than 500 Mb total, so that would be a good amount of available space to have on hand. It would also be possible to script automatic deletion of files after they are downloaded as well.
-
-Next, provide the AOI shape as either an sf or sfc object. Note: It must be in the 4326 projection for GEE to properly read it. It's also a good idea to buffer the AOI in order to capture the edge effects in processing.
-
-You need to create a dataframe with three columns: The first is an ID column, which will be used for creating subfolders in your downloads folder later. The second column is a start date column, and the third is an end date column. The example given here separates the dates by season; however, you can use as many or as little as you wish.
-
-Finally the function is ran. You should specify a drive_folder for where outputs will be stored to on Google Drive as well as a download folder for when files are downloaded locally. The function takes sentinel 2 images from a specified date range (ex: winter), performs a cloud masking function to remove clouds from an image stack, and then calculates the median across that date range. The final image is clipped to your AOI, reprojected in BC Albers, and then saved to your google drive folder. Lastly, the image is downloaded locally to your machine where you specify.
-
-
 # Generate satellite derivatives 
 
-After running your preferred download (and extraction) function, the satellite band files are then reprojected and masked using the DEM's projection parameters and resolution. The DEM should be supplied as a file path (note: the function has changed now to perform only across a single DEM rather than a whole bunch. If you want to do multiple resolutions, you can do so in an iterative loop around this function).
+Running the get_sentinel_ee function should ouptput rasters with the desired CRS, so no reprojection of the satellite bands is necessary here.
 
-The function bands_to_indices will take bands located in a given folder (satellite_files), reproject and clip them to a given raster (reference_raster), and outputs a raster stack of indices which can be optionally saved to the main covariates folder. The option "single_scene" is essentially asking which function for downloading data you ran above since it has an impact on the spectralIndices function. The option remove_index can be used if you don't want a particular index in your results (ex: EVI2 seems to generate large areas of no data).
+The function bands_to_indices will take bands located in a given folder (satellite_files), pan sharpen the lower resolution bands, reproject and clip them to a given raster (reference_raster), and outputs a raster stack of indices which can be optionally saved to the main covariates folder. The option remove_index can be used if you don't want a particular index in your results (ex: EVI2 seems to generate large areas of no data).
 
 Finally, these reprojected and masked files are used in the processing of vegetation and soil indices. Here, the RStoolbox package is being used to generate these indices all at once. This is not meant to be a comprehensive list of which indices should be used for the PEM project, however I think it provides a solid base for thinking of which indices to include. Some documentation:
 
@@ -344,7 +316,6 @@ You might notice that not all of the indices from the ArcGIS and USGS websites a
 bands_to_indices <- function(
   reference_raster = NULL, 
   satellite_files = NULL, 
-  single_scene = FALSE, 
   output_path = NULL, 
   remove_index = NULL, 
   saga_cmd = NULL) 
@@ -387,8 +358,6 @@ bands_to_indices <- function(
   # Band 8 only as pan band:
   # pan <- raster(grep("b08", satellite_files, value = TRUE))
   
-  
-  
   # Mean of bands 2, 3, 4, and 8 as pan band, and convert to raster object:
   pan <- mean(res_10, na.rm = TRUE) %>% raster()
   res_10 <- stack(res_10@ptr$filenames)
@@ -422,7 +391,7 @@ bands_to_indices <- function(
     blue = "blue", green = "green", red = "red", nir = "nir", 
     redEdge1 = "redEdge1", redEdge2 = "redEdge2", redEdge3 = "redEdge3", 
     swir2 = "swir2", swir3 = "swir3", 
-    scaleFactor = ifelse(single_scene == TRUE, 10000, 1), 
+    scaleFactor = 1, 
     coefs = list(swir2ccc = satellite_stack$swir2@data@min, 
                  swir2coc = satellite_stack$swir2@data@max)
   )
@@ -588,8 +557,7 @@ ee_download <- get_sentinel_ee(
   template_raster = dem_hi_res,
   date_ranges = seasons_df,
   drive_folder = "Sentinel2",
-  download_folder = file.path(raw_path, "1_download"), 
-  gmail_address = "matthew0coghill@gmail.com"
+  download_folder = file.path(raw_path, "1_download")
 )
 
 season_dirs <- dir(file.path(raw_path, "1_download"), 
@@ -603,7 +571,6 @@ for(i in season_dirs) {
     sat_indices <- bands_to_indices(
       reference_raster = dem, 
       satellite_files = list.files(i, full.names = TRUE),
-      single_scene = FALSE,
       output_path = dirname(dem), 
       remove_index = c("EVI2"), 
       saga_cmd = saga_cmd
@@ -623,171 +590,26 @@ https://www.researchgate.net/profile/Hanqiu_XU/publication/232724072_Modificatio
 ```{r find water from MNDWI}
 # Looking at all of the mndwi files produced, the best one to use is going to be
 # the one from the summer time frame
-mndwi_summer <- raster(file.path(output_path, "sentinel2_mndwi_summer.tif"))
+for(i in dem_list) {
+  if(file.exists(file.path(dirname(i), "sentinel2_mndwi_summer.tif"))) {
+    mndwi_summer <- rast(file.path(dirname(i), "sentinel2_mndwi_summer.tif"))
+    
+    # Reclassify raster values
+    water <- classify(mndwi_summer, matrix(c(-Inf, 0, NA, 
+                                             0, Inf, 1), 
+                                           ncol = 3, byrow = TRUE))
+    
+    # Raster to sf conversion via stars package
+    water_sf <- st_as_stars(raster(water)) %>%
+      st_as_sf(as_points = FALSE, merge = TRUE, na.rm = TRUE, use_integer = TRUE) %>%
+      st_geometry() %>% 
+      st_union()
+    
+    st_write(
+      water_sf, 
+      file.path(AOI_dir, "0_raw_inputs", "base_layers", basename(dirname(i)), "water_mndwi.gpkg"), 
+      delete_layer = TRUE)
+  }
+}
 
-# Reclassify raster values
-water <- reclassify(mndwi_summer, c(-Inf, 0, NA, 0, Inf, 1))
-
-# Raster to sf conversion via stars package
-water_sf <- st_as_stars(water) %>%
-  st_as_sf(as_points = FALSE, merge = TRUE, na.rm = TRUE, use_integer = TRUE) %>%
-  st_geometry() %>% 
-  st_union()
-
-st_write(
-  water_sf, 
-  file.path(AOI_dir, "0_raw_inputs", "base_layers", map_res, "water_mndwi.gpkg"), 
-  delete_layer = TRUE)
 ```
-
-
-
-
-```{r old single scene download}
-# get_sentinel_scene <- function(
-#   satellite_query_table = NULL, 
-#   satellite_record_ids = NULL, 
-#   download_folder = NULL, 
-#   extract_folder = NULL)
-#   {
-#   if(is.null(satellite_query_table) || !is.data.frame(satellite_query_table)) {
-#     stop(
-# "You must supply a data.frame object created from the getSentinel_query function")
-#   }
-#   
-#   if(is.null(satellite_record_ids) || !is.numeric(satellite_record_ids)) {
-#     stop(
-# "satellite_record_ids must be a numeric vector corresponding to the 
-# row ids of your query table")
-#   }
-#   
-#   if(is.null(download_folder) || !is.character(download_folder)) {
-#     stop("A file path to a download folder must be supplied in order to continue")
-#   }
-#   
-#   if(is.null(extract_folder) || !is.character(extract_folder)) {
-#     extract_folder <- file.path(dirname(download_folder), "2_extract")
-#   } 
-#   
-#   sentinel_record_date <- dplyr::slice(
-#     satellite_query_table, satellite_record_ids[1])$beginposition %>% 
-#     substr(start = 1, stop = 10)
-#   
-#   download_path <- file.path(download_folder, sentinel_record_date)
-#   if(!dir.exists(download_path)) dir.create(download_path, recursive = TRUE)
-#   
-#   # Download data
-#   satellite_datasets <- getSentinel_data(
-#     records = satellite_query_table[satellite_record_ids, ], 
-#     dir_out = download_path)
-#   
-#   # Extract the best bands of the data in the zip folders
-#   message("\nDownload completed, beginning extraction from .zip file(s)")
-#   for(i in satellite_datasets) {
-#     # Find all band name files
-#     sen_files_zip <- grep(".*_B.*\\.jp2$", unzip(i, list = TRUE)$Name, 
-#                           ignore.case = TRUE, value = TRUE)
-#     
-#     # Find the unique band names only (no duplicate bands at 
-#     # different resolutions)
-#     sen_band_info <- unique(gsub(".{4}$", "", 
-#                                  gsub(".*m/|.jp2$", "", sen_files_zip))) 
-#     sen_file_list <- NULL
-#     for(j in sen_band_info){ 
-#       # Make a list of the bands to extract using the highest resolution 
-#       # possible for each band
-#       if(paste0(j, "_10m.jp2") %in% basename(sen_files_zip)){
-#         sen_file_list <- c(
-#           sen_file_list, 
-#           sen_files_zip[match(paste0(j, "_10m.jp2"), basename(sen_files_zip))])
-#       } else if(paste0(j, "_20m.jp2") %in% basename(sen_files_zip)){
-#         sen_file_list <- c(
-#           sen_file_list, 
-#           sen_files_zip[match(paste0(j, "_20m.jp2"), basename(sen_files_zip))])
-#       } else if(paste0(j, "_60m.jp2") %in% basename(sen_files_zip)){
-#         sen_file_list <- c(
-#           sen_file_list, 
-#           sen_files_zip[match(paste0(j, "_60m.jp2"), basename(sen_files_zip))])
-#       }
-#     }
-#     sen_files <- unzip(i, files = sen_file_list, 
-#                        junkpaths = TRUE, exdir = extract_folder)
-#   }
-#   satellite_files <- list.files(extract_folder, pattern = ".jp2$", 
-#                                 full.names = TRUE)
-#   
-#   # Mosaic images if necessary
-#   if(length(satellite_datasets) > 1) {
-#     message("\nStarting image mosaicking")
-#     unique_bands <- gsub(".{4}$", "", gsub(".*m/|.jp2$", "", satellite_files))
-#     unique_band_id <- unique(stringr::str_sub(unique_bands, start = -3))
-#     
-#     for(i in unique_band_id) {
-#       match <- grep(i, satellite_files, value = TRUE)
-#       
-#       # SAGA is much faster at computing mosaic overlays than the raster 
-#       # package in R
-#       sys_cmd <- paste(
-#         saga_cmd, "grid_tools 3", 
-#         "-GRIDS", paste0(match, collapse = ";"),
-#         "-TARGET_OUT_GRID", file.path(extract_folder, paste0(i, "_mosaic.tif"))
-#       )
-#       system(sys_cmd)
-#     }
-#     unlink(satellite_files)
-#     return(list.files(extract_folder, pattern = ".jp2$", full.names = TRUE))
-#   }
-# }
-
-## Process single sentinel 2 scene
-#login_CopHub(username = "mcoghill")
-
-#AOI_shape <- st_read(AOI_shapefile) %>% # Gets bounding box of AOI
-#  st_bbox() %>% 
-#  st_as_sfc() %>% 
-#  st_set_crs(AOI_epsg)
-
-#set_aoi(AOI_shape)
-#set_archive(raw_path, create = TRUE)
-
-#date_range <- c("2019-07-01", "2019-09-30") # Define dates for querying spatial data
-#date_range_df <- data.frame(date_range, stringsAsFactors = FALSE)
-
-#sentinel_records <- getSentinel_query(time_range = date_range, platform = "Sentinel-2") %>% 
-#  dplyr::filter(processinglevel == "Level-2A", cloudcoverpercentage < 10)
-#getSentinel_preview(sentinel_records[2, ])
-
-#scene_download <- get_sentinel_scene(
-#  satellite_query_table = sentinel_records, 
-#  satellite_record_ids = 2, # Can give more than one number if mosaicking is necessary
-#  download_folder = file.path(raw_path, "1_download"), 
-#  extract_folder = file.path(raw_path, "2_extract"))
-
-# Extract bands 2, 3, and 4 (blue, green, and red bands)
-#rgb_files <- scene_download[c(2, 3, 4)]
-
-# Stack the RGB files
-#rgb_stack <- stack(rgb_files)
-
-# Plot results to check
-#viewRGB(x = rgb_stack, r = 3, g = 2, b = 1, maxpixels = 1e5)
-
-# ee_download <- get_sentinel_ee(
-#   aoi = AOI_bbox,
-#   template_raster = dem,
-#   date_ranges = seasons_df,
-#   drive_folder = "Sentinel2",
-#   download_folder = file.path(raw_path, "1_download")
-# )
-
-
-# sat_indices <- bands_to_indices(
-#   reference_raster = dem, 
-#   satellite_files = list.files(file.path(raw_path, "2_extract"), full.names = TRUE), 
-#   single_scene = TRUE,
-#   process_path = file.path(raw_path, "3_reproject"),
-#   output_path = output_path, 
-#   save = TRUE, 
-#   remove_index = c("EVI2", "TVI"))
-```
-

@@ -13,7 +13,7 @@ This document performs various tasks, including:
 1. Import/download of useful datasets;
 2. Combining those datasets to produce master datasets for predicting:
   + A site series raster
-  + Predictive maps for cultural plants of interest
+  + Predictive maps for cultural plants of interest (pres/abs and cover)
 
 A lot of the work stems from previously ran scripts which have:
 1. Created a 4m resolution DEM;
@@ -21,7 +21,7 @@ A lot of the work stems from previously ran scripts which have:
 3. Downloaded and produced satellite layers and indices;
 4. Downloaded BCData layers
 
-Using the RMarkdown format, I'll walk through the scripting process used to create the final maps. First, we must load/install the required packages. The dsmart package is not on CRAN, so it must be installed from bitbucket.
+Using the RMarkdown format, I'll walk through the scripting process used to create the final maps. First, we must load/install the required packages.
 
 ```{r Load Packages}
 
@@ -36,7 +36,7 @@ rm(ls, new.packages)
 
 Next, we should set some directories for this work. A lot of the scripting used here is adapted from PEM mapping, so the file folder structure used will be much the same. The idea is that if we want to apply a similar shcematic to another study area, we should only have to adjust the directories for that given study area.
 
-Additionally, we need to set the directory for where the 32-bit version of R is installed on your machine. This will be used later on in MS Access Database processing.
+Additionally, we need to set the directory for where the 32-bit version of R is installed on your machine. This will be used later on in MS Access Database processing. (will probably move function to separate script file)
 
 ```{r Set directories}
 
@@ -252,6 +252,7 @@ rm(TableList)
 
 ```
 
+After downloading the TEM datasets, we need to prepare them. The next chunk does some data wrangling of the TEM site data get more directed outputs.
 
 ```{r TEM data - Site}
 
@@ -280,6 +281,7 @@ tem_mdb_bec <- dplyr::select(
 
 ```
 
+Further data wrangling is applied to plant data from the TEM datasets.
 
 ```{r TEM Data - Plants}
 
@@ -315,7 +317,7 @@ tem_mdb_pres_cov <- sapply(c("RUBUSPE", "CORNCAN", "LEDUGRO", "VERAVIR"), functi
 ```
 
 ##TEM data extraction
-Next, we want to read in the TEM and apply some filtering/data manipulation of it. The TEM feeds into the dsmart program to predict site series for the study area, and in the end it needs columns with an integer polygon number, a unique site ID associated with the polygon number, map unit ID's, and proportions of those map units. I'll walk through the processing steps:
+Next, we want to read in the TEM polygon layer and apply some filtering/data manipulation of it. The TEM feeds into the dsmart program to predict site series for the study area, and in the end it needs columns with an integer polygon number, a unique site ID associated with the polygon number, map unit ID's, and proportions of those map units. I'll walk through the processing steps:
 
 1. Select only the important columns needed for processing. The original TEM file comes with approximately 80 columns of data which is too cumbersome to work with, so we should only select the ones important for our work: Polygon ID, BEC subzone, site series labels, site series deciles, and site series map codes.
 2. Rename the columns to something more useful
@@ -328,11 +330,12 @@ Next, we want to read in the TEM and apply some filtering/data manipulation of i
 11. Select the final dataset columns
 12. Replace remaining NA's with 0's (only applied to numerical columns, doesn't affect factor levels)
 
-The dsmart program requires a separate compositional data frame to be supplied. The data frame will have 4 columns in the end:
+The dsmart program requires a separate compositional data frame to be supplied. The data frame will have 5 columns in the end:
 1. Polygon number
 2. Map labels
-3. Map Units
-4. proportions of map units in each polygon
+3. Strata
+4. Map Units
+5. proportions of map units in each polygon
 
 It's pretty much a melted data frame from the polygon data, though I've adjusted it slightly so that it's shorter to remove rows with NA values. This compositional data frame is included in the dsmart algorithm.
 
@@ -469,7 +472,6 @@ The mdb only had pure call values, so the site series column and site series sym
 
 The three data sources (TEM excel spreadsheet, TEM mdb, and 2019 point data) are finally bound together, but only data that intersects with the original TEM map is included. We now have our 3 datasets needed to properly run the dsmart algorithm: TEM polygons with class proportion information; compositions of the TEM polygons in a separate data frame; and extra observations that will help with the prediction of each map.
 
-
 ```{r Pres/Abs and Cover Merge}
 
 # Create the raster stack (terra package) which will be used for data extraction
@@ -519,10 +521,8 @@ st_write(struct_stage, file.path(field_data_dir, "processed", "struct_stage.gpkg
 
 ```
 
-Part of the issue with a couple of the metrics is that for a couple of the plant species of interest, there are only a small handfull of presence data. This can create issues with overfitting/underfitting a model; however, there are ways around this issue. The RFUtilities package includes a class balance function to balance your sample classes, while native caret has the SMOTE or ROSE algorithm to artificially increase the low class dataset and decrease the high class datasets. Once some maps have been made, it is likely that multiple renditions of these maps will be created in order to see if any of the class balancing acts have any major effects on modelling accuracy.
-
+Part of the issue with a couple of the metrics is that for a couple of the plant species of interest, there are only a small handful of presence data. This can create issues with overfitting/underfitting a model; however, there are ways around this issue. The RFUtilities package includes a class balance function to balance your sample classes, while native caret has the SMOTE or ROSE algorithm to artificially increase the low class dataset and decrease the high class datasets. Once some maps have been made, it is likely that multiple renditions of these maps will be created in order to see if any of the class balancing acts have any major effects on modelling accuracy.
 
 The models created above are binary classification models. Since we want to look at the probability associated with locating a given plant on a map, we need to generate the probability maps for each plant species. The model will produce probability maps for each class, however we only need the output of the "TRUE" class. This will likely take a while since there are ~200 covariate layers to work with
 
 Now we will move on to cover data. Cover data is only present in two data sources: The 2019 point dataset, and the TEM mdb file. The TEM excel file will be left out of the analysis here.
-
