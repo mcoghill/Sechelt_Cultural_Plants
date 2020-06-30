@@ -87,6 +87,8 @@ function (covariates, polygons, composition, rate = 15, reals = 100,
     dir.create(file.path(outputdir, "output", "realisations"), 
         showWarnings = FALSE)
     dir.create(file.path(outputdir, "output", "models"), showWarnings = FALSE)
+    dir.create(file.path(outputdir, "output", "probabilities"), 
+               showWarnings = FALSE)
     output$locations <- list(root = file.path(outputdir, "output"), 
         realisations = file.path(outputdir, "output", "realisations"), 
         models = file.path(outputdir, "output", "models"))
@@ -186,14 +188,13 @@ function (covariates, polygons, composition, rate = 15, reals = 100,
             model <- C50::C5.0(s, y = soil_class)
         } else {
             soil_class <- base::droplevels(soil_class)
-            mod <- base::do.call(caret::train, c(list(x = s, 
+            model <- base::do.call(caret::train, c(list(x = s, 
                 y = soil_class, method = method.model), args.model))
-            model <- mod$finalModel
         }
         if (is.null(method.model)) {
             out <- utils::capture.output(summary(model))
         } else {
-            out <- utils::capture.output(model)
+            out <- utils::capture.output(model$finalModel)
         }
         cat(out, file = paste0(outputdir, "/output/models/", 
             stub, "model_", formatC(j, width = nchar(reals), 
@@ -202,7 +203,6 @@ function (covariates, polygons, composition, rate = 15, reals = 100,
         save(model, file = file.path(outputdir, "output", "models", 
             paste0(stub, "model_", formatC(j, width = nchar(reals), 
                 format = "d", flag = "0"), ".RData")))
-        
         
         ###### BIG IDEA: SWITCH TO PREDICTING USING TILES
         if (predict) {
@@ -235,21 +235,31 @@ function (covariates, polygons, composition, rate = 15, reals = 100,
                 }
             } else { # else if type == prob
                 if (zeroes == FALSE | is.null(method.model)) {
-                    r1 <- predict_landscape(model, covariates, tilesize = 500,
+                    r1 <- predict_landscape(model, covariates_t, tilesize = 500,
                                             outDir = file.path(outputdir, "tiles"), 
                                             type = "prob")
                     
                     # output is file list for each ss call
                     for(r in r1) {
-                        writeRaster(
-                            rast(r), 
-                            file.path(outputdir, "output", "realisations", 
-                                      paste0(stub, "realisation_",
-                                      formatC(j, width = nchar(reals), format = "d",
-                                              flag = "0"), ".tif")), 
-                            overwrite = TRUE)
+                        if(grepl("pred.tif", r)) {
+                            file.copy(
+                                from = r, 
+                                to = file.path(
+                                    outputdir, "output", "realisations", 
+                                    paste0(stub, "realisation_",
+                                           formatC(j, width = nchar(reals), format = "d",
+                                                   flag = "0"), ".tif")), 
+                                overwrite = TRUE)
+                        } else {
+                            file.copy(
+                                from = r, 
+                                to = file.path(
+                                    outputdir, "output", "probabilities", 
+                                    paste0(stub, "prob_", 
+                                           basename(tools::file_path_sans_ext(r)), ".tif")), 
+                                overwrite = TRUE)
+                        }
                     }
-                    
                     
                   # raster::beginCluster(cpus)
                   # r1 <- raster::clusterR(covariates, predict, 
