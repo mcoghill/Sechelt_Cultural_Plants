@@ -15,7 +15,7 @@ June update: Thinking about this a bit, I have improved the DSMART algorithm int
 ```{r Load Packages}
 
 ls <- c("sf", "raster", "fasterize", "rgdal", "caret", "ranger", 
-        "tidyverse", "terra", "foreach", "GSIF")
+        "tidyverse", "terra", "foreach", "GSIF", "gdalUtils")
 new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new.packages))
   install.packages(new.packages)
@@ -117,7 +117,7 @@ if(use_caret) {
       method = "repeatedcv", 
       number = 10, 
       repeats = 5, 
-      classProbs = FALSE,
+      classProbs = TRUE,
       p = 0.9, 
       returnData = FALSE,
       returnResamp = "final",
@@ -149,7 +149,7 @@ disag <- disaggregate(
   args.model = args.model,
   outputdir = file.path(AOI_dir, "1_map_inputs", "dsmart"), 
   cpus = parallel::detectCores(), 
-  type = "raw"
+  type = "prob"
 )
 
 summ <- summarise(
