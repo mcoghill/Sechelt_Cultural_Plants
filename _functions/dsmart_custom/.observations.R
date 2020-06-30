@@ -1,9 +1,9 @@
-.observations <-
-function (observations, covariates) 
+.observations <- function (observations, covariates) 
 {
     base::colnames(observations) <- c("x", "y", "soil_class")
     o.covariates <- observations %>% 
-        cbind(terra::extract(covariates, observations[, c("x", "y")]))
+        cbind(terra::extract(covariates, observations[, c("x", "y")])) %>% 
+        dplyr::select(-ID)
     meta <- list(realisation = numeric(length = nrow(observations)), 
         type = base::rep("actual", nrow(observations)), sampling = base::rep("observed", 
             nrow(observations)), allocation = base::rep("observed", 

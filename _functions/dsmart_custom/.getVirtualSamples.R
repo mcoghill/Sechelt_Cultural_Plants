@@ -30,7 +30,8 @@ function (covariates, polygons, composition, n.realisations = 100,
             } else stop("Sampling method \"", method.sample, "\" is unknown")
             
             poly.samples <- as.data.frame(terra::extract(covariates, poly)) %>% 
-                dplyr::rename_at(vars(names(.)), ~names(covariates)) %>% 
+                # dplyr::rename_at(vars(names(.)), ~names(covariates)) %>% # This line is no longer needed as of terra 0.7-4
+                dplyr::select(-ID) %>% 
                 dplyr::filter(complete.cases(.)) %>% 
                 {if(nrow(.) > 0) {
                     dplyr::sample_n(., size = (n.samples * n.realisations), replace = TRUE)
@@ -75,7 +76,8 @@ function (covariates, polygons, composition, n.realisations = 100,
                          type = base::rep("virtual", nrow(xy)), sampling = base::rep(method.sample, 
                          base::nrow(xy)), allocation = base::rep(method.allocate, 
                          base::nrow(xy)))
-            poly.samples <- cbind(as.data.frame(meta), xy, soil_class[0:nrow(xy)], 
+            poly.samples <- cbind(as.data.frame(meta), xy, 
+                                  soil_class = soil_class[0:nrow(xy)], 
                                   poly.samples[, 2:base::ncol(poly.samples)])
             return(poly.samples)
         }
