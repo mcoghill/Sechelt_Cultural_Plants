@@ -218,9 +218,6 @@ get_sentinel_ee <- function(
     )
   }
   
-  # Authorize R to view/edit your Google Drive folders
-  drive_auth()
-  
   # Create a cloud masking function which will run in GEE
   cloud_mask <- function(image) {
     qa <- image$select("QA60")
@@ -544,11 +541,17 @@ AOI_bbox <- st_read(AOI_shapefile[1], quiet = TRUE) %>%
 # Provide a data frame of dates to collect data between. The longer the data
 # frame, the longer it will take to process and download your dataset.
 seasons_df <- data.frame(
-  season = c("winter", "spring", "summer", "fall"),
-  start = c("2018-12-21", "2019-03-20", "2019-06-21", "2019-09-23"),
-  end = c("2019-03-19", "2019-06-20", "2019-09-22", "2019-12-20"),
+  season = c("2019"),
+  start = c("2019-01-01"),
+  end = c("2019-12-31"),
   stringsAsFactors = FALSE
 )
+
+# Authorize R to view/edit your Google Drive folders
+term <- rstudioapi::terminalCreate()
+rstudioapi::terminalSend(term, "R\r")
+rstudioapi::terminalSend(term, "googledrive::drive_auth()\r")
+rstudioapi::terminalKill(term)
 
 # Run get_sentinel_ee function to process and download satellite images
 ee_download <- get_sentinel_ee(
