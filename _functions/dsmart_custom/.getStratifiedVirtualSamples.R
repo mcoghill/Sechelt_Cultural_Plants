@@ -33,7 +33,7 @@ function (covariates, polygons, composition, strata, n.realisations = 100,
         }  else stop("Sampling method \"", method.sample, "\" is unknown")
         
         poly.samples <- as.data.frame(terra::extract(covariates, poly)) %>% 
-            dplyr::rename_at(vars(names(.)), ~names(covariates)) %>% 
+            dplyr::select(-ID) %>% 
             dplyr::filter(complete.cases(.)) %>%
             {if(nrow(.) > 0) {
                 dplyr::sample_n(., size = (n.samples * n.realisations), replace = TRUE)
