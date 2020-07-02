@@ -210,10 +210,8 @@ if(is.null(method.model)) {
 
 # Save the file to a better location
 covariates_t <- rast(covariates)
-site_series <- rast(file.path(dsmart_dir, "output", "mostprobable", "mostprob_01_class.tif")) %>% 
-  terra::resample(covariates_t, method = "near")
-
-names(site_series) <- "site_series_dsmart"
+site_series <- rast(file.path(dsmart_dir, "output", "realisations", "realisation_1.tif")) %>% 
+  magrittr::set_names("site_series_dsmart")
 
 writeRaster(site_series, 
             file.path(dsmart_dir, "output", "site_series_dsmart.tif"), 
