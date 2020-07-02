@@ -45,13 +45,12 @@ shapes_path <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
 dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
 
-stratified <- FALSE
+include_bgc <- FALSE
 use_caret <- TRUE
 
 ```
 
-
-Next, important data is loaded. There are a lot of covariate layers created from DEM derivatives, satellite imagery, and climate data layers; however, in order to speed up processing, the amount of covariates are limited to only DEM derivatives and satellite imagery indices.
+Next, important data is loaded. There are a lot of covariate layers created from DEM derivatives, satellite imagery, and climate data layers; however, in order to speed up processing, the amount of covariates are limited to only DEM derivatives, annual satellite imagery indices, and more recent annual climate data. These variables were chosen since it makes sense to model a landscape using more recent data in my mind, and not worry about older factors that may have influenced the landscape previously. If a BGC layer is to be used to create the DSMART maps as well, then that is included as well.
 
 ```{r Load data}
 
@@ -61,51 +60,90 @@ terrain_covariates <- grep(pattern = "normal|sentinel2", list.files(
   file.path(covariate_dir, res_folder), full.names = TRUE, pattern = ".tif$"), invert = TRUE, 
   value = TRUE)
 sentinel_covariates <- list.files(file.path(covariate_dir, res_folder), 
-                                  pattern = "^sentinel2.*.summer.tif$", full.names = TRUE)
+                                  pattern = "^sentinel2.*.2019.tif$", full.names = TRUE)
 climate_covariates <- list.files(file.path(covariate_dir, res_folder), 
-                                 pattern = "^normal.*._sm.tif$", full.names = TRUE)
+                                 pattern = "^normal_1981_2010y", full.names = TRUE)
 covariates <- raster::stack(c(terrain_covariates, sentinel_covariates, climate_covariates))
 
 # Load the polygons and associated observations
 polygons <- readOGR(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), layer = "dsmart_polygons")
 
-if(stratified == TRUE) {
-  dsmart_strata_sf <- st_read(file.path(dsmart_dir, "inputs", "dsmart_strata.gpkg")) %>% 
-    mutate(Subzone = as.factor(Subzone))
-  level_table <- data.frame(ID = 1:nlevels(dsmart_strata_sf$Subzone), 
-                            Subzone = levels(dsmart_strata_sf$Subzone))
-  strata <- asFactor(fasterize(dsmart_strata_sf, covariates[[1]], field = "Subzone"))
-  levels(strata) <- level_table
+if(include_bgc) {
+  bgc <- st_read(file.path(shapes_path, res_folder, "bec.gpkg"), quiet = TRUE) %>% 
+    mutate(MAP_LABEL = as.factor(MAP_LABEL)) 
+  tem_geom <- st_geometry(bgc)
+  
+  # Fix geometries that aren't polygon/multipolygon
+  for(i in 1:length(tem_geom)) {
+    if(!st_geometry_type(tem_geom[[i]]) %in% c("POLYGON", "MULTIPOLYGON")) 
+      tem_geom[[i]] <- st_collection_extract(tem_geom[[i]], "POLYGON") %>% 
+        st_multipolygon()
+  }
+  st_geometry(bgc) <- st_cast(tem_geom, "MULTIPOLYGON")
+  
+  level_table <- unique.data.frame(data.frame(
+    ID = as.numeric(bgc$MAP_LABEL), 
+    Subzone = as.character(bgc$MAP_LABEL)))
+  bgc_raster <- asFactor(fasterize(bgc, covariates[[1]], field = "MAP_LABEL"))
+  levels(bgc_raster) <- level_table
   
   # File needs to be written to disk and then reloaded back into R for proper 
   # feature assignments
-  writeRaster(strata, file.path(dsmart_dir, "inputs", "dsmart_strata.tif"), overwrite = TRUE)
-  strata <- raster(file.path(dsmart_dir, "inputs", "dsmart_strata.tif"))
-  composition <- read.csv(file.path(dsmart_dir, "inputs", "dsmart_composition.csv")) %>% 
-    mutate(Subzone = sub("\\..*", "", MapUnit)) %>% 
-    merge(level_table) %>% 
-    dplyr::select(POLY_NO, MAP_CODE, ID, MapUnit, proportion)
+  writeRaster(bgc_raster, file.path(dsmart_dir, "inputs", "bgc.tif"), overwrite = TRUE)
+  covariates <- stack(covariates, file.path(dsmart_dir, "inputs", "bgc.tif"))
+  factors <- "bgc"
   
 } else {
-  strata <- NULL
-  composition <- read.csv(file.path(dsmart_dir, "inputs", "dsmart_composition.csv")) %>% 
-    dplyr::select(-Subzone)
+  factors <- NULL
 }
 
-# Load additional observations
+# Load TEM composition and additional observations
+composition <- read.csv(file.path(dsmart_dir, "inputs", "dsmart_composition.csv")) %>% 
+    dplyr::select(-Subzone)
 observations <- read.csv(file.path(dsmart_dir, "inputs", "dsmart_observations.csv"))
 
 ```
 
 
+
 ```{r Simple TEM rasterization}
 
-tem_sf <- st_read(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg")) %>% 
+dir.create(file.path(dsmart_dir, "simple"), showWarnings = FALSE)
+
+# Rasterize first calls only
+tem_sf <- st_read(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), quiet = TRUE) %>% 
   mutate(MapUnit1 = as.factor(MapUnit1))
 tem_r <- fasterize(tem_sf, covariates$dem, field = "MapUnit1")
-writeRaster(tem_r, file.path(dsmart_dir, "output", "site_series_simple.tif"))
+writeRaster(tem_r, file.path(dsmart_dir, "simple", "site_series_simple.tif"), 
+            overwrite = TRUE)
+
+# Generate probabilities based on composition
+ss_calls <- unique(composition$MapUnit)
+composition_remake <- foreach(i = unique(composition$POLY_NO), .combine = rbind) %do% {
+  composition %>% dplyr::filter(POLY_NO == i) %>% 
+    dplyr::select(POLY_NO, MapUnit, proportion) %>% 
+    rbind(data.frame(
+      POLY_NO = .$POLY_NO[1], 
+      MapUnit = ss_calls[!ss_calls %in% .$MapUnit],
+      proportion = 0
+    ))
+}
+
+tem_remake <- tem_sf %>% 
+  dplyr::select(POLY_NO) %>% 
+  merge(composition_remake) %>% 
+  mutate(proportion = proportion / 100)
+
+for(i in unique(tem_remake$MapUnit)) {
+  ss_filter <- tem_remake[tem_remake$MapUnit == i, ]
+  ss_prop <- fasterize(ss_filter, covariates$dem, field = "proportion") %>% 
+    magrittr::set_names(paste0("probability_", i))
+  writeRaster(ss_prop, file.path(dsmart_dir, "simple", paste0("probability_", i, ".tif")),
+              overwrite = TRUE)
+}
 
 ```
+
 
 
 ```{r Editing the dsmart functions}
@@ -122,16 +160,15 @@ if(use_caret) {
       number = 10, 
       repeats = 5, 
       classProbs = TRUE,
-      p = 0.9, 
       returnData = FALSE,
       returnResamp = "final",
       savePredictions = "final",
       summaryFunction = multiClassSummary, # Adds a suite of performance metrics to the output
       allowParallel = TRUE),
     tuneGrid = expand.grid(
-      mtry = round(sqrt(nlayers(covariates))),
-      splitrule = "gini", 
-      min.node.size = 1
+      mtry = floor(sqrt(nlayers(covariates))), # Default random forest options
+      min.node.size = 1,
+      splitrule = "gini"
     )
   )
 } else {
@@ -143,16 +180,16 @@ disag <- disaggregate(
   covariates = covariates, 
   polygons = polygons, 
   composition = composition,
-  rate = 15, # How many samples to draw per polygon
+  rate = 20, # How many samples to draw per polygon
   reals = 5, # How many models to produce from the modelling run? Gets overridden by number of repeats if model type is ranger
   observations = observations, 
   method.sample = "by_polygon", 
   method.allocate = "weighted",
   method.model = method.model,
-  strata = strata, 
   args.model = args.model,
   outputdir = file.path(AOI_dir, "1_map_inputs", "dsmart"), 
   cpus = parallel::detectCores(), 
+  factors = factors,
   type = "prob"
 )
 
@@ -183,8 +220,8 @@ writeRaster(site_series,
             overwrite = TRUE, wopt = list(datatype = "INT2S"))
 
 ```
-USING RANGER METHOD, TOOK A TOTAL OF 6 HOURS TO COMPLETE
 
+USING RANGER METHOD, TOOK A TOTAL OF 6 HOURS TO COMPLETE
 
 Finally, we need to run the algorithm. This version of DSMART has implementation allowing the use of the caret package to make models, and that functionality is leveraged here. We will use a parallelized implementation of Random Forest modelling in order to predict site series fore each pixel.
 
