@@ -68,6 +68,7 @@ function (covariates, polygons, composition, rate = 15, reals = 100,
     if(!is.null(method.model) && 
        args.model$trControl$method == "repeatedcv" &&
        is.numeric(args.model$trControl$repeats)) {
+        rate <- rate * reals
         reals <- 1
     }
     # Override probability method in the trainControl function
