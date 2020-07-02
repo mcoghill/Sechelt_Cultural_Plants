@@ -24,7 +24,7 @@ predict_landscape_mlr3 <- function(
   
   if(!is.character(mask_layer)) stop("mask_layer variable needs to be a character vector of length 1")
   # Count NA values in the covariate data to determine best layer to use for masking later on
-  cov <- sapply(covariates@layers, function(x) x@file@name)
+  cov <- covariates@ptr$filenames
   
   ## create output dir -----------
   dir.create(outDir, recursive = TRUE, showWarnings = FALSE)
@@ -193,8 +193,8 @@ predict_landscape_mlr3 <- function(
     mos <- rast(gdalUtils::mosaic_rasters(gdalfile = r_tiles, ## list of rasters to mosaic
                               dst_dataset = file.path(outDir, paste0(k, ".tif")),  #output: dir and filename
                               output_Raster = TRUE)) %>% 
-      terra::resample(rast(subset(covariates, mask_layer)), method = resamp_method) %>% 
-      mask(rast(subset(covariates, mask_layer))) %>% 
+      terra::resample(subset(covariates, mask_layer), method = resamp_method) %>% 
+      mask(subset(covariates, mask_layer)) %>% 
       magrittr::set_names("model_prediction")
     
     writeRaster(mos, file.path(outDir, paste0(k, ".tif")), overwrite = TRUE)
