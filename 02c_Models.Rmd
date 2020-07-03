@@ -38,7 +38,7 @@ map_res <- 4
 
 input_dir <- file.path("./Sechelt_AOI/1_map_inputs/field_data/processed")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
-ss_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart", "output")
+dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
 output_dir <- file.path(AOI_dir, "2_map_predictions")
 tile_dir <- file.path(output_dir, "tiles")
 dir.create(tile_dir, showWarnings = FALSE)
@@ -66,24 +66,49 @@ terrain_covariates <- grep(pattern = "normal|sentinel2", list.files(
   file.path(covariate_dir, res_folder), full.names = TRUE, pattern = ".tif$"), invert = TRUE, 
   value = TRUE)
 sentinel_covariates <- list.files(file.path(covariate_dir, res_folder), 
-                                  pattern = "^sentinel2.*.summer.tif$", full.names = TRUE)
-climate_covariates <- list.files(file.path(covariate_dir, res_folder), 
-                                 pattern = "^normal.*._sm.tif$", full.names = TRUE)
-site_series <- list.files(ss_dir, pattern = "site_series_.*..tif", full.names = TRUE)
-covariates <- rast(c(terrain_covariates, sentinel_covariates, climate_covariates, site_series))
+                                  pattern = "^sentinel2.*.2019.tif$", full.names = TRUE)
+climate_covariates <- grep(
+  "_at.tif|_sm.tif|_sp.tif|_wt.tif", 
+  list.files(
+    file.path(covariate_dir, res_folder), 
+    pattern = "^normal.*..tif$", full.names = TRUE),
+  invert = TRUE, value = TRUE)
 
-# Attributed point data
-pres_abs_points <- sapply(st_layers(file.path(input_dir, "pres_abs.gpkg"))$name, function(x) {
+# There are 2 sources of site series calls: simple and DSMART. under both of those,
+# there are class outputs and probabilities. We need to create model permutations
+# for each scenario
+site_series <- c(
+  rast(file.path(dsmart_dir, "simple", "site_series_simple.tif")) %>% 
+    magrittr::set_names("simple_ss_class"),
+  rast(grep(
+    "site_series_simple.tif", 
+    list.files(file.path(dsmart_dir, "simple"), full.names = TRUE),
+    invert = TRUE, value = TRUE)) %>% 
+    magrittr::set_names(paste0("simple_ss_", names(.))),
+  rast(file.path(dsmart_dir, "output", "realisations", "realisation_1.tif")) %>% 
+    magrittr::set_names("dsmart_ss_class"),
+  rast(list.files(
+    file.path(dsmart_dir, "output", "probabilities"), full.names = TRUE)) %>% 
+    magrittr::set_names(paste0("dsmart_ss_probability_", names(.))))
+
+# Attributed point data - limit to only CORNCAN and RUBUSPE
+pres_abs_points <- sapply(c("CORNCAN", "RUBUSPE"), function(x) {
   st_read(file.path(input_dir, "pres_abs.gpkg"), layer = x, quiet = TRUE) %>% 
-    cbind(st_coordinates(.), terra::extract(rast(site_series), st_coordinates(.))) %>% 
+    cbind(st_coordinates(.), 
+          terra::extract(site_series, st_coordinates(.))) %>% 
     st_drop_geometry() %>% 
-    mutate(Pres = as.factor(Pres)) %>% 
+    mutate(Pres = as.factor(Pres), 
+           simple_ss_class = as.factor(simple_ss_class),
+           dsmart_ss_class = as.factor(dsmart_ss_class)) %>% 
     dplyr::select(Pres, names(covariates), X, Y)
   }, simplify = FALSE, USE.NAMES = TRUE)
-cover_points <- sapply(st_layers(file.path(input_dir, "cover.gpkg"))$name, function(x) {
+cover_points <- sapply(c("CORNCAN", "RUBUSPE"), function(x) {
   st_read(file.path(input_dir, "cover.gpkg"), layer = x, quiet = TRUE) %>% 
-    cbind(st_coordinates(.), terra::extract(rast(site_series), st_coordinates(.))) %>% 
+    cbind(st_coordinates(.), 
+          terra::extract(site_series, st_coordinates(.))) %>% 
     st_drop_geometry() %>% 
+    mutate(simple_ss_class = as.factor(simple_ss_class),
+           dsmart_ss_class = as.factor(dsmart_ss_class)) %>% 
     dplyr::select(Cover, names(covariates), X, Y)
   }, simplify = FALSE, USE.NAMES = TRUE)
 
@@ -96,6 +121,117 @@ mask_layer <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
                data_cells = data.frame(freq(new))$count)
   } %>% mutate(data_cells = ifelse(data_cells == ncell(new), 0, data_cells)) %>% 
     dplyr::slice(which.max(data_cells))
+
+```
+
+The following chunk builds full datasets to be used in modelling later on. These full datasets include all of the covariate layers created up to this point, including all terrain layers, all climate variables (annual + seasonal), all sentinel variables (annual + seasonal), and a selection of either simple site series calls or DSMART site series calls (or neither). The usefulness of either BEC vs climate variables can be assessed here as well.
+
+```{r Full dataset models}
+
+covariates <- c(rast(c(list.files(
+  file.path(covariate_dir, res_folder), full.names = TRUE, pattern = ".tif$"), 
+  file.path(dsmart_dir, "inputs", "bgc.tif"))),
+  site_series)
+
+# Attributed point data - limit to only CORNCAN and RUBUSPE
+pres_abs_points <- sapply(c("CORNCAN", "RUBUSPE"), function(x) {
+  st_read(file.path(input_dir, "pres_abs.gpkg"), layer = x, quiet = TRUE) %>% 
+    cbind(
+      st_coordinates(.), 
+      terra::extract(subset(covariates, c("bgc", names(site_series))), st_coordinates(.))) %>% 
+    st_drop_geometry() %>% 
+    mutate_at(c("Pres", "simple_ss_class", "dsmart_ss_class", "bgc"), as.factor) %>% 
+    dplyr::select(Pres, names(covariates), X, Y)
+  }, simplify = FALSE, USE.NAMES = TRUE)
+cover_points <- sapply(c("CORNCAN", "RUBUSPE"), function(x) {
+  st_read(file.path(input_dir, "cover.gpkg"), layer = x, quiet = TRUE) %>% 
+    cbind(st_coordinates(.), 
+          terra::extract(subset(covariates, c("bgc", names(site_series))), st_coordinates(.))) %>% 
+    st_drop_geometry() %>% 
+    mutate_at(c("simple_ss_class", "dsmart_ss_class", "bgc"), as.factor) %>% 
+    dplyr::select(Cover, names(covariates), X, Y)
+  }, simplify = FALSE, USE.NAMES = TRUE)
+
+# Permutations with/without BGC and climate variables
+pres_abs_full <- c(
+  lapply(names(pres_abs_points), function(x) {
+    pres_abs_points[[x]] %>% 
+      dplyr::select(-starts_with(c("simple_ss", "dsmart_ss"))) %>% 
+      drop_na()
+  }) %>% set_names(paste0(names(pres_abs_points), "_bec_climate_no_ss")),
+  lapply(names(pres_abs_points), function(x) {
+    pres_abs_points[[x]] %>% 
+      dplyr::select(-starts_with(c("simple_ss_probability", "dsmart_ss"))) %>% 
+      drop_na()
+  }) %>% set_names(paste0(names(pres_abs_points), "_bec_climate_simple_ss_class")),
+  lapply(names(pres_abs_points), function(x) {
+    pres_abs_points[[x]] %>% 
+      dplyr::select(-starts_with(c("simple_ss_class", "dsmart_ss"))) %>% 
+      drop_na()
+  }) %>% set_names(paste0(names(pres_abs_points), "_bec_climate_simple_ss_probs")),
+  lapply(names(pres_abs_points), function(x) {
+    pres_abs_points[[x]] %>% 
+      dplyr::select(-starts_with(c("simple_ss", "dsmart_ss_probability"))) %>% 
+      drop_na()
+  }) %>% set_names(paste0(names(pres_abs_points), "_bec_climate_dsmart_ss_class")),
+  lapply(names(pres_abs_points), function(x) {
+    pres_abs_points[[x]] %>% 
+      dplyr::select(-starts_with(c("simple_ss", "dsmart_ss_class"))) %>% 
+      drop_na()
+  }) %>% set_names(paste0(names(pres_abs_points), "_bec_climate_dsmart_ss_probs")),
+  lapply(names(pres_abs_points), function(x) {
+    pres_abs_points[[x]] %>% 
+      dplyr::select(-starts_with(c("simple_ss", "dsmart_ss", "normal"))) %>% 
+      drop_na()
+  }) %>% set_names(paste0(names(pres_abs_points), "_bec_no_ss")),
+  lapply(names(pres_abs_points), function(x) {
+    pres_abs_points[[x]] %>% 
+      dplyr::select(-starts_with(c("simple_ss_probability", "dsmart_ss", "normal"))) %>% 
+      drop_na()
+  }) %>% set_names(paste0(names(pres_abs_points), "_bec_simple_ss_class")),
+  lapply(names(pres_abs_points), function(x) {
+    pres_abs_points[[x]] %>% 
+      dplyr::select(-starts_with(c("simple_ss_class", "dsmart_ss", "normal"))) %>% 
+      drop_na()
+  }) %>% set_names(paste0(names(pres_abs_points), "_bec_simple_ss_probs")),
+  lapply(names(pres_abs_points), function(x) {
+    pres_abs_points[[x]] %>% 
+      dplyr::select(-starts_with(c("simple_ss", "dsmart_ss_probability", "normal"))) %>% 
+      drop_na()
+  }) %>% set_names(paste0(names(pres_abs_points), "_bec_dsmart_ss_class")),
+  lapply(names(pres_abs_points), function(x) {
+    pres_abs_points[[x]] %>% 
+      dplyr::select(-starts_with(c("simple_ss", "dsmart_ss_class", "normal"))) %>% 
+      drop_na()
+  }) %>% set_names(paste0(names(pres_abs_points), "_bec_dsmart_ss_probs")),
+  lapply(names(pres_abs_points), function(x) {
+    pres_abs_points[[x]] %>% 
+      dplyr::select(-starts_with(c("simple_ss", "dsmart_ss", "bgc"))) %>% 
+      drop_na()
+  }) %>% set_names(paste0(names(pres_abs_points), "_climate_no_ss")),
+  lapply(names(pres_abs_points), function(x) {
+    pres_abs_points[[x]] %>% 
+      dplyr::select(-starts_with(c("simple_ss_probability", "dsmart_ss", "bgc"))) %>% 
+      drop_na()
+  }) %>% set_names(paste0(names(pres_abs_points), "_climate_simple_ss_class")),
+  lapply(names(pres_abs_points), function(x) {
+    pres_abs_points[[x]] %>% 
+      dplyr::select(-starts_with(c("simple_ss_class", "dsmart_ss", "bgc"))) %>% 
+      drop_na()
+  }) %>% set_names(paste0(names(pres_abs_points), "_climate_simple_ss_probs")),
+  lapply(names(pres_abs_points), function(x) {
+    pres_abs_points[[x]] %>% 
+      dplyr::select(-starts_with(c("simple_ss", "dsmart_ss_probability", "bgc"))) %>% 
+      drop_na()
+  }) %>% set_names(paste0(names(pres_abs_points), "_climate_dsmart_ss_class")),
+  lapply(names(pres_abs_points), function(x) {
+    pres_abs_points[[x]] %>% 
+      dplyr::select(-starts_with(c("simple_ss", "dsmart_ss_class", "bgc"))) %>% 
+      drop_na()
+  }) %>% set_names(paste0(names(pres_abs_points), "_climate_dsmart_ss_probs"))
+)
+
+full_pres_models <- model_gen_mlr3(traindat = pres_abs_full, target = "Pres", feature_selection = "filter", type = "prob")
 
 ```
 
@@ -117,26 +253,37 @@ mask_layer <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
 # To assess how useful the TEM is, I've made different models using a simiple
 # rasterized version, the DSMART version, and models that don't use it as well.
 pres_abs <- c(
-  sapply(paste0(names(pres_abs_points), "_no_tem"), function(x) {
-    y <- gsub("_no_tem", "", x)
-    dplyr::select(pres_abs_points[[y]], -c(site_series_dsmart, site_series_simple)) %>% 
+  sapply(paste0(names(pres_abs_points), "_no_ss"), function(x) {
+    y <- gsub("_no_ss", "", x)
+    dplyr::select(pres_abs_points[[y]], -starts_with(c("simple_ss", "dsmart_ss"))) %>% 
       drop_na()
     }, simplify = FALSE, USE.NAMES = TRUE),
-  sapply(paste0(names(pres_abs_points), "_simple_tem"), function(x) {
-    y <- gsub("_simple_tem", "", x)
-    dplyr::select(pres_abs_points[[y]], -site_series_dsmart) %>% 
+  sapply(paste0(names(pres_abs_points), "_simple_ss_class"), function(x) {
+    y <- gsub("_simple_ss_class", "", x)
+    dplyr::select(pres_abs_points[[y]], -starts_with(c("simple_ss_probability", "dsmart_ss"))) %>% 
       drop_na()
     }, simplify = FALSE, USE.NAMES = TRUE), 
-  sapply(paste0(names(pres_abs_points), "_dsmart_tem"), function(x) {
-    y <- gsub("_dsmart_tem", "", x)
-    dplyr::select(pres_abs_points[[y]], -site_series_simple) %>% 
+  sapply(paste0(names(pres_abs_points), "_dsmart_ss_class"), function(x) {
+    y <- gsub("_dsmart_ss_class", "", x)
+    dplyr::select(pres_abs_points[[y]], -starts_with(c("simple_ss", "dsmart_ss_probability"))) %>% 
       drop_na()
-    }, simplify = FALSE, USE.NAMES = TRUE))
+    }, simplify = FALSE, USE.NAMES = TRUE),
+  sapply(paste0(names(pres_abs_points), "_simple_ss_probs"), function(x) {
+    y <- gsub("_simple_ss_probs", "", x)
+    dplyr::select(pres_abs_points[[y]], -starts_with(c("simple_ss_class", "dsmart_ss"))) %>% 
+      drop_na()
+    }, simplify = FALSE, USE.NAMES = TRUE), 
+  sapply(paste0(names(pres_abs_points), "_dsmart_ss_probs"), function(x) {
+    y <- gsub("_dsmart_ss_probs", "", x)
+    dplyr::select(pres_abs_points[[y]], -starts_with(c("simple_ss", "dsmart_ss_class"))) %>% 
+      drop_na()
+    }, simplify = FALSE, USE.NAMES = TRUE)
+  )
 
 # Write input data
 lapply(names(pres_abs), function(x) {
   dir_out <- file.path(output_dir, "pres_abs_predictions")
-  dir.create(dir_out, showWarnings = FALSE)
+  dir.create(dir_out, showWarnings = FALSE, recursive = TRUE)
   y <- st_as_sf(pres_abs[[x]], coords = c("X", "Y"), crs = crs(covariates))
   st_write(y, file.path(dir_out, paste0("pres_abs_input_data.gpkg")), layer = x, delete_layer = TRUE)
   return(invisible())
@@ -145,7 +292,7 @@ lapply(names(pres_abs), function(x) {
 # Run the models. Each is a 10-fold spatial cross validation repeated 5 times
 if(!file.exists(file.path(output_dir, "pres_abs_predictions", "pres_abs_models.RDS"))) {
   pres_models <- model_gen_mlr3(traindat = pres_abs, target = "Pres", feature_selection = "filter", type = "prob")
-  saveRDS(pres_models, file.path(output_dir, "pres_abs_predictions", "pres_abs_models.RDS"))
+  save(pres_models, file = file.path(output_dir, "pres_abs_predictions", "pres_abs_models.RData"))
 } else pres_models <- readRDS(file.path(output_dir, "pres_abs_predictions", "pres_abs_models.RDS"))
 
 # Extract performance metrics
@@ -205,7 +352,7 @@ pres_performance <- sapply(names(pres_models$learners), function(x) {
             row.names = FALSE)
   write.csv(imp, file.path(dir_out, paste0(x, "_pres_abs_var_importance.csv")), 
             row.names = FALSE)
-  write.csv(pres_abs[[x]], file.path(dir_out, paste0(x, "_input_data.csv")), 
+  write.csv(pres_abs[[x]], file.path(dir_out, paste0(x, "_pres_abs_input_data.csv")), 
             row.names = FALSE)
   
   return(list(
@@ -251,21 +398,32 @@ pres_abs_predictions <- sapply(names(pres_models$learners), function(x) {
 
 # Use mlr3 to create the best models
 cover <- c(
-  sapply(paste0(names(cover_points), "_no_tem"), function(x) {
-    y <- gsub("_no_tem", "", x)
-    dplyr::select(cover_points[[y]], -c(site_series_dsmart, site_series_simple)) %>% 
+  sapply(paste0(names(cover_points), "_no_ss"), function(x) {
+    y <- gsub("_no_ss", "", x)
+    dplyr::select(cover_points[[y]], -starts_with(c("simple_ss", "dsmart_ss"))) %>% 
       drop_na()
     }, simplify = FALSE, USE.NAMES = TRUE),
-  sapply(paste0(names(cover_points), "_simple_tem"), function(x) {
-    y <- gsub("_simple_tem", "", x)
-    dplyr::select(cover_points[[y]], -site_series_dsmart) %>% 
+  sapply(paste0(names(cover_points), "_simple_ss_class"), function(x) {
+    y <- gsub("_simple_ss_class", "", x)
+    dplyr::select(cover_points[[y]], -starts_with(c("simple_ss_probability", "dsmart_ss"))) %>% 
       drop_na()
     }, simplify = FALSE, USE.NAMES = TRUE), 
-  sapply(paste0(names(cover_points), "_dsmart_tem"), function(x) {
-    y <- gsub("_dsmart_tem", "", x)
-    dplyr::select(cover_points[[y]], -site_series_simple) %>% 
+  sapply(paste0(names(cover_points), "_dsmart_ss_class"), function(x) {
+    y <- gsub("_dsmart_ss_class", "", x)
+    dplyr::select(cover_points[[y]], -starts_with(c("simple_ss", "dsmart_ss_probability"))) %>% 
       drop_na()
-    }, simplify = FALSE, USE.NAMES = TRUE))
+    }, simplify = FALSE, USE.NAMES = TRUE),
+  sapply(paste0(names(cover_points), "_simple_ss_probs"), function(x) {
+    y <- gsub("_simple_ss_probs", "", x)
+    dplyr::select(cover_points[[y]], -starts_with(c("simple_ss_class", "dsmart_ss"))) %>% 
+      drop_na()
+    }, simplify = FALSE, USE.NAMES = TRUE), 
+  sapply(paste0(names(cover_points), "_dsmart_ss_probs"), function(x) {
+    y <- gsub("_dsmart_ss_probs", "", x)
+    dplyr::select(cover_points[[y]], -starts_with(c("simple_ss", "dsmart_ss_class"))) %>% 
+      drop_na()
+    }, simplify = FALSE, USE.NAMES = TRUE)
+  )
 
 # Write input data
 lapply(names(cover), function(x) {
