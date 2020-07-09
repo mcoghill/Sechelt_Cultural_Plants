@@ -47,6 +47,17 @@ dir.create(file.path(output_dir, "cover_predictions"), showWarnings = FALSE)
 
 ss <- "dsmart" # The two options are currently simple or dsmart
 
+least_na <- function(covariates) {
+  mask_layers <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
+    cat(paste0("Counting NA values in ", names(covariates[[i]]), 
+               " [", i, " of ", nlyr(covariates), "]\n"))
+    new <- subset(covariates, i) * 0
+    data.frame(layer = names(new), 
+               data_cells = data.frame(freq(new))$count)
+  } %>% arrange(desc(data_cells))
+  return(mask_layers)
+}
+
 ```
 
 It is highly anticipated that a site series layer will have a high degree of importance in predicting the locations of these culturally sensitive plants. We will let the models decide whether that is true or not, but it is possible to always be kept in the model by defining one of the options (not incorporated here).
@@ -91,6 +102,13 @@ site_series <- c(
     file.path(dsmart_dir, "output", "probabilities"), full.names = TRUE)) %>% 
     magrittr::set_names(paste0("dsmart_ss_probability_", names(.))))
 
+# Combine all covariates
+covariates <- c(rast(c(terrain_covariates, sentinel_covariates, climate_covariates)),
+  site_series)
+
+# Find the best masking layer to use in the predict_landscape algorithm
+mask_layer <- least_na(covariates)
+
 # Attributed point data - limit to only CORNCAN and RUBUSPE
 pres_abs_points <- sapply(c("CORNCAN", "RUBUSPE"), function(x) {
   st_read(file.path(input_dir, "pres_abs.gpkg"), layer = x, quiet = TRUE) %>% 
@@ -111,16 +129,6 @@ cover_points <- sapply(c("CORNCAN", "RUBUSPE"), function(x) {
            dsmart_ss_class = as.factor(dsmart_ss_class)) %>% 
     dplyr::select(Cover, names(covariates), X, Y)
   }, simplify = FALSE, USE.NAMES = TRUE)
-
-# Find the best masking layer to use in the predict_landscape algorithm
-mask_layer <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
-    cat(paste0("Counting NA values in ", names(covariates[[i]]), 
-               " [", i, " of ", nlyr(covariates), "]\n"))
-    new <- subset(covariates, i) * 0
-    data.frame(layer = names(new), 
-               data_cells = data.frame(freq(new))$count)
-  } %>% mutate(data_cells = ifelse(data_cells == ncell(new), 0, data_cells)) %>% 
-    dplyr::slice(which.max(data_cells))
 
 ```
 
@@ -231,7 +239,138 @@ pres_abs_full <- c(
   }) %>% set_names(paste0(names(pres_abs_points), "_climate_dsmart_ss_probs"))
 )
 
+# Write input data
+dir_out <- file.path(output_dir, "pres_abs_full_predictions")
+dir.create(dir_out, showWarnings = FALSE, recursive = TRUE)
+lapply(names(pres_abs_full), function(x) {
+  y <- st_as_sf(pres_abs_full[[x]], coords = c("X", "Y"), crs = crs(covariates))
+  st_write(y, file.path(dir_out, paste0("pres_abs_input_data.gpkg")), layer = x, delete_layer = TRUE)
+  return(invisible())
+})
+
 full_pres_models <- model_gen_mlr3(traindat = pres_abs_full, target = "Pres", feature_selection = "filter", type = "prob")
+
+# Extract performance metrics
+pres_performance <- sapply(names(full_pres_models$learners), function(x) {
+  
+  dir_out <- file.path(output_dir, "pres_abs_full_predictions", x)
+  dir.create(dir_out, showWarnings = FALSE)
+  
+  tune_results <- data.frame(
+    filter_fraction = sapply(full_pres_models$learners[[x]]$archive()$tune_x, function(x)
+    x[[1]]), 
+    classif.ce = full_pres_models$learners[[x]]$archive()$classif.ce
+  )
+  
+  confusion <- as.data.frame(
+    full_pres_models$learners[[x]]$model$tuning_instance$best()$prediction()$confusion)
+  
+  # There were no rep and fold ID's in the table so I had to create them from scratch
+  folds_reps <- sapply(
+    full_pres_models$learners[[x]]$model$tuning_instance$best()$data$prediction, 
+    function(x) 
+      nrow(x$test$data$tab))
+
+  row_ids <- foreach(i = 1:length(folds_reps), .combine = c) %do% {
+    folds <- as.character(i)
+    if(nchar(folds) > 1) folds <- substring(folds, 2)
+    if(folds == "0") folds <- "10"
+    
+    reps <- ifelse(i %in% 1:10, 1, ifelse(i %in% 11:20, 2, ifelse(
+      i %in% 21:30, 3, ifelse(i %in% 31:40, 4, 5))))
+    return(rep(paste0(folds, "_", reps), length.out = folds_reps[i]))
+  }
+  
+  test_data <- as.data.frame(
+    full_pres_models$learners[[x]]$model$tuning_instance$best()$data$resampling[[1]]$instance) %>% 
+    mutate(row_id = paste0(row_id, "_", fold, "_", rep)) %>% 
+    merge(cbind(
+      full_pres_models$learners[[x]]$model$tuning_instance$best()$prediction()$data$tab %>% 
+        mutate(row_id = paste0(row_id, "_", row_ids)),
+      full_pres_models$learners[[x]]$model$tuning_instance$best()$prediction()$data$prob))
+  
+  imp <- data.frame(full_pres_models$learners[[x]]$learner$model$classif.ranger$model$variable.importance) %>% 
+    rownames_to_column() %>% 
+    dplyr::rename_at(vars(names(.)), ~c("layer", "importance")) %>% 
+    arrange(desc(importance))
+  
+  out <- utils::capture.output(full_pres_models$learners[[x]]$learner$model$classif.ranger$model)
+  best_model <- full_pres_models$learners[[x]]$learner$model$classif.ranger$model
+  
+  write.csv(tune_results, file = file.path(dir_out, paste0(x, "_tune_results.csv")),
+            row.names = FALSE)
+  cat(out, file = file.path(dir_out, paste0(x, "_model.txt")), append = TRUE)
+  save(best_model, file = file.path(dir_out, paste0(x, "_model.RData")))
+  write.csv(test_data, file = file.path(dir_out, paste0(x, "_model_resampling.csv")), 
+            row.names = FALSE)
+  write.csv(confusion, file = file.path(dir_out, paste0(x, "_confusion.csv")), 
+            row.names = FALSE)
+  write.csv(imp, file.path(dir_out, paste0(x, "_pres_abs_var_importance.csv")), 
+            row.names = FALSE)
+  write.csv(pres_abs_full[[x]], file.path(dir_out, paste0(x, "_pres_abs_input_data.csv")), 
+            row.names = FALSE)
+  
+  return(list(
+    tune_results = tune_results,
+    best_model = best_model, 
+    resampling = test_data,
+    confusion = confusion,
+    importance = imp
+  ))
+  
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+# We might only be interested in the best results, so filter down the entire
+# model set before predicting to extract the best models only
+best_models <- data.frame(classif.ce = sapply(pres_performance, function(x) {
+  min(x$tune_results$classif.ce)
+})) %>% 
+  rownames_to_column("model")
+
+best_model_list <- lapply(c("CORNCAN", "RUBUSPE"), function (x) {
+  best_models %>% 
+    dplyr::filter(startsWith(model, x)) %>% 
+    dplyr::slice(which.min(classif.ce))
+})
+
+# Run the map predictions
+# Increase memory limit artificially
+memory.limit(size = memory.limit() * 2)
+
+pres_abs_predictions <- sapply(names(full_pres_models$learners), function(x) {
+  
+  dir_out <- file.path(output_dir, "pres_abs_full_predictions", x)
+  dir.create(dir_out, showWarnings = FALSE)
+  cov_sub <- subset(covariates, full_pres_models$tasks[[x]]$col_roles$feature)
+  
+  for(i in 1:nrow(mask_layer)) {
+    if(mask_layer[i, "layer"] %in% names(cov_sub)) {
+      pred_mask <- mask_layer[i, "layer"]
+      break
+    }
+  }
+  
+  out <- predict_landscape_mlr3(
+    learner = full_pres_models$learners[[x]],
+    task = full_pres_models$tasks[[x]], 
+    type = "prob",
+    covariates = cov_sub,
+    tilesize = 500, 
+    outDir = tile_dir, 
+    mask_layer = pred_mask
+  )
+  
+  # with predict_landscape_mlr3 type set to "prob", the output is a list of files
+  for(j in out) {
+    file.copy(
+      from = j,
+      to = file.path(dir_out, paste0(x, "_", basename(j))),
+      overwrite = TRUE)
+  }
+  return(out)
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+memory.limit(size = memory.limit() / 2)
 
 ```
 
@@ -290,10 +429,8 @@ lapply(names(pres_abs), function(x) {
 })
 
 # Run the models. Each is a 10-fold spatial cross validation repeated 5 times
-if(!file.exists(file.path(output_dir, "pres_abs_predictions", "pres_abs_models.RDS"))) {
-  pres_models <- model_gen_mlr3(traindat = pres_abs, target = "Pres", feature_selection = "filter", type = "prob")
-  save(pres_models, file = file.path(output_dir, "pres_abs_predictions", "pres_abs_models.RData"))
-} else pres_models <- readRDS(file.path(output_dir, "pres_abs_predictions", "pres_abs_models.RDS"))
+pres_models <- model_gen_mlr3(traindat = pres_abs, target = "Pres", 
+                              feature_selection = "filter", type = "prob")
 
 # Extract performance metrics
 pres_performance <- sapply(names(pres_models$learners), function(x) {
@@ -372,6 +509,13 @@ pres_abs_predictions <- sapply(names(pres_models$learners), function(x) {
   dir.create(dir_out, showWarnings = FALSE)
   cov_sub <- subset(cov_raster, pres_models$tasks[[x]]$col_roles$feature)
   
+  for(i in 1:nrow(mask_layer)) {
+    if(mask_layer[i, "layer"] %in% names(cov_sub)) {
+      pred_mask <- mask_layer[i, "layer"]
+      break
+    }
+  }
+  
   out <- predict_landscape_mlr3(
     learner = pres_models$learners[[x]],
     task = pres_models$tasks[[x]], 
@@ -379,7 +523,7 @@ pres_abs_predictions <- sapply(names(pres_models$learners), function(x) {
     covariates = cov_sub,
     tilesize = 500, 
     outDir = tile_dir, 
-    mask_layer = mask_layer$layer
+    mask_layer = pred_mask
   )
   
   # with predict_landscape_mlr3 type set to "prob", the output is a list of files
