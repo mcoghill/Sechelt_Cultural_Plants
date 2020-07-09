@@ -1,14 +1,14 @@
 #' Predict Landscape
 #'
-#' Takes a caret model object and associated covariate rasters to generate a thematic map.
-#' In order to process the landscape level prediction the input co-variated are tiled
-#' and then mosaic'd together at the end.
+#' Takes a mlr3 model object and associated covariate rasters to generate a 
+#' thematic map.In order to process the landscape level prediction the input 
+#' covariates are tiled and then mosaicked together at the end.
 #'
 #' @param model Location of a `mlr` model object (i.e. path to it.)
 #' @param cov   A list of raster files.  These will be loaded as a `stars` object
 #' @param tilesize Specify the number of pixels in the `x` and `y` directions for the tiles to be generated.  If your computer is mememory limited use a smaller tile (e.g. 500).
 #' @param outDir directory for the output file.
-#' @keywords predict, landscape
+#' @keywords predict, landscape, mlr3, tile
 #' @export
 #' @examples
 #' 
@@ -22,122 +22,85 @@ predict_landscape_mlr3 <- function(
   type = "raw", 
   mask_layer) {
   
-  if(!is.character(mask_layer)) stop("mask_layer variable needs to be a character vector of length 1")
-  # Count NA values in the covariate data to determine best layer to use for masking later on
+  source('./_functions/tile_index.R')
+  
+  if(!is.character(mask_layer) || missing(mask_layer)) 
+    stop("The mask_layer variable needs to be a character vector of length 1 
+    \ridentifying the layer to subset from the 'covariates' object")
+  
+  # Get directories for each raster layer
   cov <- covariates@ptr$filenames
   
   ## create output dir -----------
   dir.create(outDir, recursive = TRUE, showWarnings = FALSE)
   
-  ## alternate -- outside of pemgeneratr
-  source('./_functions/tile_index.R')
+  ## Use the tile_index function to generate all tiles
   tiles <- tile_index(cov[1], tilesize)
-  
-  ## begin loop through tiles -----
   
   ## set up progress messaging
   a <- 0 ## running total of area complete
   ta <- sum(as.numeric(sf::st_area(tiles)))
-  wkey <- 0
+  tiles_keep <- NULL
   
-  for (i in 1:nrow(tiles)) {
+  ## begin loop through tiles -----
+  tile_files <- foreach(i = 1:nrow(tiles), .combine = c) %do% {
     
     t <- tiles[i, ]  ## get tile
     a <- a + as.numeric(sf::st_area(t))
     cat(paste("\nWorking on tile", i, "of", nrow(tiles)))
     
-    ## * load tile area---------
-    cat("\n...loading new data (from rasters)...")
+    ## load tile raster data ---------
+    cat("\n...Loading new data (from rasters)...")
     r <- stars::read_stars(cov,
                            RasterIO = list(nXOff  = t$offset.x[1] + 1, 
                                            nYOff  = t$offset.y[1] + 1,
                                            nXSize = t$region.dim.x[1],
                                            nYSize = t$region.dim.y[1]))
+    cat("done!")
     
-    ## * update names ---------
-    names(r) <- names(covariates)
-    
-    ## * convert tile to dataframe ---------
-    rsf <- sf::st_as_sf(r, as_points = TRUE)
-    
-    ## * Test if tile is empty -------------
-    na_table <- as.data.frame(sapply(rsf, function(x) all(is.na(x))))
-    ## * determine na counts -- this will be used to restore NA values if tile is run.
-    na_table$count <- as.data.frame(sapply(rsf, function(x) sum(is.na(x))))[, 1]
-    
-    ## If any attribute is empty skip the tile
-    if(any(na_table[, 1] == TRUE)) {
+    ## If any attribute is empty skip the tile, else continue (backwards here)
+    if(!any(sapply(r, function(x) all(is.na(x))))) {
       
-      cat("\nSome variables with all NA values, skipping tile...")
+      ## * update names ---------
+      names(r) <- names(covariates)
+      tiles_keep <- c(tiles_keep, i)
       
-    } else {
+      ## * convert tile to dataframe ---------
+      ## Note: can also simply do sf::st_as_sf() call, but was running into memory 
+      ## issues and it was also slower 
+      rsf <- as.data.frame(r) %>%
+        sf::st_as_sf(coords = c("x", "y")) %>%
+        filter_at(vars(names(r)), any_vars(!is.na(.))) %>%
+        replace(is.na(.), 0)
       
       ## * predict ---------
-      
-      ## * * Managing NA values ----------------
-      ## When some of the values are NA change them to zero
-      ## * Identify the attribute with the highest number of NA values.
-      na_max <- na_table[na_table$count ==  max(na_table$count), ]
-      na_max <- row.names(na_max[1, ]) ## if multiple attributes -- take the first
-      ## make a copy of the attribute with the highest number of na values
-      rsf_bk <- rsf[, na_max]  ## -- this will be used to restore NA values
-      
-      ## When some of the values are NA change them to zero -- facilitates pred()
-      rsf[is.na(rsf)] <- 0 ## convert NA to zero as the predict function cannot handle NA
-      rsf.df <- sf::st_drop_geometry(rsf)
-      
-      # Default prediction types for most modelling packages use the response/
-      # classification type as the default model type. Difficult to hard code all
-      # of the options, but by removing the variable it should work out properly
-      cat("\n...modelling outcomes (predicting)...")
-      # if(type != "prob" || class(model) == "ranger") {
-      #   pred <- predict(model, rsf.df)
-      # } else {
-      #   pred <- predict(model, rsf.df, type = type)
-      # }
-      pred <- learner$predict_newdata(newdata = rsf.df, task = task)
+      cat("\n...Predicting outcomes...")
+      pred <- learner$predict_newdata(newdata = sf::st_drop_geometry(rsf), task = task)
       
       if(type == "prob") {
-        pred_dat <- pred$prob
+        pred_dat <- as.data.frame(pred$prob)
       } else {
-        pred_dat <- pred$response
+        pred_dat <- as.data.frame(pred$response) %>% 
+          dplyr::rename(pred = response) # come back to this when doing cover
       }
       
-      pred_dat[is.na(st_drop_geometry(rsf_bk)[, 1])] <- NA
-      pred <- pred_dat
-      
-      ## Restore NA values
-      # if(class(model) == "ranger") {
-      #   pred_dat <- pred$prob
-      #   pred_dat[is.na(st_drop_geometry(rsf_bk)[, 1])] <- NA
-      #   pred <- pred_dat
-      #   
-      # } else {
-      #   pred_dat <- pred
-      #   pred_dat[is.na(st_drop_geometry(rsf_bk)[, 1])] <- NA
-      #   pred <- pred_dat
-      # }
-      
       ## * geo-link predicted values ---------
-      r_out <- cbind(rsf, pred)
+      r_out <- sf::st_sf(pred_dat, sf::st_geometry(rsf))
       
       ## layers to keep (i.e. newly predicted layers)
-      keep <- setdiff(names(r_out), names(r))
-      keep <- keep[-length(keep)] ## drops the last entry (geometry field, not a name)
-      
-      r_out <- r_out %>% dplyr::select(all_of(keep))
+      keep <- names(pred_dat)
       
       ## Save the names of the model response -----
       ## The levels are in the multiclass 'response'
-      if(wkey == 0) {
+      if(i == 1) {
         if(type != "prob") {
           if(is.numeric(r_out$pred)) {
             respNames <- "pred"
-          } else respNames <- levels(r_out$pred) ## this becomes the dictionary to describe the raster values
+          } else respNames <- levels(r_out$pred)
         } else {
-          respNames <- keep ## this becomes the dictionary to describe the raster values
+          respNames <- keep
         }
-        wkey <- 1
+        ## this becomes the dictionary to describe the raster values
         write.csv(respNames, file.path(outDir, "response_names.csv"), row.names = TRUE)
       }
       
@@ -147,34 +110,39 @@ predict_landscape_mlr3 <- function(
       }
       
       ## Set up subdirectories for rastertile outputs
-      cat("\n...exporting raster tiles...")
+      cat("\n...Exporting raster tiles...")
       
       ## * save tile (each pred item saved) ---------
-      for (j in 1:length(keep)) {
+      out_files <- foreach(j = 1:length(keep), .combine = c) %do% {
         dir.create(file.path(outDir, keep[j]), showWarnings = FALSE)
         out <- stars::st_rasterize(r_out[j],
                                    template = r[1])
-        update <- ifelse(file.exists(paste0(outDir,"/",
-                                            keep[j], "/",             #sub-directoy
-                                            keep[j], "_", i, ".tif")), TRUE, FALSE)
-        stars::write_stars(out,
-                           paste0(outDir,"/",
-                                  keep[j], "/",             #sub-directoy
-                                  keep[j], "_", i, ".tif"), 
-                           update = update) #tile name
+        write_path <- file.path(outDir, keep[j], paste0(keep[j], "_", i, ".tif"))
+        if(file.exists(write_path)) unlink(write_path)
+        stars::write_stars(out, write_path) #tile name
+        return(write_path)
       }
       
-      ## * report progress -----
-      cat(paste0("\n", round(a / ta * 100, 1), "% completed at ", format(Sys.time(), "%X %b %d %Y")))
+      ## end if statement -- for when tile is not empty
       
-    } ## end if statement -- for when tile is empty
+    } else {
+      
+      cat("\nSome variables with all NA values, skipping tile...")
+      out_files <- NULL
+      
+    }
+    
+    ## * report progress -----
+    cat(paste0("\n", round(a / ta * 100, 1), "% completed at ", format(Sys.time(), "%X %b %d %Y"), "\n"))
+    return(out_files)
+    
   } ## END LOOP -------------
   
   cat("\nAll predicted tiles generated")
   
   ## Mosaic Tiles ---------------
   
-  cat("\nGenerating raster mosaics")
+  cat("\nGenerating raster mosaics\n")
   
   resamp_method <- if(learner$predict_type == "prob" || learner$task_type == "regr") {
     "bilinear"
@@ -182,28 +150,30 @@ predict_landscape_mlr3 <- function(
     "near"
   } else "bilinear"
   
-  for (k in keep) {
-    # get list of tiles
-    #k = "response" # testing
-    r_tiles <- list.files(file.path(outDir, k),
-                          pattern = ".tif$",
-                          full.names = TRUE)
+  for (k in unique(dirname(tile_files))) {
+    
+    r_tiles <- list.files(
+      k, pattern = paste0("^", basename(k), "_", tiles_keep, ".tif$", collapse = "|"),
+      full.names = TRUE)
     
     ## mosaic
-    mos <- rast(gdalUtils::mosaic_rasters(gdalfile = r_tiles, ## list of rasters to mosaic
-                              dst_dataset = file.path(outDir, paste0(k, ".tif")),  #output: dir and filename
-                              output_Raster = TRUE)) %>% 
+    mos <- rast(
+      gdalUtils::mosaic_rasters(
+        gdalfile = r_tiles, ## list of rasters to mosaic
+        dst_dataset = paste0(k, ".tif"),
+        output_Raster = TRUE)) %>% 
       terra::resample(subset(covariates, mask_layer), method = resamp_method) %>% 
       mask(subset(covariates, mask_layer)) %>% 
       magrittr::set_names("model_prediction")
     
-    writeRaster(mos, file.path(outDir, paste0(k, ".tif")), overwrite = TRUE)
+    writeRaster(mos, paste0(k, ".tif"), overwrite = TRUE)
   }
   
   if(length(keep) == 1) {
     return(mos)
   } else {
-    return(list.files(file.path(outDir), pattern = paste0(keep, ".tif", collapse = "|"), full.names = TRUE))
+    return(c(file.path(outDir, "response_names.csv"), list.files(
+      file.path(outDir), pattern = paste0(keep, ".tif", collapse = "|"), 
+      full.names = TRUE)))
   }
-  
 } ### end function
