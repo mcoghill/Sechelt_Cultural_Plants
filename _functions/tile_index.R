@@ -16,20 +16,23 @@
 #' tiles <- tile_index("e:/tmp/tmp.tif", pxCount = 50)
 #' mapview::mapview(tiles, alpha = 0.5)
 
-
 # GSIF requires a GDAL object
 tile_index <- function(rFile, pxCount){
   r <- rgdal::GDALinfo(rFile)
-  dist <- pxCount * r[6] ## GSIF uses a distance for the tile ... not pixel count
+  dist <- pxCount * r["res.x"] ## GSIF uses a distance for the tile ... not pixel count
+  
+  # Generate spatial object and create index
   p_tiles <- GSIF::getSpatialTiles(r, block.x = dist, return.SpatialPolygons = TRUE)
-                                   #overlap.percent = Buffer / pxCount *100) ## add later
   p_tiles <- sf::st_as_sf(p_tiles)
   p_tiles$id <- seq(1:nrow(p_tiles))
-  t_tiles <- GSIF::getSpatialTiles(r, block.x = dist, return.SpatialPolygons = FALSE)
-  t_tiles$id <- seq(1:nrow(t_tiles))
-
-  p_tiles <- dplyr::left_join(p_tiles, t_tiles)
+  
+  # Suppress further messages
+  suppressMessages({
+    # Generate associated columns and join with sf dataframe
+    t_tiles <- GSIF::getSpatialTiles(r, block.x = dist, return.SpatialPolygons = FALSE)
+    t_tiles$id <- seq(1:nrow(t_tiles))
+    p_tiles <- dplyr::left_join(p_tiles, t_tiles)
+  })
+  
   return(p_tiles)
 }
-
-
