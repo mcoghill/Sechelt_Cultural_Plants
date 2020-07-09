@@ -91,8 +91,9 @@ predict_landscape_mlr3 <- function(
       keep <- names(pred_dat)
       
       ## Save the names of the model response -----
+      ## Only needs to be completed for the first iteration
       ## The levels are in the multiclass 'response'
-      if(i == 1) {
+      if(length(tiles_keep) == 1) {
         if(type != "prob") {
           if(is.numeric(r_out$pred)) {
             respNames <- "pred"
