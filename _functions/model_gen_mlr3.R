@@ -170,13 +170,14 @@ model_gen_mlr3 <- function(
     # features (ex: if tuner has resolution 10, there will be 9 other values of 
     # features used in model creation. The best model will be used to create the 
     # resampling task.)
+    resolution <- round(max(sapply(tasks, function(x) length(x$feature_names))) / 10)
     feature_sel <- AutoTuner$new(
       learner = glrn, 
       resampling = resampling_outer, 
       measures = msr(measures),
       tune_ps = param_set, 
       terminator = term("none"), 
-      tuner = tnr("grid_search", resolution = 10)
+      tuner = tnr("grid_search", resolution = resolution)
     )
     feature_sel$store_tuning_instance <- TRUE
     
