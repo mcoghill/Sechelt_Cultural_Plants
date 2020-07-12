@@ -80,8 +80,7 @@ predict_landscape_mlr3 <- function(
       if(type == "prob") {
         pred_dat <- as.data.frame(pred$prob)
       } else {
-        pred_dat <- as.data.frame(pred$response) %>% 
-          dplyr::rename(pred = response) # come back to this when doing cover
+        pred_dat <- data.frame(pred = pred$response)
       }
       
       ## * geo-link predicted values ---------
