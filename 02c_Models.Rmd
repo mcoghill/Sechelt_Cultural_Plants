@@ -364,7 +364,7 @@ best_model_sets <- foreach(x = c("CORNCAN", "RUBUSPE"), .combine = rbind) %do% {
     read.csv(file.path(i, list.files(i, pattern = "_tune_results.csv$"))) %>% 
       dplyr::slice(which.min(classif.ce)) %>% 
       mutate(model = basename(i))
-  } %>% arrange(regr.mse)
+  } %>% arrange(classif.ce)
 }
 
 write.csv(best_model_sets, file.path(output_dir, "pres_abs_predictions", "model_performance_index.csv"), 
@@ -509,8 +509,9 @@ write.csv(best_model_sets, file.path(output_dir, "cover_predictions", "model_per
 ```{r Zonal statistics}
 
 # Using the dsmart TEM as the zonal layer, run zonal statistics for each map model
-site_series_t <- terra::rast(file.path(ss_dir, grep(ss, basename(site_series), value = TRUE)))
-dsmart_lookup <- read.csv(file.path(ss_dir, "lookup.txt"))
+site_series_t <- rast(file.path(dsmart_dir, "output", "realisations", "realisation_1.tif")) %>% 
+      magrittr::set_names("dsmart_ss_class")
+dsmart_lookup <- read.csv(file.path(dsmart_dir, "output", "lookup.txt"))
 
 pres_zonal <- sapply(list.dirs(
   file.path(output_dir, "pres_abs_predictions"), 
