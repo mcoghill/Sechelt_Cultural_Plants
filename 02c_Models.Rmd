@@ -238,8 +238,9 @@ The following chunk builds full datasets to be used in modelling later on. These
 # Create the list of input datasets
 pres_abs <- foreach(i = names(var_list)) %do% {
   lapply(pres_abs_points, function(x) {
-    x %>% dplyr::select(all_of(c("Pres", var_list[[i]], "X", "Y"))) %>% 
-      drop_na()
+    x %>% dplyr::select(all_of(c("Pres", var_list[[i]], "x", "y"))) %>% 
+      drop_na() %>% 
+      dplyr::rename(x = X, y = Y)
   }) %>% magrittr::set_names(paste0(names(.), i))
 } %>% unlist(recursive = FALSE)
 
@@ -268,43 +269,27 @@ for(i in 1:length(pres_abs)) {
   # Extract and write performance metrics
   pres_performance <- sapply(names(pres_models$learners), function(x) {
     
-    
     tune_results <- data.frame(
-      filter_fraction = sapply(pres_models$learners[[x]]$archive()$tune_x, function(x)
-        x[[1]]), 
+      filter_fraction = sapply(pres_models$learners[[x]]$archive()$tune_x, function(y)
+        y[[1]]), 
       classif.ce = pres_models$learners[[x]]$archive()$classif.ce
-    )
+    ) %>% dplyr::arrange(classif.ce)
     
     confusion <- as.data.frame(
       pres_models$learners[[x]]$model$tuning_instance$best()$prediction()$confusion)
     
     # There were no rep and fold ID's in the table so I had to create them from scratch
-    folds_reps <- sapply(
-      pres_models$learners[[x]]$model$tuning_instance$best()$data$prediction, 
-      function(y) 
-        nrow(y$test$data$tab))
+    test_data <- cbind(
+      pres_models$learners[[x]]$model$tuning_instance$best()$data$resampling[[1]]$instance %>% 
+        dplyr::arrange(row_id), 
+      pres_models$learners[[x]]$model$tuning_instance$best()$prediction()$data$tab %>% 
+        dplyr::arrange(row_id) %>% 
+        dplyr::select(-row_id)
+    )
     
-    row_ids <- foreach(j = 1:length(folds_reps), .combine = c) %do% {
-      folds <- as.character(j)
-      if(nchar(folds) > 1) folds <- substring(folds, 2)
-      if(folds == "0") folds <- "10"
-      
-      reps <- ifelse(j %in% 1:10, 1, ifelse(j %in% 11:20, 2, ifelse(
-        j %in% 21:30, 3, ifelse(j %in% 31:40, 4, 5))))
-      return(rep(paste0(folds, "_", reps), length.out = folds_reps[j]))
-    }
-    
-    test_data <- as.data.frame(
-      pres_models$learners[[x]]$model$tuning_instance$best()$data$resampling[[1]]$instance) %>% 
-      mutate(row_id = paste0(row_id, "_", fold, "_", rep)) %>% 
-      merge(cbind(
-        pres_models$learners[[x]]$model$tuning_instance$best()$prediction()$data$tab %>% 
-          mutate(row_id = paste0(row_id, "_", row_ids)),
-        pres_models$learners[[x]]$model$tuning_instance$best()$prediction()$data$prob))
-    
-    imp <- data.frame(pres_models$learners[[x]]$learner$model$classif.ranger$model$variable.importance) %>% 
-      rownames_to_column() %>% 
-      dplyr::rename_at(vars(names(.)), ~c("layer", "importance")) %>% 
+    imp <- data.frame(importance = pres_models$learners[[x]]$learner$model$importance$scores) %>% 
+      rownames_to_column("layer") %>% 
+      dplyr::filter(layer %in% pres_models$learners[[x]]$learner$model$importance$features) %>% 
       arrange(desc(importance))
     
     out <- utils::capture.output(pres_models$learners[[x]]$learner$model$classif.ranger$model)
@@ -366,6 +351,25 @@ for(i in 1:length(pres_abs)) {
   }, simplify = FALSE, USE.NAMES = TRUE)
 }
 
+# Using the available cover model results, find the best models for each species
+# First, collect all of that data together and then use an upper percentile or top
+# number of models from the entire collection for a single species
+best_model_sets <- foreach(x = c("CORNCAN", "RUBUSPE"), .combine = rbind) %do% {
+  
+  sp_dirs <- dir(file.path(output_dir, "pres_abs_predictions"), pattern = x, 
+                 full.names = TRUE)
+  
+  result_list <- foreach(i = sp_dirs, .combine = rbind) %do% {
+    
+    read.csv(file.path(i, list.files(i, pattern = "_tune_results.csv$"))) %>% 
+      dplyr::slice(which.min(classif.ce)) %>% 
+      mutate(model = basename(i))
+  } %>% arrange(regr.mse)
+}
+
+write.csv(best_model_sets, file.path(output_dir, "pres_abs_predictions", "model_performance_index.csv"), 
+          row.names = FALSE)
+
 ```
 
 
@@ -375,7 +379,8 @@ for(i in 1:length(pres_abs)) {
 cover <- foreach(i = names(var_list)) %do% {
   lapply(cover_points, function(x) {
     x %>% dplyr::select(all_of(c("Cover", var_list[[i]], "X", "Y"))) %>% 
-      drop_na()
+      drop_na() %>% 
+      dplyr::rename(x = X, y = Y)
   }) %>% magrittr::set_names(paste0(names(.), i))
 } %>% unlist(recursive = FALSE)
 
@@ -383,7 +388,7 @@ cover <- foreach(i = names(var_list)) %do% {
 lapply(names(cover), function(x) {
   dir_out <- file.path(output_dir, "cover_predictions")
   dir.create(dir_out, showWarnings = FALSE)
-  y <- st_as_sf(cover[[x]], coords = c("X", "Y"), crs = crs(covariates))
+  y <- st_as_sf(cover[[x]], coords = c("x", "y"), crs = crs(covariates))
   st_write(y, file.path(dir_out, paste0("cover_input_data.gpkg")), 
            layer = x, delete_layer = TRUE)
 })[0]
@@ -409,30 +414,17 @@ for(i in 1:length(cover)) {
     ) %>% arrange(regr.mse)
     
     # There were no rep and fold ID's in the table so I had to create them from scratch
-    folds_reps <- sapply(
-      cover_models$learners[[x]]$model$tuning_instance$best()$data$prediction, 
-      function(y) 
-        nrow(y$test$data$tab))
-    
-    row_ids <- foreach(j = 1:length(folds_reps), .combine = c) %do% {
-      folds <- as.character(j)
-      if(nchar(folds) > 1) folds <- substring(folds, 2)
-      if(folds == "0") folds <- "10"
-      
-      reps <- ifelse(j %in% 1:10, 1, ifelse(j %in% 11:20, 2, ifelse(
-        j %in% 21:30, 3, ifelse(j %in% 31:40, 4, 5))))
-      return(rep(paste0(folds, "_", reps), length.out = folds_reps[j]))
-    }
-    
-    test_data <- as.data.frame(
-      cover_models$learners[[x]]$model$tuning_instance$best()$data$resampling[[1]]$instance) %>% 
-      mutate(row_id = paste0(row_id, "_", fold, "_", rep)) %>% 
-      merge(cover_models$learners[[x]]$model$tuning_instance$best()$prediction()$data$tab %>% 
-              mutate(row_id = paste0(row_id, "_", row_ids)))
-    
-    imp <- data.frame(cover_models$learners[[x]]$learner$model$regr.ranger$model$variable.importance) %>% 
-      rownames_to_column() %>% 
-      dplyr::rename_at(vars(names(.)), ~c("layer", "importance")) %>% 
+    test_data <- cbind(
+      cover_models$learners[[x]]$model$tuning_instance$best()$data$resampling[[1]]$instance %>% 
+        dplyr::arrange(row_id), 
+      cover_models$learners[[x]]$model$tuning_instance$best()$prediction()$data$tab %>% 
+        dplyr::arrange(row_id) %>% 
+        dplyr::select(-row_id)
+    )
+     
+    imp <- data.frame(importance = cover_models$learners[[x]]$learner$model$importance$scores) %>% 
+      rownames_to_column("layer") %>% 
+      dplyr::filter(layer %in% cover_models$learners[[x]]$learner$model$importance$features) %>% 
       arrange(desc(importance))
     
     out <- utils::capture.output(cover_models$learners[[x]]$learner$model$regr.ranger$model)
@@ -490,6 +482,25 @@ for(i in 1:length(cover)) {
     
   }, simplify = FALSE, USE.NAMES = TRUE)
 }
+
+# Using the available cover model results, find the best models for each species
+# First, collect all of that data together and then use an upper percentile or top
+# number of models from the entire collection for a single species
+best_model_sets <- foreach(x = c("CORNCAN", "RUBUSPE"), .combine = rbind) %do% {
+  
+  sp_dirs <- dir(file.path(output_dir, "cover_predictions"), pattern = x, 
+                 full.names = TRUE)
+  
+  result_list <- foreach(i = sp_dirs, .combine = rbind) %do% {
+    
+    read.csv(file.path(i, list.files(i, pattern = "_tune_results.csv$"))) %>% 
+      dplyr::slice(which.min(regr.mse)) %>% 
+      mutate(model = basename(i))
+  } %>% arrange(regr.mse)
+}
+
+write.csv(best_model_sets, file.path(output_dir, "cover_predictions", "model_performance_index.csv"), 
+          row.names = FALSE)
 
 ```
 
