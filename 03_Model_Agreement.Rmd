@@ -1,0 +1,105 @@
+---
+title: "03_Model_Agreement"
+author: "Matthew Coghill"
+date: "7/14/2020"
+output: html_document
+---
+
+```{r}
+
+ls <- c("tidyverse", "terra", "foreach", "Rcpp")
+new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+if(length(new.packages))
+  install.packages(new.packages)
+lapply(ls, library, character.only = TRUE)[0]
+rm(ls, new.packages)
+
+
+```
+
+
+
+```{r}
+
+AOI <- "Sechelt"
+AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
+map_res <- 4
+
+model_dir <- file.path(AOI_dir, "2_map_predictions")
+
+# Create a C++ function to run standard deviation calculations faster
+# https://stackoverflow.com/questions/24253228/performance-of-r-statssd-vs-armastddev-vs-rcpp-implementation
+src <-
+"#include <Rcpp.h>
+#include <vector>
+#include <cmath>
+#include <numeric>
+
+// [[Rcpp::export]]
+double cppSD(Rcpp::NumericVector rinVec)
+{
+  std::vector<double> inVec(rinVec.begin(),rinVec.end());
+  int n = inVec.size();
+  double sum = std::accumulate(inVec.begin(), inVec.end(), 0.0);
+  double mean = sum / inVec.size();
+
+  for(std::vector<double>::iterator iter = inVec.begin();
+      iter != inVec.end(); ++iter){
+        double temp;
+        temp= (*iter - mean)*(*iter - mean);
+        *iter = temp;
+      }
+
+  double sd = std::accumulate(inVec.begin(), inVec.end(), 0.0);
+  return std::sqrt( sd / (n-1) );
+}"
+
+sourceCpp(code = src)
+
+```
+
+We want to create a probability raster that is of probabilites greater than 0.5, and we would like it to be fairly correct with low deviation. This is accomplished by calculating the mean (or median?) of all of the model outputs and then filtering the raster to only show pixels that have a value of greater than or equal to 0.5. Next, a standard deviation layer is created and then masked to only contain the pixels contained in the filtered mean/median probability layer. Where standard deviation is greater than the upper quartile of the entire filtered standard deviation raster, the values are changed to 0, and if that condition is not met it is changed to NA. Finally, these highly deviant pixels are used to change probability values to 0
+
+```{r}
+
+for(i in c("pres_abs")) {
+  pred_folder <- file.path(model_dir, paste0(i, "_predictions"))
+  for(j in c("CORNCAN", "RUBUSPE")) {
+    model_stack <- rast(
+      foreach(x = dir(pred_folder, pattern = j, full.names = TRUE), .combine = c) %do% {
+      list.files(x, pattern = ifelse(i == "pres_abs", "_TRUE.tif$", "_cover.tif$"), 
+                 full.names = TRUE)
+    })
+    
+    #agreement_mean <- mean(model_stack)
+    agreement_median <- median(model_stack)
+    agreement_sd <- app(model_stack, cppSD)
+    #writeRaster(agreement_mean, file.path(pred_folder, paste0(j, "_", i, "_mean_model_agreement.tif")), overwrite = TRUE)
+    
+    # We are only intersted in probability values over 0.5. Mask out all other areas
+    agreement_median_0 <- agreement_median
+    agreement_median_0[agreement_median_0 < 0.5] <- 0
+    
+    agreement_median_na <- agreement_median
+    agreement_median_na[agreement_median_na < 0.5] <- NA
+    
+    sd_stats <- global(mask(agreement_sd, agreement_median_na), 
+                       quantile, probs = 0.25, na.rm = TRUE)
+    
+    # Use calculated high deviation value to update the deviation raster, then
+    # use that to mask the median raster
+    agreement_sd[agreement_sd >= sd_stats$global] <- 0
+    agreement_sd[agreement_sd > 0] <- NA
+    
+    agreement_median_0[agreement_median_0 > agreement_sd] <- 0
+    
+    writeRaster(agreement_median, file.path(pred_folder, paste0(j, "_", i, "_median_model_agreement_raw.tif")), overwrite = TRUE)
+    writeRaster(agreement_sd, file.path(pred_folder, paste0(j, "_", i, "_model_agreement_sd.tif")), overwrite = TRUE)
+    writeRaster(agreement_median_0, file.path(pred_folder, paste0(j, "_", i, "_median_model_agreement_filtered.tif")), overwrite = TRUE)
+    
+  }
+}
+
+
+```
+
