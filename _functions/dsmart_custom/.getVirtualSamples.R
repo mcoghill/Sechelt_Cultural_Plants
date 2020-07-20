@@ -10,7 +10,7 @@ function (covariates, polygons, composition, n.realisations = 100,
     values(cell) <- 1:ncell(cell)
     covariates <- c(cell, covariates)
     
-    samples <- foreach::foreach(x = 1:length(polygons)) %do% 
+    samples <- foreach::foreach(x = 1:length(polygons), .combine = rbind) %do% 
         {
             poly.id <- as.data.frame(polygons)[, 1][x]
             cat(paste0(
@@ -30,7 +30,6 @@ function (covariates, polygons, composition, n.realisations = 100,
             } else stop("Sampling method \"", method.sample, "\" is unknown")
             
             poly.samples <- as.data.frame(terra::extract(covariates, poly)) %>% 
-                # dplyr::rename_at(vars(names(.)), ~names(covariates)) %>% # This line is no longer needed as of terra 0.7-4
                 dplyr::select(-ID) %>% 
                 dplyr::filter(complete.cases(.)) %>% 
                 {if(nrow(.) > 0) {
@@ -81,6 +80,5 @@ function (covariates, polygons, composition, n.realisations = 100,
                                   poly.samples[, 2:base::ncol(poly.samples)])
             return(poly.samples)
         }
-    samples <- data.table::rbindlist(samples)
     return(samples)
 }
