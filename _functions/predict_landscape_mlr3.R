@@ -49,20 +49,31 @@ predict_landscape_mlr3 <- function(
     a <- a + as.numeric(sf::st_area(t))
     cat(paste("\nWorking on tile", i, "of", nrow(tiles)))
     
-    ## load tile raster data ---------
-    cat("\n...Loading new data (from rasters)...")
-    r <- stars::read_stars(cov,
+    ## Do a test run (work in progress, may not speed things up)
+    r <- stars::read_stars(cov[1],
                            RasterIO = list(nXOff  = t$offset.x[1] + 1, 
                                            nYOff  = t$offset.y[1] + 1,
                                            nXSize = t$region.dim.x[1],
                                            nYSize = t$region.dim.y[1]))
-    cat("done!")
+    
+    if(!any(sapply(r, function(x) all(is.na(x))))) {
+      
+      ## load tile raster data ---------
+      cat("\n...Loading new data (from rasters)...")
+      r <- stars::read_stars(cov,
+                             RasterIO = list(nXOff  = t$offset.x[1] + 1, 
+                                             nYOff  = t$offset.y[1] + 1,
+                                             nXSize = t$region.dim.x[1],
+                                             nYSize = t$region.dim.y[1])) %>% 
+        magrittr::set_names(tools::file_path_sans_ext(names(.)))
+      cat("done!")
+      
+    }
     
     ## If any attribute is empty skip the tile, else continue (backwards here)
     if(!any(sapply(r, function(x) all(is.na(x))))) {
       
       ## * update names ---------
-      names(r) <- names(covariates)
       tiles_keep <- c(tiles_keep, i)
       
       ## * convert tile to dataframe ---------
@@ -115,11 +126,9 @@ predict_landscape_mlr3 <- function(
       ## * save tile (each pred item saved) ---------
       out_files <- foreach(j = 1:length(keep), .combine = c) %do% {
         dir.create(file.path(outDir, keep[j]), showWarnings = FALSE)
-        out <- stars::st_rasterize(r_out[j],
-                                   template = r[1])
         write_path <- file.path(outDir, keep[j], paste0(keep[j], "_", i, ".tif"))
         if(file.exists(write_path)) unlink(write_path)
-        stars::write_stars(out, write_path) #tile name
+        out <- stars::st_rasterize(r_out[j], template = r[1], file = write_path)
         return(write_path)
       }
       
@@ -144,30 +153,39 @@ predict_landscape_mlr3 <- function(
   
   cat("\nGenerating raster mosaics\n")
   
+  def_ops <- capture.output(terraOptions())
+  terraOptions(progress = 0)
+  
   resamp_method <- if(learner$predict_type == "prob" || learner$task_type == "regr") {
     "bilinear"
   } else if(learner$predict_type != "prob" || learner$task_type != "regr") {
     "near"
   } else "bilinear"
   
-  for (k in unique(dirname(tile_files))) {
+  for(k in unique(dirname(tile_files))) {
+    
+    cat(paste("\nMosaicking", basename(k), "tiles"))
     
     r_tiles <- list.files(
       k, pattern = paste0("^", basename(k), "_", tiles_keep, ".tif$", collapse = "|"),
       full.names = TRUE)
     
-    ## mosaic
-    mos <- rast(
-      gdalUtils::mosaic_rasters(
-        gdalfile = r_tiles, ## list of rasters to mosaic
-        dst_dataset = paste0(k, ".tif"),
-        output_Raster = TRUE)) %>% 
-      terra::resample(subset(covariates, mask_layer), method = resamp_method) %>% 
-      mask(subset(covariates, mask_layer)) %>% 
-      magrittr::set_names("model_prediction")
+    # This will overwrite temp files, saving storage space on a PC
+    temp <- if(file.exists(grep(".tif$", tmpFiles(), value = TRUE)[1])) {
+      grep(".tif$", tmpFiles(), value = TRUE)[1]
+    } else ""
     
-    writeRaster(mos, paste0(k, ".tif"), overwrite = TRUE)
+    ## mosaic
+    mos <- foreach(i = r_tiles, .final = function(x) 
+      do.call(merge, c(x, filename = paste0(k, ".tif"), overwrite = TRUE))) %do% {
+        rast(i)
+      } %>% 
+      terra::resample(subset(covariates, mask_layer$layer), method = resamp_method, filename = temp, overwrite = TRUE) %>% 
+      magrittr::set_names(basename(k)) %>% 
+      mask(subset(covariates, mask_layer$layer), filename = paste0(k, ".tif"), overwrite = TRUE)
   }
+  
+  terraOptions(progress = readr::parse_number(grep("progress", def_ops, value = TRUE)))
   
   if(length(keep) == 1) {
     return(mos)
