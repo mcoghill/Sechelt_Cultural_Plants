@@ -189,6 +189,8 @@ function (covariates, polygons, composition, rate = 15, reals = 100,
             model <- C50::C5.0(s, y = soil_class)
         } else {
             soil_class <- base::droplevels(soil_class)
+            
+            # Note: As of July 2020, mlr/mlr3 methods do NOT increase the speed here
             model <- base::do.call(caret::train, c(list(x = s, 
                 y = soil_class, method = method.model), args.model))
         }
@@ -209,7 +211,7 @@ function (covariates, polygons, composition, rate = 15, reals = 100,
         if (predict) {
             if (type != "prob") {
                 
-                r1 <- predict_landscape(model, covariates, tilesize = 500,
+                r1 <- predict_landscape(model, covariates_t, tilesize = 500,
                                         outDir = file.path(outputdir, "tiles"), 
                                         type = type)
                 
