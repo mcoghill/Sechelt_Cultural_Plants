@@ -7,99 +7,178 @@ output: html_document
 
 ```{r}
 
-ls <- c("tidyverse", "terra", "foreach", "Rcpp")
+ls <- c("tidyverse", "terra", "foreach", "raster")
 new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new.packages))
   install.packages(new.packages)
 lapply(ls, library, character.only = TRUE)[0]
 rm(ls, new.packages)
 
-
 ```
 
 
 
-```{r}
+```{r Directory setup}
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 map_res <- 4
 
 model_dir <- file.path(AOI_dir, "2_map_predictions")
+covariate_folder <- file.path(AOI_dir, "1_map_inputs", "covariates")
+res_folder <- paste0(map_res, "m")
+dsmart_folder <- file.path(AOI_dir, "1_map_inputs", "dsmart")
 
-# Create a C++ function to run standard deviation calculations faster
-# https://stackoverflow.com/questions/24253228/performance-of-r-statssd-vs-armastddev-vs-rcpp-implementation
-src <-
-"#include <Rcpp.h>
-#include <vector>
-#include <cmath>
-#include <numeric>
-
-// [[Rcpp::export]]
-double cppSD(Rcpp::NumericVector rinVec)
-{
-  std::vector<double> inVec(rinVec.begin(),rinVec.end());
-  int n = inVec.size();
-  double sum = std::accumulate(inVec.begin(), inVec.end(), 0.0);
-  double mean = sum / inVec.size();
-
-  for(std::vector<double>::iterator iter = inVec.begin();
-      iter != inVec.end(); ++iter){
-        double temp;
-        temp= (*iter - mean)*(*iter - mean);
-        *iter = temp;
-      }
-
-  double sd = std::accumulate(inVec.begin(), inVec.end(), 0.0);
-  return std::sqrt( sd / (n-1) );
-}"
-
-sourceCpp(code = src)
+covariates <- c(
+  list.files(file.path(covariate_folder, res_folder), full.names = TRUE, pattern = ".tif$"),
+  list.files(file.path(dsmart_folder, "simple"), pattern = ".tif$", full.names = TRUE),
+  list.files(file.path(dsmart_folder, "output", "probabilities"), pattern = ".tif", full.names = TRUE),
+  file.path(dsmart_folder, "output", "realisations", "realisation_1.tif")
+)
 
 ```
 
-We want to create a probability raster that is of probabilites greater than 0.5, and we would like it to be fairly correct with low deviation. This is accomplished by calculating the mean (or median?) of all of the model outputs and then filtering the raster to only show pixels that have a value of greater than or equal to 0.5. Next, a standard deviation layer is created and then masked to only contain the pixels contained in the filtered mean/median probability layer. Where standard deviation is greater than the upper quartile of the entire filtered standard deviation raster, the values are changed to 0, and if that condition is not met it is changed to NA. Finally, these highly deviant pixels are used to change probability values to 0
+Simple method proposed by Mike: Count the number of maps that predicted a plant at a given pixel. This requires a bit of adjustment as well: First, reclassify all map probability values below 0.5 to be 0, and then count the maps that predict anything above that value. Repeat for above and below 0.75.
 
-```{r}
+```{r Pres Abs model agreement}
 
-for(i in c("pres_abs")) {
-  pred_folder <- file.path(model_dir, paste0(i, "_predictions"))
-  for(j in c("CORNCAN", "RUBUSPE")) {
-    model_stack <- rast(
-      foreach(x = dir(pred_folder, pattern = j, full.names = TRUE), .combine = c) %do% {
-      list.files(x, pattern = ifelse(i == "pres_abs", "_TRUE.tif$", "_cover.tif$"), 
+pred_folder <- file.path(model_dir, "pres_abs_predictions")
+out_folder <- file.path(model_dir, "pres_abs_agreement")
+dir.create(out_folder, showWarnings = FALSE)
+i <- "CORNCAN"
+j <- 0.5
+for(i in c("CORNCAN", "RUBUSPE")) {
+  model_stack <- rast(
+    foreach(x = dir(pred_folder, pattern = i, full.names = TRUE), .combine = c) %do% {
+      list.files(x, pattern = "_TRUE.tif$", 
                  full.names = TRUE)
     })
+  
+  for(j in c(0.5, 0.75)) {
+    # Classify cell values
+    rcl <- classify(model_stack, matrix(c(0, j, 0, j, 1, 1), ncol = 3, byrow = TRUE))
     
-    #agreement_mean <- mean(model_stack)
-    agreement_median <- median(model_stack)
-    agreement_sd <- app(model_stack, cppSD)
-    #writeRaster(agreement_mean, file.path(pred_folder, paste0(j, "_", i, "_mean_model_agreement.tif")), overwrite = TRUE)
+    # Create summed raster
+    agreement <- app(
+      rcl, fun = "sum", 
+      filename = file.path(out_folder, paste0(i, "_pres_abs_gt_", 100 * j, "_model_agreement.tif")), 
+      overwrite = TRUE, wopt = list(datatype = "INT2S"))
     
-    # We are only intersted in probability values over 0.5. Mask out all other areas
-    agreement_median_0 <- agreement_median
-    agreement_median_0[agreement_median_0 < 0.5] <- 0
+    agreement_freq <- as.data.frame(freq(agreement, bylayer = FALSE)) %>%
+      magrittr::set_colnames(c("zone", "count"))
     
-    agreement_median_na <- agreement_median
-    agreement_median_na[agreement_median_na < 0.5] <- NA
+    # Zonal statistics
+    # z_stats <- lapply(covariates, function(x) {
+    #   foreach(k = c("mean", "sd", "min", "max", "sum"), .final = function(y) {
+    #     Reduce(function(...) merge(..., by = "zone"), y)
+    #   }) %do% {
+    #     zonal(rast(x), agreement, k, na.rm = TRUE) %>%
+    #       magrittr::set_colnames(c("zone", k))
+    #   } %>%
+    #     merge(agreement_freq, by = "zone")
+    # }) %>% magrittr::set_names(basename(tools::file_path_sans_ext(covariates)))
     
-    sd_stats <- global(mask(agreement_sd, agreement_median_na), 
-                       quantile, probs = 0.25, na.rm = TRUE)
+    # Terra package top level notation, since zonal function is broken for 
+    # large rasters. This works fine though
+    z_stats <- foreach(k = covariates, .final = function(y) {
+      Reduce(function(...) merge(..., by = "zone"), y)
+    }) %do% {
+      terra:::.getSpatDF(rast(k)@ptr$zonal(agreement@ptr, "mean", na.rm = TRUE))
+    } %>% merge(agreement_freq, by = "zone")
     
-    # Use calculated high deviation value to update the deviation raster, then
-    # use that to mask the median raster
-    agreement_sd[agreement_sd >= sd_stats$global] <- 0
-    agreement_sd[agreement_sd > 0] <- NA
-    
-    agreement_median_0[agreement_median_0 > agreement_sd] <- 0
-    
-    writeRaster(agreement_median, file.path(pred_folder, paste0(j, "_", i, "_median_model_agreement_raw.tif")), overwrite = TRUE)
-    writeRaster(agreement_sd, file.path(pred_folder, paste0(j, "_", i, "_model_agreement_sd.tif")), overwrite = TRUE)
-    writeRaster(agreement_median_0, file.path(pred_folder, paste0(j, "_", i, "_median_model_agreement_filtered.tif")), overwrite = TRUE)
-    
+    # Cleanup
+    tmpFiles(remove = TRUE)
   }
 }
 
+```
+
+I thought of trying to do a similar technique with cover. Because of really small decimal places in raw cover values, I figured I should reclassify cover values less than 1% as a 0 value, and then everything else is a value of 1 in order to count where models agree that there is cover greater than 1%
+
+```{r Cover model agreement}
+
+pred_folder <- file.path(model_dir, "cover_predictions")
+out_folder <- file.path(model_dir, "cover_agreement")
+dir.create(out_folder, showWarnings = FALSE)
+
+for(i in c("CORNCAN", "RUBUSPE")) {
+  model_stack <- rast(
+    foreach(x = dir(pred_folder, pattern = i, full.names = TRUE), .combine = c) %do% {
+      list.files(x, pattern = "_cover.tif$", 
+                 full.names = TRUE)
+    })
+  
+  for(j in c(1, 5)) {
+    rcl <- classify(model_stack, matrix(c(0, j, 0, j, 100, 1), ncol = 3, byrow = TRUE))
+    agreement <- as.factor(sum(rcl))
+    writeRaster(agreement, 
+                file.path(out_folder, paste0(i, "_cover_gt_", j, "_model_agreement.tif")), 
+                overwrite = TRUE, wopt = list(datatype = "INT2S"))
+    tmpFiles(remove = TRUE)
+  }
+}
+
+```
+
+The outputs of the above calculations are "number of maps that agree that plant x has a probability of presence/has a cover percentage greater than y". These numbers of maps can be summed, and it's a weird metric but it is essentially the number of models that agree that a plant would be present and that the cover would be greater than 5%
+
+```{r}
+
+pres_folder <- file.path(model_dir, "pres_abs_agreement")
+cover_folder <- file.path(model_dir, "cover_agreement")
+cover_vals <- c(1, 5)
+pres_probs <- c(50, 75)
+for(i in c("CORNCAN", "RUBUSPE")) {
+  for(j in cover_vals) {
+    for(k in pres_probs) {
+      model_stack <- rast(c(list.files(pres_folder, pattern = paste0(i, ".*.", k), full.names = TRUE), 
+                            list.files(cover_folder, pattern = paste0(i, ".*.", j), full.names = TRUE))) %>% 
+        magrittr::set_names(c("pres_abs", "cover"))
+      
+      # Only want to keep high cell values, indicating that many models agree at a 
+      # given raster pixel
+      model_mask <- foreach(l = 1:nlyr(model_stack), .final = rast) %do% {
+        n_layers <- max(minmax(model_stack[[l]]))
+        classify(model_stack[[l]], matrix(c(0, floor(n_layers / 2), 0, 
+                                            floor(n_layers / 2), Inf, 1), ncol = 3, byrow = TRUE))
+      } %>% 
+        sum() %>% 
+        classify(matrix(c(0, 2, 0, 2, Inf, 1), ncol = 3, byrow = TRUE))
+      
+      # Add both pres_abs and cover rasters, mask out areas defined from the masking
+      # function above, and finally only keep cell values that are minimum of the
+      # mean of the number of agreeing models...
+      model_sum <- sum(model_stack) %>% 
+        mask(model_mask, maskvalue = 0, updatevalue = 0) %>% 
+        classify(matrix(c(0, floor(mean(minmax(model_stack)["rmax", ])), 0), 
+                        ncol = 3, byrow = TRUE),
+                 filename = file.path(model_dir, paste0(i, "_cover_gt_", j, "_pres_abs_gt_", k, "_agreement.tif")), 
+                 overwrite = TRUE, wopt = list(datatype = "INT2S"))
+    }
+  }
+  
+  # Produce a map of likely locations to find a given plant based on all other maps produced
+  out_maps <- rast(list.files(model_dir, pattern = paste0(i, ".*..tif$"), full.names = TRUE))
+  likely_locations <- classify(out_maps, matrix(c(0, 1, 0, 1, Inf, 1), ncol = 3, byrow = TRUE)) %>% 
+    sum() %>% 
+    classify(matrix(c(0, floor(nlyr(out_maps) / 2), 0), ncol = 3, byrow = TRUE), 
+             filename = file.path(model_dir, paste0(i, "_likely_locations.tif")), 
+                 overwrite = TRUE, wopt = list(datatype = "INT2S"))
+      
+  tmpFiles(remove = TRUE)
+  
+}
+
+# Attempt to find areas that all plants overlap based on the previous maps.
+likely_files <- list.files(model_dir, pattern = "_likely_locations.tif", full.names = TRUE)
+efficiency <- rast(likely_files) %>% 
+  classify(matrix(c(0, 1, 0, 1, Inf, 1), ncol = 3, byrow = TRUE)) %>% 
+  sum() %>% 
+  classify(matrix(c(0, length(likely_files), 0, length(likely_files), Inf, 1), ncol = 3, byrow = TRUE), 
+           filename = file.path(model_dir, "efficient_locations.tif"), 
+                 overwrite = TRUE, wopt = list(datatype = "INT2S"))
+      
+tmpFiles(remove = TRUE)
 
 ```
 
