@@ -22,7 +22,7 @@ if(length(new.packages))
 
 # Make sure terra package is up to date! This may take a moment
 if(compareVersion(as.character(packageVersion("terra")), "0.7-4") < 0)
-  install.packages("terra", type = "source")
+  install.packages("terra")
 lapply(ls, library, character.only = TRUE)[0]
 rm(ls, new.packages)
 
