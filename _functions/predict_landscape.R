@@ -13,8 +13,14 @@
 #' @examples
 #' 
 
-predict_landscape <- function(model, covariates, tilesize = 500,
-                              outDir = "./predicted", type = "raw") {
+predict_landscape <- function(
+  model, 
+  covariates, 
+  tilesize = 500,
+  outDir = "./predicted", 
+  type = "raw") {
+  
+  source('./_functions/tile_index.R')
   
   # Count NA values in the covariate data to determine best layer to use for masking later on
   cov <- covariates@ptr$filenames
@@ -31,8 +37,6 @@ predict_landscape <- function(model, covariates, tilesize = 500,
   ## create output dir -----------
   dir.create(outDir, recursive = TRUE, showWarnings = FALSE)
   
-  ## alternate -- outside of pemgeneratr
-  source('./_functions/tile_index.R')
   tiles <- tile_index(cov[1], tilesize)
   
   ## begin loop through tiles -----
@@ -40,88 +44,80 @@ predict_landscape <- function(model, covariates, tilesize = 500,
   ## set up progress messaging
   a <- 0 ## running total of area complete
   ta <- sum(as.numeric(sf::st_area(tiles)))
-  wkey <- 0
+  tiles_keep <- NULL
   
-  for (i in 1:nrow(tiles)) {
+  tile_files <- foreach(i = 74:nrow(tiles), .combine = c) %do% {
     
     t <- tiles[i, ]  ## get tile
+    a <- a + as.numeric(sf::st_area(t))
     cat(paste("\nWorking on tile", i, "of", nrow(tiles)))
     
-    ## * load tile area---------
-    cat("\n...loading new data (from rasters)...")
-    r <- stars::read_stars(cov,
+    ## Do a test run (work in progress, may not speed things up)
+    r <- stars::read_stars(cov[1],
                            RasterIO = list(nXOff  = t$offset.x[1] + 1, 
                                            nYOff  = t$offset.y[1] + 1,
                                            nXSize = t$region.dim.x[1],
                                            nYSize = t$region.dim.y[1]))
     
-    ## * update names ---------
-    names(r) <- names(covariates)
+    if(!any(sapply(r, function(x) all(is.na(x))))) {
+      
+      ## * load tile area---------
+      cat("\n...loading new data (from rasters)...")
+      r <- stars::read_stars(cov,
+                             RasterIO = list(nXOff  = t$offset.x[1] + 1, 
+                                             nYOff  = t$offset.y[1] + 1,
+                                             nXSize = t$region.dim.x[1],
+                                             nYSize = t$region.dim.y[1])) %>% 
+        magrittr::set_names(tools::file_path_sans_ext(names(.)))
+      cat("done!")
+      
+    }
     
-    ## * convert tile to dataframe ---------
-    rsf <- sf::st_as_sf(r, as_points = TRUE)
-    
-    ## * Test if tile is empty -------------
-    na_table <- as.data.frame(sapply(rsf, function(x) all(is.na(x))))
-    ## * determine na counts -- this will be used to restore NA values if tile is run.
-    na_table$count <- as.data.frame(sapply(rsf, function(x) sum(is.na(x))))[, 1]
-    
-    ## If any attribute is empty skip the tile
-    if(any(na_table[, 1] == TRUE)) {
+    if(any(sapply(r, function(x) all(is.na(x))))) {
       
       cat("\nSome variables with all NA values, skipping tile...")
+      out_files <- NULL
       
     } else {
+      ## * update names ---------
+      tiles_keep <- c(tiles_keep, i)
       
-      ## * predict ---------
-      
-      ## * * Managing NA values ----------------
-      ## When some of the values are NA change them to zero
-      ## * Identify the attribute with the highest number of NA values.
-      na_max <- na_table[na_table$count ==  max(na_table$count), ]
-      na_max <- row.names(na_max[1, ]) ## if multiple attributes -- take the first
-      ## make a copy of the attribute with the highest number of na values
-      rsf_bk <- rsf[, na_max]  ## -- this will be used to restore NA values
-      
-      ## When some of the values are NA change them to zero -- facilitates pred()
-      rsf[is.na(rsf)] <- 0 ## convert NA to zero as the predict function cannot handle NA
-      rsf.df <- sf::st_drop_geometry(rsf)
-      
+      ## * convert tile to dataframe ---------
+      rsf <- as.data.frame(r) %>% 
+        sf::st_as_sf(coords = c("x", "y")) %>%
+        filter_at(vars(names(r)), any_vars(!is.na(.))) %>%
+        replace(is.na(.), 0)
+
       # Default prediction types for most modelling packages use the response/
       # classification type as the default model type. Difficult to hard code all
       # of the options, but by removing the variable it should work out properly
       cat("\n...modelling outcomes (predicting)...")
       if(type != "prob") {
-        pred <- predict(model, rsf.df)
+        pred <- predict(model, st_drop_geometry(rsf))
       } else {
-        pred <- cbind(predict(model, rsf.df, type = type), 
-                      pred = predict(model, rsf.df))
+        pred <- cbind(predict(model, st_drop_geometry(rsf), type = type), 
+                      pred = predict(model, st_drop_geometry(rsf)))
       }
       
-      ## Restore NA values
-      pred_dat <- pred
-      pred_dat[is.na(st_drop_geometry(rsf_bk)[, 1]), ] <- NA
-      pred <- pred_dat
-      
-      
       ## * geo-link predicted values ---------
-      r_out <- cbind(rsf, pred)
+      r_out <- sf::st_sf(pred, sf::st_geometry(rsf))
       
       ## layers to keep (i.e. newly predicted layers)
-      keep <- setdiff(names(r_out), names(r))
-      keep <- keep[-length(keep)] ## drops the last entry (geometry field, not a name)
+      keep <- names(pred)
       
       r_out <- r_out %>% dplyr::select(all_of(keep))
       
       ## Save the names of the model response -----
       ## The levels are in the multiclass 'response'
-      if(wkey == 0) {
-        if("pred" %in% names(r_out)) {
-          respNames <- levels(r_out$pred) ## this becomes the dictionary to describe the raster values
+      if(length(tiles_keep) == 1) {
+        if(type != "prob") {
+          if(is.numeric(r_out$pred)) {
+            respNames <- "pred"
+          } else respNames <- levels(r_out$pred)
         } else {
-          respNames <- keep ## this becomes the dictionary to describe the raster values
+          respNames <- keep
         }
-        wkey <- 1
+        ## this becomes the dictionary to describe the raster values
         write.csv(respNames, file.path(outDir, "response_names.csv"), row.names = TRUE)
       }
       
@@ -131,29 +127,23 @@ predict_landscape <- function(model, covariates, tilesize = 500,
       }
       
       ## Set up subdirectories for rastertile outputs
-      cat("\n...exporting raster tiles...")
+      cat("\n...Exporting raster tiles...")
       
       ## * save tile (each pred item saved) ---------
-      for (j in 1:length(keep)) {
+      out_files <- foreach(j = 1:length(keep), .combine = c) %do% {
         dir.create(file.path(outDir, keep[j]), showWarnings = FALSE)
-        out <- stars::st_rasterize(r_out[j],
-                                   template = r[1])
-        update <- ifelse(file.exists(paste0(outDir,"/",
-                                            keep[j], "/",             #sub-directoy
-                                            keep[j], "_", i, ".tif")), TRUE, FALSE)
-        stars::write_stars(out,
-                           paste0(outDir,"/",
-                                  keep[j], "/",             #sub-directoy
-                                  keep[j], "_", i, ".tif"), 
-                           update = update) #tile name
+        write_path <- file.path(outDir, keep[j], paste0(keep[j], "_", i, ".tif"))
+        if(file.exists(write_path)) unlink(write_path)
+        out <- stars::st_rasterize(r_out[j], template = r[1], file = write_path)
+        return(write_path)
       }
-      
-      ## * report progress -----
-      a <- a + as.numeric(sf::st_area(t))
-      cat(paste0("\n", round(a / ta * 100, 1), "% completed at ", format(Sys.time(), "%X %b %d %Y")))
-      
     } ## end if statement -- for when tile is empty
-  } ## END LOOP -------------
+    
+    ## * report progress -----
+    cat(paste0("\n", round(a / ta * 100, 1), "% completed at ", format(Sys.time(), "%X %b %d %Y"), "\n"))
+    return(out_files)
+      
+    } ## END LOOP -------------
   
   cat("\nAll predicted tiles generated")
   
@@ -161,29 +151,37 @@ predict_landscape <- function(model, covariates, tilesize = 500,
   
   cat("\nGenerating raster mosaics")
   
+  def_ops <- capture.output(terraOptions())
+  terraOptions(progress = 0)
   
-  
-  for (k in keep) {
-    # get list of tiles
-    #k = "response" # testing
-    resamp_method <- if(k == "pred") {
+  for(k in unique(dirname(tile_files))) {
+    
+    cat(paste("\nMosaicking", basename(k), "tiles"))
+    
+    resamp_method <- if(basename(k) == "pred") {
       "near"
     } else "bilinear"
     
-    r_tiles <- list.files(file.path(outDir, k),
-                          pattern = ".tif$",
-                          full.names = TRUE)
+    r_tiles <- list.files(
+      k, pattern = paste0("^", basename(k), "_", tiles_keep, ".tif$", collapse = "|"),
+      full.names = TRUE)
+    
+    # This will overwrite temp files, saving storage space on a PC
+    temp <- if(file.exists(grep(".tif$", tmpFiles(), value = TRUE)[1])) {
+      grep(".tif$", tmpFiles(), value = TRUE)[1]
+    } else ""
     
     ## mosaic
-    mos <- rast(gdalUtils::mosaic_rasters(gdalfile = r_tiles, ## list of rasters to mosaic
-                                          dst_dataset = file.path(outDir, paste0(k, ".tif")),  #output: dir and filename
-                                          output_Raster = TRUE)) %>% 
-      terra::resample(subset(covariates, mask_layer$layer), method = resamp_method) %>% 
-      mask(subset(covariates, mask_layer$layer)) %>% 
-      magrittr::set_names(k)
-    
-    writeRaster(mos, file.path(outDir, paste0(k, ".tif")), overwrite = TRUE)
+    mos <- foreach(i = r_tiles, .final = function(x) 
+      do.call(merge, c(x, filename = paste0(k, ".tif"), overwrite = TRUE))) %do% {
+        rast(i)
+      } %>% 
+      terra::resample(subset(covariates, mask_layer$layer), method = resamp_method, filename = temp, overwrite = TRUE) %>% 
+      magrittr::set_names(basename(k)) %>% 
+      mask(subset(covariates, mask_layer$layer), filename = paste0(k, ".tif"), overwrite = TRUE)
   }
+  
+  terraOptions(progress = readr::parse_number(grep("progress", def_ops, value = TRUE)))
   
   if(length(keep) == 1) {
     return(mos)
