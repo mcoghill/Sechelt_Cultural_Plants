@@ -18,7 +18,8 @@ model_gen_mlr3 <- function(
   traindat, 
   target, 
   feature_selection = "filter", 
-  type = "response") {
+  type = "response", 
+  folds = 10, repeats = 5) {
   
   library(mlr3verse)
   #traindat <- pres_abs
@@ -54,6 +55,15 @@ model_gen_mlr3 <- function(
     mod_type <- "regr.ranger"
   }
   
+  if(all(sapply(traindat, function(x) 
+    nlevels(x[, target])) <= 2)) {
+    if(any(c(TRUE, FALSE) %in% levels(traindat[[1]][, target]))) {
+      positive <- "TRUE"
+    } else {
+      positive <- NULL
+    }
+  }
+  
   measures <- if(mod_type == "regr.ranger") {
     "regr.mse"
   } else {
@@ -76,7 +86,7 @@ model_gen_mlr3 <- function(
     # Fixes issue descrived above
     mlr_reflections$task_types <- mlr_reflections$task_types[package == "mlr3spatiotempcv", ]
     
-    resampling_outer <- rsmp("repeated-spcv-coords", folds = 10, repeats = 5)
+    resampling_outer <- rsmp("repeated-spcv-coords", folds = folds, repeats = repeats)
     
     if(mod_type == "regr.ranger") {
       tasks <- lapply(seq_along(traindat), function(x) {
@@ -94,7 +104,7 @@ model_gen_mlr3 <- function(
                           target = target, 
                           coords_as_features = FALSE, 
                           crs = st_crs(3005)$proj4string, 
-                          positive = "TRUE",
+                          positive = positive,
                           coordinate_names = coordinate_cols[[x]])
       })
     }
@@ -110,7 +120,7 @@ model_gen_mlr3 <- function(
     
     traindat <- lapply(traindat, function(x) x[, names(x)[!names(x) %in% c("X", "Y", "x", "y")]])
     
-    resampling_outer <- rsmp("repeated_cv", folds = 10, repeats = 5)
+    resampling_outer <- rsmp("repeated_cv", folds = folds, repeats = repeats)
     
     if(mod_type == "regr.ranger") {
       tasks <- lapply(seq_along(traindat), function(x) {
@@ -122,7 +132,7 @@ model_gen_mlr3 <- function(
       tasks <- lapply(seq_along(traindat), function(x) {
         TaskClassif$new(id = gsub(".gpkg$", "", basename(names(traindat[x]))), 
                         backend = traindat[[x]], 
-                        positive = "TRUE",
+                        positive = positive,
                         target = target)
       })
     }
@@ -135,7 +145,6 @@ model_gen_mlr3 <- function(
   # https://github.com/mlr-org/mlr3pipelines/issues/368
   # The issue is still ongoing as of June 26...I appear to have opened a can of
   # worms with this!
-  # The workaround is to restart R and rerun the po_lrn code without the task loaded
   
   # Note: don't use the mtry argument here, or problems will arrive later on
   lrn <- lrn(
@@ -187,9 +196,9 @@ model_gen_mlr3 <- function(
       bmr$resample_result(x)$learners[[1]])
     names(all_results) <- names(traindat)
     
-  } else {
+  } else if(feature_selection == "rfe") {
     f_select <- fs("rfe", min_features = 2, recursive = TRUE) # Recalculates importance each iteration
-    resampling_outer <- rsmp("repeated_cv", folds = 10, repeats = 5) # Fixes problem for resampling
+    resampling_outer <- rsmp("repeated_cv", folds = folds, repeats = repeats) # Fixes problem for resampling
     
     # Create the feature selection learner. Models will be compared at each iteration
     # of a feature being removed. If the models don't improve after 5 iterations, then
@@ -226,6 +235,11 @@ model_gen_mlr3 <- function(
       return(best_learner)
     })
     names(all_results) <- names(tasks)
+  } else if (feature_selection == "none") {
+    
+    rr <- resample(tasks[[1]], lrn, resampling_outer, store_models = TRUE)
+    bmr <- as_benchmark_result(rr)
+    
   }
   return(list(learners = all_results, tasks = tasks))
 }
