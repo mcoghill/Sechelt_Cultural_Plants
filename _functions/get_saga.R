@@ -30,7 +30,7 @@ get_saga <- function() {
       # If there is a hit, check the version
     } else if(length(saga_dir) == 1) {
       version <- readr::parse_number(system(paste(saga_dir, "-v"), intern = TRUE)[1])
-      if(!version < 7.3) {
+      if(!version < 7.7) {
         message("SAGA GIS found in ", saga_dir)
         saga_cmd <- saga_dir
       } else message("Only an old version of SAGA was found. An upgrade will occur.")
@@ -39,7 +39,7 @@ get_saga <- function() {
       message("Multiple instances of saga_cmd.exe found on your system")
       for(i in saga_dir) {
         version <- readr::parse_number(system(paste0('"', i, '" -v'), intern = TRUE)[1])
-        if(!version < 7.3) {
+        if(!version < 7.7) {
           message("SAGA GIS found in ", i)
           saga_cmd <- i
           break
@@ -55,18 +55,18 @@ get_saga <- function() {
       # Check Windows bit version
       if(Sys.info()[["machine"]] %in% c("x86-64", "x86_64", "x64")) {
         curl::curl_download(
-          "https://sourceforge.net/projects/saga-gis/files/SAGA%20-%207/SAGA%20-%207.3.0/saga-7.3.0_x64.zip/download", 
+          "https://sourceforge.net/projects/saga-gis/files/SAGA%20-%207/SAGA%20-%207.7.0/saga-7.7.0_x64.zip/download", 
           destfile = temp_dir)
         
         # or else download from this URL
       } else {
         curl::curl_download(
-          "https://sourceforge.net/projects/saga-gis/files/SAGA%20-%207/SAGA%20-%207.3.0/saga-7.3.0_win32.zip/download", 
+          "https://sourceforge.net/projects/saga-gis/files/SAGA%20-%207/SAGA%20-%207.7.0/saga-7.7.0_win32.zip/download", 
           destfile = temp_dir)
       }
       
       unzip(temp_dir, exdir = file.path(paste0(sys_drive, "/SAGA-GIS")))
-      saga_cmd <- file.path(paste0(sys_drive, "/SAGA-GIS/saga-7.3.0_x64/saga_cmd.exe"))
+      saga_cmd <- file.path(paste0(sys_drive, "/SAGA-GIS/saga-7.7.0_x64/saga_cmd.exe"))
     }
     
     ###########################################################################
@@ -76,13 +76,13 @@ get_saga <- function() {
     
   } else if(Sys.info()[["sysname"]] == "Linux" && grepl("Ubuntu", Sys.info()[["version"]])) {
     
-    # Detect if SAGA exists and version is >= 7.3
+    # Detect if SAGA exists and version is >= 7.7
     if(file.exists(Sys.which("saga_cmd"))) {
       version <- readr::parse_number(system(paste("saga_cmd -v"), intern = TRUE)[1])
-      if(version >= 7.3) {
+      if(version >= 7.7) {
         saga_cmd <- Sys.which("saga_cmd")
         message("Valid SAGA installation detected, using ", saga_cmd)
-      } else message("SAGA detected, but it is an old version. The newer long term release (7.3.0) will be downloaded")
+      } else message("SAGA detected, but it is an old version. The newer long term release (7.7.0) will be downloaded")
     } else message("No SAGA version detected, beginning download")
     
     if(!exists("saga_cmd")) {
@@ -101,11 +101,11 @@ get_saga <- function() {
       ))
       
       # Need to create directories and download repository
-      # Note it looks like SAGA 7.4.0 is being downloaded but it is actually 7.3.0!
+      # Note it looks like SAGA 7.8.0 is being downloaded but it is actually 7.7.0!
       system(paste(
         "sudo mkdir /home/devel",
         "cd /home/devel",
-        "sudo git clone --single-branch -b release-7.4.0 git://git.code.sf.net/p/saga-gis/code saga-gis-code",
+        "sudo git clone --single-branch -b release-7.8.0 git://git.code.sf.net/p/saga-gis/code saga-gis-code",
         sep = "\n"
       ))
       
@@ -146,7 +146,7 @@ get_saga <- function() {
     
       } else if(length(saga_dir) == 1) {
       version <- readr::parse_number(system(paste(saga_dir, "-v"), intern = TRUE)[1])
-      if(!version < 7.3) {
+      if(!version < 7.7) {
         message("Using", saga_dir)
         saga_cmd <- saga_dir
         
@@ -158,7 +158,7 @@ get_saga <- function() {
       message("Multiple instances of saga_cmd found on your system")
       for(i in saga_dir) {
         version <- readr::parse_number(system(paste0('"', i, '" -v'), intern = TRUE)[1])
-        if(!version < 7.3) {
+        if(!version < 7.7) {
           message("Using ", i)
           saga_cmd <- i
           break
@@ -182,11 +182,11 @@ get_saga <- function() {
       # Install SAGA GIS from osgeo
       system(paste(
         "brew tap osgeo/osgeo4mac", 
-        "brew install osgeo-saga-lts", 
+        "brew install osgeo-saga", 
         sep = "\n"))
       
       # Write result - Cellar is the homebrew folder
-      saga_cmd <- file.path("/usr/local/Cellar/osgeo-saga-lts/7.3.0_1/bin/saga_cmd")
+      saga_cmd <- file.path("/usr/local/Cellar/osgeo-saga-lts/7.7.0_1/bin/saga_cmd")
     }
   } else stop("Your operating system is not supported for this function")
   return(saga_cmd)
