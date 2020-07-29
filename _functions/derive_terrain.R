@@ -6,110 +6,110 @@
 # Certain parameters are defined within the toolchain which are important for some 
 # of the SAGA layers in order to keep things relatively efficient as well as 
 # accurate. These parameters include:
-  
-  # min_sunrise/max_sunset: Calculations for the minimum sunrise and maximum sunset 
-    # times over the course of one year. This helps to keep the time for potential 
-    # incoming solar radiation layer at reasonable levels so that it doesn't take 
-    # forever creating the layer.
 
-  # scale_param: This defines the TRI (ruggedness) search area and channel 
-    # network length. Essentially, the function scales up the resulting value at 
-    # low resolutions and scales it down at higher resolutions. Since ruggedness
-    # looks at an area around the focal cell, it's important to scale this based 
-    # on resolution since differences will be miniscule at low resolutions, but 
-    # more dramatic at higher resolutions. This is also used in the "channel 
-    # network" grid tool to define how long a channel needs to be before it is no 
-    # longer considered a channel, thus at high resolutions channels need to be 
-    # continuous for a longer segment before they are considered a channel.
+# min_sunrise/max_sunset: Calculations for the minimum sunrise and maximum sunset 
+# times over the course of one year. This helps to keep the time for potential 
+# incoming solar radiation layer at reasonable levels so that it doesn't take 
+# forever creating the layer.
 
-  # mrvbf_param: This defines the "initial threshold for slope" parameter in the 
-    # MRVBF algorithm. The math is based on the paper that this originally came 
-    # from as well as a very helpful infographic retrieved from here: 
-    # https://www.nrcs.usda.gov/wps/PA_NRCSConsumption/download?cid=stelprdb1258050&ext=pdf 
+# scale_param: This defines the TRI (ruggedness) search area and channel 
+# network length. Essentially, the function scales up the resulting value at 
+# low resolutions and scales it down at higher resolutions. Since ruggedness
+# looks at an area around the focal cell, it's important to scale this based 
+# on resolution since differences will be miniscule at low resolutions, but 
+# more dramatic at higher resolutions. This is also used in the "channel 
+# network" grid tool to define how long a channel needs to be before it is no 
+# longer considered a channel, thus at high resolutions channels need to be 
+# continuous for a longer segment before they are considered a channel.
 
-  # tpi_param: This defines a search radius around a cell. I figured since it has 
-    # to do with topographic position, search radius should be the same value in 
-    # cells at each scale. This will create different results at each resolution 
-    # as well which might help indicate why certain resolutions are more important 
-    # than others.
+# mrvbf_param: This defines the "initial threshold for slope" parameter in the 
+# MRVBF algorithm. The math is based on the paper that this originally came 
+# from as well as a very helpful infographic retrieved from here: 
+# https://www.nrcs.usda.gov/wps/PA_NRCSConsumption/download?cid=stelprdb1258050&ext=pdf 
 
-  # openness_param: This parameter is for using the multi-scaled approach to 
-    # defining openness. I found through exhaustive testing that this parameter 
-    # is best defined by half the number of columns, which produced the best 
-    # looking (least blocky) result out of the plethora of other trials ran.
+# tpi_param: This defines a search radius around a cell. I figured since it has 
+# to do with topographic position, search radius should be the same value in 
+# cells at each scale. This will create different results at each resolution 
+# as well which might help indicate why certain resolutions are more important 
+# than others.
+
+# openness_param: This parameter is for using the multi-scaled approach to 
+# defining openness. I found through exhaustive testing that this parameter 
+# is best defined by half the number of columns, which produced the best 
+# looking (least blocky) result out of the plethora of other trials ran.
 
 # The workflow for this function is as follows:
-  #   I. Perform sanity checks on the function inputs
-  #  II. Define the tool specific parameters using R language
-  # III. Build the XML code used for the SAGA toolchain which includes the following tools:
-  
-  # 1. Fill Sinks in a DEM using the Sink Drainage Route Detection, and subsequent 
-    # Sink removal tools: For filling sinks in the DEM and only returning a DEM
+#   I. Perform sanity checks on the function inputs
+#  II. Define the tool specific parameters using R language
+# III. Build the XML code used for the SAGA toolchain which includes the following tools:
 
-  # 2. Slope, Aspect, Curvature: returns Slope, Aspect, General Curvature, and 
-    # Total Curvature rasters
+# 1. Fill Sinks in a DEM using the Sink Drainage Route Detection, and subsequent 
+# Sink removal tools: For filling sinks in the DEM and only returning a DEM
 
-  # 3. Flow Accumulation (Recursive): Creates the "total catchment area" (TCA) 
-    # intermediate layer. This layer is only used in the generation of the TWI, 
-    # and not in the final raster stack.
+# 2. Slope, Aspect, Curvature: returns Slope, Aspect, General Curvature, and 
+# Total Curvature rasters
 
-  # 4. Topographic wetness index (TWI): Creates the TWI for the study area. I 
-    # found these to be the best methods based on exhaustive testing of many other 
-    # methods. Rather than using the specific catchment area, TCA is used and 
-    # converted all at once within this tool thus it is more efficient. My methods 
-    # are based on those found here: 
-    # https://gracilis.carleton.ca/CUOSGwiki/index.php/Enhanced_Wetness_Modelling_in_SAGA_GIS 
+# 3. Flow Accumulation (Recursive): Creates the "total catchment area" (TCA) 
+# intermediate layer. This layer is only used in the generation of the TWI, 
+# and not in the final raster stack.
 
-  # 5. Channel Network: This creates a channel network grid using the filled DEM 
-    # and the TCA layer as an initiation grid. I found that using the initiaion 
-    # value of 1,000,000 worked to create channels consistently at all scales, 
-    # thus I propose using that here as well. scale_param is used here to define 
-    # how long a stream needs to be in pixels before it is considered a stream. 
-    # Source: https://sourceforge.net/projects/saga-gis/files/SAGA%20-%20Documentation/SAGA%20Documents/SagaManual.pdf/download 
-    # Note: This is an intermediate layer and is not used in the final raster stack
+# 4. Topographic wetness index (TWI): Creates the TWI for the study area. I 
+# found these to be the best methods based on exhaustive testing of many other 
+# methods. Rather than using the specific catchment area, TCA is used and 
+# converted all at once within this tool thus it is more efficient. My methods 
+# are based on those found here: 
+# https://gracilis.carleton.ca/CUOSGwiki/index.php/Enhanced_Wetness_Modelling_in_SAGA_GIS 
 
-  # 6. Overland Flow Distance to Channel Network: This tool draws the overland 
-    # flow distance to the channel network created in step 5. In order to create 
-    # a raster that is used to the borders of the grid, the "boundary" option had
-    # to be set to "true" This may not give a realistic representation of this 
-    # variable at a given study area, but without this it constricts the final grid.
+# 5. Channel Network: This creates a channel network grid using the filled DEM 
+# and the TCA layer as an initiation grid. I found that using the initiaion 
+# value of 1,000,000 worked to create channels consistently at all scales, 
+# thus I propose using that here as well. scale_param is used here to define 
+# how long a stream needs to be in pixels before it is considered a stream. 
+# Source: https://sourceforge.net/projects/saga-gis/files/SAGA%20-%20Documentation/SAGA%20Documents/SagaManual.pdf/download 
+# Note: This is an intermediate layer and is not used in the final raster stack
 
-  # 7. Multiresolution Index of Valley Bottom Flatness (MRVBF): Looks at valley 
-    # bottom flatness and ridge top flatness and uses the mrvbf_param to define 
-    # the "initial threshold for slope" parameter. The input DEM's used from here 
-    # all use the original, unfilled DEM.
+# 6. Overland Flow Distance to Channel Network: This tool draws the overland 
+# flow distance to the channel network created in step 5. In order to create 
+# a raster that is used to the borders of the grid, the "boundary" option had
+# to be set to "true" This may not give a realistic representation of this 
+# variable at a given study area, but without this it constricts the final grid.
 
-  # 8. Terrain Ruggedness Index (TRI): Looks at ruggedness at a specified distance 
-    # away from a focal cell.
+# 7. Multiresolution Index of Valley Bottom Flatness (MRVBF): Looks at valley 
+# bottom flatness and ridge top flatness and uses the mrvbf_param to define 
+# the "initial threshold for slope" parameter. The input DEM's used from here 
+# all use the original, unfilled DEM.
 
-  # 9. Convergence index: This tool is unchanged from the parameters defined by 
-    # Lucas and Nicholas (uses 3x3 gradient to determind convergence)
+# 8. Terrain Ruggedness Index (TRI): Looks at ruggedness at a specified distance 
+# away from a focal cell.
 
-  # 10. Topographic Openness: Calculates openness across a landscape at multiple
-    # scales. The advantage to the multi-scale approach is that it calculates the
-    # values at the edges of the map, whereas the line-tracing method does not. 
-    # Multi-scale keeps things more consistent I would wager. This outputs both 
-    # negative and positive openness.
+# 9. Convergence index: This tool is unchanged from the parameters defined by 
+# Lucas and Nicholas (uses 3x3 gradient to determind convergence)
 
-  # 11. Diurnal Anisotropic Heat: The settings are unchanged from the default.
+# 10. Topographic Openness: Calculates openness across a landscape at multiple
+# scales. The advantage to the multi-scale approach is that it calculates the
+# values at the edges of the map, whereas the line-tracing method does not. 
+# Multi-scale keeps things more consistent I would wager. This outputs both 
+# negative and positive openness.
 
-  # 12. Topographic Position Index (TPI): This calculates the position of a cell 
-    # relative to neighboring cells in a defined vicinity. This value could 
-    # easily change depending on the scale of interest. When running this tool, 
-    # it pastes the default search parameters; however, it actually runs the ones 
-    # defined by the tpi_param code. This is a bug from SAGA, but has no effect 
-    # on the outcome of the TPI, it outputs it properly.
+# 11. Diurnal Anisotropic Heat: The settings are unchanged from the default.
 
-  # 13. Potential Incoming Solar Radiation: This calculates direct and diffuse 
-    # insolation from a range of days spanning a whole year. A customized function
-    # uses the data from https://www.nrc-cnrc.gc.ca/eng/services/sunrise/advanced.html
-    # to calculate the minimum sunrise and maximum sunset times at a given point 
-    # throughout the span of one year (rounded to the nearest 30 minutes).
+# 12. Topographic Position Index (TPI): This calculates the position of a cell 
+# relative to neighboring cells in a defined vicinity. This value could 
+# easily change depending on the scale of interest. When running this tool, 
+# it pastes the default search parameters; however, it actually runs the ones 
+# defined by the tpi_param code. This is a bug from SAGA, but has no effect 
+# on the outcome of the TPI, it outputs it properly.
 
-  # 14. Change Grid Value: Changes the grid values of 0 to -99999 (i.e.: no data) 
-    # for the insolation grids
+# 13. Potential Incoming Solar Radiation: This calculates direct and diffuse 
+# insolation from a range of days spanning a whole year. A customized function
+# uses the data from https://www.nrc-cnrc.gc.ca/eng/services/sunrise/advanced.html
+# to calculate the minimum sunrise and maximum sunset times at a given point 
+# throughout the span of one year (rounded to the nearest 30 minutes).
 
-  # 15. Export Raster: The final output(s)
+# 14. Change Grid Value: Changes the grid values of 0 to -99999 (i.e.: no data) 
+# for the insolation grids
+
+# 15. Export Raster: The final output(s)
 
 # This function requires that you specify an input file DEM either as a raster 
 # file or a file path to a raster file. The files will be written in a path either 
@@ -129,11 +129,11 @@ dem_derived_layers <- function(
   
   if(class(dem_input) %in% "SpatRaster") {
     reference <- dem_input
-    dem_input <- sources(reference)[, "source"]
-  } else if(class(dem_input) %in% "RasterLayer") {
+    dem_input <- terra::sources(reference)[, "source"]
+  } else if(base::class(dem_input) %in% "RasterLayer") {
     reference <- terra::rast(dem_input)
-    dem_input <- sources(reference)[, "source"]
-  } else if(is.character(dem_input) && length(dem_input) == 1) {
+    dem_input <- terra::sources(reference)[, "source"]
+  } else if(base::is.character(dem_input) && base::length(dem_input) == 1) {
     reference <- terra::rast(dem_input)
   } else {
     stop(paste(
@@ -142,65 +142,61 @@ dem_derived_layers <- function(
     ))
   }
   
-  if(missing(out_path)) out_path <- dirname(dem_input)[1]
-  if(!is.character(out_path)) stop("out_path is not a valid directory")
-  if(length(out_path) != 1) warning("Multiple strings passed to out_path, only the first one will be used")
+  if(missing(out_path)) out_path <- base::dirname(dem_input)[1]
+  if(!base::is.character(out_path)) stop("out_path is not a valid directory")
+  if(base::length(out_path) != 1) warning("Multiple strings passed to out_path, only the first one will be used")
   out_path <- out_path[1]
-  dir.create(out_path, showWarnings = FALSE, recursive = TRUE)
+  base::dir.create(out_path, showWarnings = FALSE, recursive = TRUE)
   
-  if(!file.exists(saga_cmd)) stop("Please provide a valid path to 'saga_cmd'")
+  if(!base::file.exists(saga_cmd)) stop("Please provide a valid path to 'saga_cmd'")
   
   # Define inputs used in some of the SAGA tools below
-  reference_res <- max(terra::res(reference))
-  covariate_out <- out_path
-  temp_out <- tempfile(pattern = "saga_", tmpdir = tempdir())
-  dir.create(covariate_out, recursive = TRUE, showWarnings = FALSE)
-  dir.create(temp_out, recursive = TRUE, showWarnings = FALSE)
-  file.copy(dem_input, temp_out, overwrite = TRUE)
+  reference_res <- base::max(terra::res(reference))
+  base::dir.create(out_path, recursive = TRUE, showWarnings = FALSE)
   
   ## Sunrise/sunset time calculation for solar radiation tool:
-  centroid <- data.frame(x = mean(c(terra::xmax(reference), terra::xmin(reference))),
-                         y = mean(c(terra::ymax(reference), terra::ymin(reference)))) %>%
-    sf::st_as_sf(coords = c("x", "y"), crs = crs(reference)) %>%
-    sf::st_transform(4326) %>% # needs lat/long for calculating sunlight times
-    sf::st_coordinates() %>%
-    as.data.frame() %>% 
-    dplyr::rename_at(vars(names(.)), ~c("Lon", "Lat"))
-  
-  # Using rvest to gather sunset/sunrise information
-  # Use previous year to calculate full year of data
-  yr <- as.numeric(format(Sys.Date(), "%Y")) - 1
-  session <- rvest::html_session(
-    "https://www.nrc-cnrc.gc.ca/eng/services/sunrise/advanced.html")
-  form <- rvest::html_form(session)
-  form <- form[lapply(form, function(x) x[["name"]]) == "sunrise-sunset"][[1]]
-  filled_form <- rvest::set_values(
-    form, calcSubject = "ss-year-txt", calcMethod = "byLatLong",
-    calcDate = yr, olat = centroid$Lat, elong = centroid$Lon, timezone = "PST|8",
-    latitude = "North", longitude = "West")
-  filled_form$url <- session$url
-  
-  result <- rvest::submit_form(session, filled_form)
-  
-  # Remove everything before the first line break (encoded as 0a)
-  # This makes the table making much simpler
-  lb <- which(result$response$content == "0a")[1] + 1
-  result$response$content <- result$response$content[lb : length(result$response$content)]
-  
-  suppressMessages(
+  base::suppressWarnings(base::suppressMessages({
+    centroid <- data.frame(x = mean(c(terra::xmax(reference), terra::xmin(reference))),
+                           y = mean(c(terra::ymax(reference), terra::ymin(reference)))) %>%
+      sf::st_as_sf(coords = c("x", "y"), crs = crs(reference)) %>%
+      sf::st_transform(4326) %>% # needs lat/long for calculating sunlight times
+      sf::st_coordinates() %>%
+      as.data.frame() %>% 
+      dplyr::rename_at(vars(names(.)), ~c("Lon", "Lat"))
+    
+    # Using rvest to gather sunset/sunrise information
+    # Use previous year to calculate full year of data
+    yr <- base::as.numeric(format(Sys.Date(), "%Y")) - 1
+    session <- rvest::html_session(
+      "https://www.nrc-cnrc.gc.ca/eng/services/sunrise/advanced.html")
+    form <- rvest::html_form(session)
+    form <- form[lapply(form, function(x) x[["name"]]) == "sunrise-sunset"][[1]]
+    filled_form <- rvest::set_values(
+      form, calcSubject = "ss-year-txt", calcMethod = "byLatLong",
+      calcDate = yr, olat = centroid$Lat, elong = centroid$Lon, timezone = "PST|8",
+      latitude = "North", longitude = "West")
+    filled_form$url <- session$url
+    
+    result <- rvest::submit_form(session, filled_form)
+    
+    # Remove everything up to and including the first line break (encoded as 0a)
+    # This makes the table making much simpler
+    lb <- base::which(result$response$content == "0a")[1] + 1
+    result$response$content <- result$response$content[lb : length(result$response$content)]
+    
     response <- httr::content(result$response, type = "text/csv") %>% 
       na.omit() %>%
-      dplyr::mutate(Month = match(trimws(gsub("[[:digit:]]+|/", "", Date)), month.abb),
+      dplyr::mutate(Month = base::match(trimws(gsub("[[:digit:]]+|/", "", Date)), month.abb),
                     Day = readr::parse_number(Date)) %>%
       dplyr::mutate(rise = lubridate::as_datetime(paste0(
         yr, "-", Month, "-", Day, " ", lubridate::hms(`Sun rise`)), tz = "Canada/Pacific"),
         set = lubridate::as_datetime(paste0(
-          yr, "-", Month, "-", Day, " ", hms(`Sun set`)), tz = "Canada/Pacific")) %>%
+          yr, "-", Month, "-", Day, " ", lubridate::hms(`Sun set`)), tz = "Canada/Pacific")) %>%
       dplyr::mutate(rise = lubridate::floor_date(rise, "30 minutes"),
                     set = lubridate::ceiling_date(set, "30 minutes")) %>%
-      dplyr::mutate(rise = strftime(rise, format = "%H:%M:%S"),
-                    set = strftime(set, format = "%H:%M:%S"))
-  )
+      dplyr::mutate(rise = base::strftime(rise, format = "%H:%M:%S"),
+                    set = base::strftime(set, format = "%H:%M:%S"))
+  }))
   
   min_sunrise <- min(response$rise)
   max_sunset <- max(response$set)
@@ -499,7 +495,7 @@ dem_derived_layers <- function(
   # based on the amount of RAM on a users machine. It does this by summing the
   # number of inputs and outputs and comparing them to the maximum number of 
   # files your system can hold based on the size of the input DEM.
-  raster_size <- file.info(dem_input)$size / 1024 ^ 2 
+  raster_size <- file.size(dem_input) / 1024 ^ 2
   memory <- memory.limit() - raster_size - 1024 # Leave ~1GB of RAM available?
   n_files <- floor(memory / raster_size)
   
@@ -527,19 +523,23 @@ dem_derived_layers <- function(
       unique(unlist(x$inputs)[!unlist(x$inputs) %in% unlist(x$outputs)])
     )
     
+    x$out_files <- foreach(k = x$outputs) %do% {
+      tempfile(pattern = paste0("spat_", k, "_"), fileext = ".tif")
+    }
+    
     x$input_xml <- foreach(i = x$inputs, .combine = paste) %do% {
       paste0("<input varname='", i, "' type='grid' parent='GRID_SYSTEM'>
           <name>", i, "</name>
       </input>\n", collapse = " ")}
     
-    x$outputs <- foreach(k = x$outputs, .combine = paste) %do% {
+    x$output_xml <- foreach(k = 1:length(unlist(x$outputs)), .combine = paste) %do% {
       paste0(
         "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
-        <input id='GRIDS'>", k, "</input>
-        <option id='FILE'>", file.path(temp_out, paste0(k, ".tif")), "</option>
+        <input id='GRIDS'>", unlist(x$outputs)[k], "</input>
+        <option id='FILE'>", unlist(x$out_files)[k], "</option>
+        
       </tool>\n", collapse = " ")
     }
-    
     x$header <- paste0(
       "<?xml version='1.0' encoding='UTF-8'?>
       <toolchain saga-version='7.3.0'>
@@ -563,14 +563,20 @@ dem_derived_layers <- function(
   </toolchain>"
     )
     
-    x$call <- paste(x$header, x$tool, x$outputs, x$footer, sep = "\n")
+    x$call <- paste(x$header, x$tool, x$output_xml, x$footer, sep = "\n")
     return(x)
   })
   
   # Define text for cmd input
   cmd_text <- lapply(xml_layout, function(x) {
-    foreach(k = x$inputs, .combine = paste) %do% {
-      paste0("-", k, " ", file.path(temp_out, paste0(k, ".tif")), collapse = " ")
+    foreach(k = unlist(x$inputs), .combine = paste) %do% {
+      if(k != "dem") {
+        k_out_id <- unlist(sapply(xml_layout, function(x) which(x$outputs[[1]] == k)))
+        k_path <- xml_layout[[names(k_out_id)]]$out_files[[1]][k_out_id]
+        paste0("-", k, " ", k_path)
+      } else {
+        paste0("-dem ", dem_input)
+      }
     }
   })
   
@@ -589,18 +595,24 @@ dem_derived_layers <- function(
     system2(saga_cmd, sys_cmd)
   }
   
-  # Remove intermediate files
-  unlink(list.files(
-    temp_out, pattern = "cnetwork|tca|dem_preproc|sinkroute",
-    full.names = TRUE)
-  )
+  # Remove intermediate files. Files aren't deleted now, because everything 
+  # is saved as a temp file. Rather, files are selected for final processing
+  # that don't match the id's you specify
+  rem <- lapply(xml_layout, function(x) {
+    rem_id <- which(unlist(x$outputs) %in% c("cnetwork", "tca", "dem_preproc", "sinkroute"))
+    out_files <- unlist(x$out_files)[!unlist(x$out_files) %in% unlist(x$out_files)[rem_id]]
+    out_names <- unlist(x$outputs)[!unlist(x$outputs) %in% unlist(x$outputs)[rem_id]]
+    list(out_files = out_files, out_names = out_names)
+  })
+  out_list <- foreach(i = 1:length(rem), .combine = rbind) %do% {
+    data.frame(out_files = rem[[i]]$out_files, 
+               out_names = rem[[i]]$out_names)
+  }
   
-  out <- rast(grep("dem.tif", list.files(temp_out, full.names = TRUE, pattern = ".tif$"), 
-                   invert = TRUE, value = TRUE))
-  
-  crs(out) <- crs(reference)
-  out <- writeRaster(out, overwrite = TRUE, 
-                       filename = file.path(covariate_out, paste0(names(out), ".tif")))
+  out <- terra::rast(out_list$out_files) %>% magrittr::set_names(out_list$out_names)
+  crs(out) <- terra::crs(reference)
+  out <- terra::writeRaster(out, overwrite = TRUE, 
+                            filename = file.path(out_path, paste0(names(out), ".tif")))
   
   return(out)
 }
