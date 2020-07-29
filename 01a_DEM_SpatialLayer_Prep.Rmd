@@ -26,7 +26,7 @@ The purpose of this document is to derive desired lower resolution DEM's from a 
 
 Before getting started, the first thing to do is to load the required packages. Most of the processing work will actually be accomplished by SAGA GIS, thus there are only a few packages required here.
 
-```{r Load Packages, include=FALSE}
+```{r Load Packages}
 
 ls <- c("tidyverse", "terra", "xml2", "sf", "lubridate", "foreach", "rvest", 
         "httr", "tools")
@@ -44,7 +44,7 @@ Run the below function to detect and install SAGA GIS if necessary for your syst
 
 ```{r download SAGA}
 # NOTE: New function get_saga() will detect your version of SAGA gis and if it's
-# too old (< 7.3.0), it will download and install 7.3.0 (latest lts)
+# too old (< 7.7.0), it will download and install 7.7.0 (latest lts)
 
 saga_cmd <- get_saga()
 saga_ver <- system2(saga_cmd, "-v", stdout = TRUE)
@@ -138,20 +138,23 @@ for(r in c(1, 4, 5, 10, 25)) {
     new_ext <- rast(ext(lidar), crs = crs(lidar))
     res(new_ext) <- r
     
+    # Note need separate writeraster function to write out multiple files as opposed
+    # to a single multilayered file
     lidar <- terra::resample(lidar, new_ext) %>% 
-      writeRaster(filename = file.path(tempdir(), paste0("spat_", names(.), ".tif")),
+      writeRaster(filename = tempfile(pattern = paste0("spat_", names(.), "_"), fileext = ".tif"),
                   overwrite = TRUE)
   }
   
   # Use SAGA to crop image to edges of data (same as terra::trim but much faster,
   # it also resets the no data values to -99999)
+  t_files <- tempfile(pattern = paste0("spat_saga_", names(lidar), "_"), fileext = ".tif")
   system2(saga_cmd, paste(
     "grid_tools 17 -INPUT", paste0(sources(lidar)[, 1], collapse = ";"),
-    "-OUTPUT", paste0(file.path(tempdir(), paste0(names(lidar), ".tif")), collapse = ";")
+    "-OUTPUT", paste0(t_files, collapse = ";")
   ))
   
   # Reset the CRS data and write out
-  out <- rast(file.path(tempdir(), paste0(names(lidar), ".tif")))
+  out <- rast(t_files) %>% magrittr::set_names(names(lidar))
   crs(out) <- paste0("epsg:", epsg)
   out <- writeRaster(out, file.path(dir_out, paste0(names(out), ".tif")), overwrite = TRUE)
 }
@@ -168,7 +171,7 @@ All that is left to do now is run the functions!
 # Download TRIM using these links: 
 # https://www2.gov.bc.ca/assets/gov/data/geographic/topography/250kgrid.pdf
 # https://pub.data.gov.bc.ca/datasets/175624/
-dl_path <- file.path(AOI.dir, "_original_files", "TRIM")
+dl_path <- file.path(raw_file_path, "TRIM")
 trim_path <- file.path(covariate_file_path, "25m_TRIM")
 
 if(!dir.exists(dl_path) || dir.exists(trim_path)) {
@@ -202,7 +205,7 @@ dem_files <- grep("1m", list.files(covariate_file_path, pattern = "dem.tif",
                                    full.names = TRUE, recursive = TRUE), 
                   value = TRUE, invert = TRUE)
 
-covariate_list <- foreach(i = dem_files, .final = function(x) 
+covariates <- foreach(i = dem_files, .final = function(x) 
   setNames(x, basename(dirname(dem_files)))) %do% {
   dem_derived_layers(i, saga_cmd = saga_cmd)
   }
@@ -223,9 +226,10 @@ dir.create(clim_bc_path, recursive = TRUE, showWarnings = FALSE)
 # because raster package is used to read and write files, that's it
 for(i in dem_files) {
   dem_bca <- rast(i)
-  dem_prj <- raster::raster(project(dem_bca, "epsg:4326")) %>% 
+  dem_prj <- project(dem_bca, "epsg:4326") %>% 
+    raster::raster() %>% 
     raster::writeRaster(
-      overwrite = TRUE, format = "ascii",
+      overwrite = TRUE, format = "ascii", prj = TRUE,
       filename = file.path(clim_bc_path, paste0("dem_", basename(dirname(i)), ".asc")))
   
 }
@@ -247,21 +251,17 @@ for(i in clim_res) {
     res <- gsub("dem_", "", basename(dirname(j)))
     dem <- rast(file.path(covariate_file_path, res, "dem.tif"))
     clim_layers <- rast(list.files(j, full.names = TRUE, pattern = ".asc$"))
-    crs(clim_layers) <- "epsg:4326"
     
     # Add CRS information and save as tif files
-    # terra cannot reproject when CRS is in memory, it has to be in storage
-    clim_layers <- foreach(k = names(clim_layers), .combine = c) %do% {
-      l <- writeRaster(subset(clim_layers, k), file.path(
-        j, paste0(k, ".tif")), 
-        overwrite = TRUE
-      )
-      return(sources(l)[, "source"])
-    }
+    # terra cannot reproject when CRS is in memory, it has to be in storage. The
+    # clever way is to save them to the same spot as .tif files, but could also
+    # be written as temp files elsewhere
+    crs(clim_layers) <- "epsg:4326"
+    clim_layers <- writeRaster(clim_layers, file.path(j, paste0(names(clim_layers), ".tif")),
+                               overwrite = TRUE)
     
     # Do the reprojection now
-    p <- rast(clim_layers) %>% 
-      project(dem) %>% 
+    p <- project(clim_layers, dem) %>% 
       mask(dem) %>% 
       magrittr::set_names(tolower(paste0(basename(j), "_", names(.)))) %>% 
       writeRaster(filename = file.path(covariate_file_path, res, 
