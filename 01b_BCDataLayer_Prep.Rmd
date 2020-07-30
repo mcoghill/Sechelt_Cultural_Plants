@@ -75,7 +75,8 @@ for(i in dem_files) {
   dem_shp <- as.polygons(dem, trunc = TRUE, dissolve = TRUE, values = FALSE, 
                          extent = FALSE, crs = crs(dem)) %>% 
     as("Spatial") %>% 
-    st_as_sfc()
+    st_as_sfc() %>% 
+    st_set_crs(crs(dem))
   st_write(dem_shp, file.path(shp_subdir, "aoi.gpkg"), delete_dsn = TRUE, quiet = TRUE)
 }
 
