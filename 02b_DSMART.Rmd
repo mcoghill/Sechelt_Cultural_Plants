@@ -14,7 +14,7 @@ June update: Thinking about this a bit, I have improved the DSMART algorithm int
 
 ```{r Load Packages}
 
-ls <- c("sf", "raster", "fasterize", "rgdal", "caret", "ranger", 
+ls <- c("sf", "raster", "rgdal", "caret", "ranger", 
         "tidyverse", "terra", "foreach", "GSIF", "gdalUtils", "MLmetrics")
 new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new.packages))
@@ -27,9 +27,8 @@ lapply(ls, library, character.only = TRUE)[0]
 rm(ls, new.packages)
 
 # Load custom DSMART files
-for(i in list.files("./_functions/dsmart_custom", full.names = TRUE, 
-                    all.files = TRUE, no.. = TRUE))
-  source(i)
+lapply(list.files("./_functions/dsmart_custom", full.names = TRUE, 
+                    all.files = TRUE, no.. = TRUE), source)[0]
 
 ```
 
@@ -63,14 +62,24 @@ sentinel_covariates <- list.files(file.path(covariate_dir, res_folder),
                                   pattern = "^sentinel2.*.2019.tif$", full.names = TRUE)
 climate_covariates <- list.files(file.path(covariate_dir, res_folder), 
                                  pattern = "^normal_1981_2010y", full.names = TRUE)
-covariates <- raster::stack(c(terrain_covariates, sentinel_covariates, climate_covariates))
+covariates <- terra::rast(c(terrain_covariates, sentinel_covariates, climate_covariates))
+
+# Preliminary check of covariate data to eliminate any outlying rasters containing
+# less data than normal
+cov_check <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
+  new <- subset(covariates, i) * 0
+  data.frame(layer = names(new), 
+             data_cells = data.frame(freq(new))$count)
+} %>% dplyr::filter(data_cells >= 0.95 * median(.$data_cells))
+if(nrow(cov_check) != nlyr(covariates)) 
+  covariates <- subset(covariates, cov_check$layer)
 
 # Load the polygons and associated observations
-polygons <- readOGR(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), layer = "dsmart_polygons")
+polygons <- terra::vect(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"))
 
 if(include_bgc) {
   bgc <- st_read(file.path(shapes_path, res_folder, "bec.gpkg"), quiet = TRUE) %>% 
-    mutate(MAP_LABEL = as.factor(MAP_LABEL)) 
+    mutate(MAP_LABEL = as.factor(MAP_LABEL), bgc = as.numeric(as.factor(MAP_LABEL))) 
   tem_geom <- st_geometry(bgc)
   
   # Fix geometries that aren't polygon/multipolygon
@@ -82,15 +91,17 @@ if(include_bgc) {
   st_geometry(bgc) <- st_cast(tem_geom, "MULTIPOLYGON")
   
   level_table <- unique.data.frame(data.frame(
-    ID = as.numeric(bgc$MAP_LABEL), 
-    Subzone = as.character(bgc$MAP_LABEL)))
-  bgc_raster <- asFactor(fasterize(bgc, covariates[[1]], field = "MAP_LABEL"))
-  levels(bgc_raster) <- level_table
+    label = as.character(bgc$MAP_LABEL), 
+    value = as.numeric(bgc$MAP_LABEL)))
+  
+  bgc_rast <- as.factor(terra::rasterize(vect(bgc), covariates[[1]], field = "bgc"))
+  levels(bgc_rast) <- level_table
   
   # File needs to be written to disk and then reloaded back into R for proper 
   # feature assignments
-  writeRaster(bgc_raster, file.path(dsmart_dir, "inputs", "bgc.tif"), overwrite = TRUE)
-  covariates <- stack(covariates, file.path(dsmart_dir, "inputs", "bgc.tif"))
+  bgc_rast <- writeRaster(bgc_rast, file.path(dsmart_dir, "inputs", "bgc.tif"), 
+                          overwrite = TRUE, wopt = list(datatype = "INT2S"))
+  covariates <- c(covariates, bgc_rast)
   factors <- "bgc"
   
 } else {
@@ -111,11 +122,14 @@ observations <- read.csv(file.path(dsmart_dir, "inputs", "dsmart_observations.cs
 dir.create(file.path(dsmart_dir, "simple"), showWarnings = FALSE)
 
 # Rasterize first calls only
-tem_sf <- st_read(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), quiet = TRUE) %>% 
-  mutate(MapUnit1 = as.factor(MapUnit1))
-tem_r <- fasterize(tem_sf, covariates$dem, field = "MapUnit1")
-writeRaster(tem_r, file.path(dsmart_dir, "simple", "site_series_simple.tif"), 
-            overwrite = TRUE)
+# tem_sf <- st_read(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), quiet = TRUE) %>% 
+#   mutate(MapUnit1 = as.factor(MapUnit1))
+
+tem <- terra::vect(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"))
+tem$MapUnit1_num <- as.numeric(as.factor(tem$MapUnit1))
+tem_rast <- terra::rasterize(tem, covariates[[1]], field = "MapUnit1_num", 
+                          filename = file.path(dsmart_dir, "simple", "site_series_simple.tif"), 
+                          overwrite = TRUE)
 
 # Generate probabilities based on composition
 ss_calls <- unique(composition$MapUnit)
@@ -129,17 +143,17 @@ composition_remake <- foreach(i = unique(composition$POLY_NO), .combine = rbind)
     ))
 }
 
-tem_remake <- tem_sf %>% 
+tem_remake <- values(tem) %>% 
   dplyr::select(POLY_NO) %>% 
   merge(composition_remake) %>% 
-  mutate(proportion = proportion / 100)
+  mutate(proportion = proportion / 100) %>% 
+  merge(tem, .)
 
-for(i in unique(tem_remake$MapUnit)) {
-  ss_filter <- tem_remake[tem_remake$MapUnit == i, ]
-  ss_prop <- fasterize(ss_filter, covariates$dem, field = "proportion") %>% 
-    magrittr::set_names(paste0("probability_", i))
-  writeRaster(ss_prop, file.path(dsmart_dir, "simple", paste0("probability_", i, ".tif")),
-              overwrite = TRUE)
+tem_props <- foreach(i = unique(tem_remake$MapUnit), .combine = c) %do% {
+  tem_remake[tem_remake$MapUnit == i] %>% 
+    magrittr::set_names(c(names(.)[names(.) != "proportion"], paste0("probability_", i))) %>% 
+    rasterize(covariates[[1]], field = paste0("probability_", i), overwrite = TRUE, 
+              filename = file.path(dsmart_dir, "simple", paste0("probability_", i, ".tif")))
 }
 
 ```
@@ -166,7 +180,7 @@ if(use_caret) {
       summaryFunction = multiClassSummary, # Adds a suite of performance metrics to the output
       allowParallel = TRUE),
     tuneGrid = expand.grid(
-      mtry = floor(sqrt(nlayers(covariates))), # Default random forest options
+      mtry = floor(sqrt(nlyr(covariates))), # Default random forest options
       min.node.size = 1,
       splitrule = "gini"
     )
@@ -188,7 +202,6 @@ disag <- disaggregate(
   method.model = method.model,
   args.model = args.model,
   outputdir = file.path(AOI_dir, "1_map_inputs", "dsmart"), 
-  cpus = parallel::detectCores(), 
   factors = factors,
   type = "prob"
 )
