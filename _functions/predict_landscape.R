@@ -23,7 +23,7 @@ predict_landscape <- function(
   source('./_functions/tile_index.R')
   
   # Count NA values in the covariate data to determine best layer to use for masking later on
-  cov <- covariates@ptr$filenames
+  cov <- sources(covariates)[, "source"]
   
   mask_layer <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
     cat(paste0("Counting NA values in ", names(covariates[[i]]), 
@@ -46,7 +46,7 @@ predict_landscape <- function(
   ta <- sum(as.numeric(sf::st_area(tiles)))
   tiles_keep <- NULL
   
-  tile_files <- foreach(i = 74:nrow(tiles), .combine = c) %do% {
+  tile_files <- foreach(i = 1:nrow(tiles), .combine = c) %do% {
     
     t <- tiles[i, ]  ## get tile
     a <- a + as.numeric(sf::st_area(t))
