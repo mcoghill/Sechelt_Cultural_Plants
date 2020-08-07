@@ -17,7 +17,7 @@ The first thing that will be done is load in the required packages. SAGA CMD is 
 
 ```{r load library, echo = FALSE}
 
-ls <- c("raster", "RStoolbox", "reticulate", "terra",
+ls <- c("raster", "RStoolbox", "reticulate", "terra", "sf",
         "googledrive", "tidyverse", "stringi", "rstudioapi", "foreach")
 new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new_packages))
@@ -416,9 +416,9 @@ AOI_bbox <- st_read(AOI_shapefile[1], quiet = TRUE) %>%
 # Provide a data frame of dates to collect data between. The longer the data
 # frame, the longer it will take to process and download your dataset.
 seasons_df <- data.frame(
-  season = c("2019"),
-  start = c("2019-01-01"),
-  end = c("2019-12-31"),
+  season = c("winter", "spring", "summer", "fall", "2019"),
+  start = c("2018-12-21", "2019-03-20", "2019-06-21", "2019-09-23", "2019-01-01"),
+  end = c("2019-03-19", "2019-06-20", "2019-09-22", "2019-12-21", "2019-12-31"),
   stringsAsFactors = FALSE
 )
 
