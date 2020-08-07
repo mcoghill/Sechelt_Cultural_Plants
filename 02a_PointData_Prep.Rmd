@@ -5,10 +5,6 @@ date: "2/6/2020"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
-
 This document performs various tasks, including:
 1. Import/download of useful datasets;
 2. Combining those datasets to produce master datasets for predicting:
@@ -25,12 +21,14 @@ Using the RMarkdown format, I'll walk through the scripting process used to crea
 
 ```{r Load Packages}
 
-ls <- c("plyr", "tidyverse", "readxl", "httr", "svSocket", "R.utils", "RODBC", "sf", "terra")
-new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
-if(length(new.packages))
-  install.packages(new.packages)
-lapply(ls, library, character.only = TRUE)[0]
-rm(ls, new.packages)
+suppressMessages(suppressWarnings({
+  ls <- c("plyr", "tidyverse", "readxl", "svSocket", "RODBC", "sf", "terra")
+  new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+  if(length(new.packages))
+    install.packages(new.packages)
+  sapply(ls, library, character.only = TRUE, quietly = TRUE)[0]
+  rm(ls, new.packages)
+}))
 
 ```
 
@@ -49,7 +47,6 @@ field_data_dir <- file.path(AOI_dir, "1_map_inputs", "field_data")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
 dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
 out_path <- file.path(AOI_dir, "2_map_predictions")
-r_32bit_path <- file.path(R.home(),  "bin/i386/Rscript.exe")
 
 ```
 
@@ -57,50 +54,63 @@ The next thing that is typical is to place any repeated functions at the top so 
 
 ```{r Functions}
 
-access_query_32 <- function(db_path = NULL){
+access_query_32 <- function(db_path = NULL) {
   # variables to make values uniform
+  # Shouldn't need to change socket port number, but if so just change variable
+  # here and the rest should run fine.
   sock_port <- 8642L
-  sock_con <- "sv_con"
-  ODBC_con <- "a32_con"
-  tbl_list <- "tbl_list"
   
-  if (file.exists(db_path)) {
+  if(file.exists(db_path)) {
     # start socket server to transfer data to 32 bit session
-    startSocketServer(port = sock_port, server.name = "access_query_32", local = TRUE)
+    svSocket::startSocketServer(port = sock_port, server.name = "access_query_32", local = TRUE)
     
-    # build expression to pass to 32 bit R session
-    expr <- "ls <- c('svSocket', 'RODBC', 'tidyverse')"
-    expr <- c(expr, "new.packages <- ls[!(ls %in% installed.packages()[, 'Package'])]")
-    expr <- c(expr, "if(length(new.packages)) install.packages(new.packages, repos = 'https://cloud.r-project.org')")
-    expr <- c(expr, "lapply(ls, library, character.only = TRUE)")
-    expr <- c(expr, sprintf("%s <- odbcConnectAccess('%s')", ODBC_con, db_path))
-    expr <- c(expr, paste(sprintf("%s <- sqlTables(%s)", tbl_list, ODBC_con), "%>% filter(TABLE_TYPE != 'SYSTEM TABLE')"))
-    expr <- c(expr, c(sprintf("for(j in tbl_list$TABLE_NAME){"), 
-                      sprintf("tryCatch({"),
-                      sprintf("do.call('<-', list(paste0('MDB_',j), sqlFetch(a32_con, j)))"), 
-                      sprintf("}, error = function(c){message('Could not process table from MDB'); print(c)})}")))
-    expr <- c(expr, "odbcCloseAll()")
-    expr <- c(expr, sprintf("MDBOut <- objects(pattern = 'MDB_')"))
-    expr <- c(expr, sprintf("TableList <- list()"))
-    expr <- c(expr, c(sprintf("for(k in 1:length(MDBOut)){"),
-                      sprintf("tryCatch({"),
-                      sprintf("message(paste('Processing table', MDBOut[k]))"),
-                      sprintf("m <- MDBOut[k]"),
-                      sprintf("TableList[[m]] <- get(MDBOut[k])"),
-                      sprintf("}, error = function(c){message('Could not push table to environment'); print(c)})}")))
-    expr <- c(expr, sprintf("%s <- socketConnection(port=%i)", sock_con, sock_port))
-    expr <- c(expr, sprintf("evalServer(%s, TableList, TableList)", sock_con))
-    expr <- paste(expr, collapse=";")
+    # Build expression to pass to 32 bit R session. The bquote() function allows
+    # for variables to be passed as strings if preceded by a period
+    expr <- bquote({
+      ls <- c("svSocket", "RODBC", "tidyverse")
+      new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+      if(length(new.packages)) install.packages(new.packages, repos = "https://cloud.r-project.org")
+      lapply(ls, library, character.only = TRUE)[0]
+      a32_con <- RODBC::odbcConnectAccess(.(db_path))
+      tbl_list <- RODBC::sqlTables(a32_con) %>% 
+        dplyr::filter(TABLE_TYPE != "SYSTEM TABLE")
+      for(j in tbl_list$TABLE_NAME) {
+        tryCatch({
+          do.call("<-", list(paste0("MDB_", j), RODBC::sqlFetch(a32_con, j)))
+        }, error = function(c) {
+          message("Could not process table from MDB")
+          print(c)
+        })
+      }
+      RODBC::odbcCloseAll()
+      mdb_out <- objects(pattern = "MDB_")
+      tbl_out <- list()
+      for(k in 1:length(mdb_out)) {
+        tryCatch({
+          message(paste("Processing table", mdb_out[k]))
+          m <- mdb_out[k]
+          tbl_out[[m]] <- get(mdb_out[k])
+        }, error = function(c) {
+          message("Could not push table to environment")
+          print(c)
+        })
+      }
+      sv_con <- socketConnection(port = .(sock_port))
+      svSocket::evalServer(sv_con, tbl_out, tbl_out)
+    })
+    expr <- paste(paste(expr)[-1], collapse = ";")
     
     # launch 32 bit R session and run expressions
-    prog <- r_32bit_path
-    system2(prog, args=c("-e", shQuote(expr)), stdout=NULL, wait=TRUE, timeout = 30, invisible=TRUE)
+    prog <- file.path(R.home(), "bin/i386/Rscript.exe")
+    system2(prog, args = c("-e", shQuote(expr)), stdout = NULL, wait = TRUE, 
+            timeout = 30, invisible = TRUE)
     
     # stop socket server
-    stopSocketServer(port=sock_port)
+    svSocket::stopSocketServer(port = sock_port)
   } else {
     warning("database not found: ", db_path)
   }
+  return(tbl_out)
 }
 
 droplevels.sf = function(x, except, exclude, ...) x # Allows sf dataframes to have unused factor
@@ -213,17 +223,48 @@ Opening the Microsoft Access Database (mdb) requires a much more intricate proce
 
 When the mdb is processed and passed on to your current R session, it passes on all of the tables that it found within the database. In this case there were a lot of useless data (leftover queries that have no meaning to this project, tables with 0 records, small vector data), and these are immediately removed. From that leftover list of tables, we only actually need three of them: Site data, vegetation layer data, and species data. All of these tables are linked together by common fields in their tables.
 
+For reference: https://a100.gov.bc.ca/pub/acat/public/viewReport.do?reportId=35895
+
 ```{r Get external datasets}
 
 # Download TEM Spreadsheet
-GET("http://a100.gov.bc.ca/appsdata/acat/documents/r35895/tem_4678_eci_1363698000276_6de51d6c988801e3369406fe9a22713aa4dca27f63de77d54bf44b70a246813b.xls", 
-    write_disk(file.path(field_data_dir, "raw", "tem_data.xls"), overwrite = TRUE))[0]
+download.file(
+  "http://a100.gov.bc.ca/appsdata/acat/documents/r35895/tem_4678_eci_1363698000276_6de51d6c988801e3369406fe9a22713aa4dca27f63de77d54bf44b70a246813b.xls", 
+  destfile = file.path(field_data_dir, "raw", "tem_data.xls"), mode = "wb", quiet = TRUE)
 
-# Download TEM .mdb database This seems to have issues downloading sometimes, 
-# nothing wrong with code. You might just need to open this link in your web browser,
-# just be sure to save it to the same filder as the TEM spreadsheet
-GET("http://a100.gov.bc.ca/appsdata/acat/documents/r35895/tem_4678_eci_1363697969131_6de51d6c988801e3369406fe9a22713aa4dca27f63de77d54bf44b70a246813b.mdb", 
-    write_disk(file.path(field_data_dir, "raw", "tem_data.mdb"), overwrite = TRUE))[0]
+# Download TEM .mdb database. 
+# This has issues when trying to code it in, and you'll likely get a successful
+# download but the file will be empty. This has to do with the link being an 
+# http link rather than an https link (I think?), and can carry potential securtiy
+# issues due to that. This prevents a full download of the file and I have tried
+# multiple packages to try to get around this to no avail. The best way to do this
+# is to copy the link below, paste it into your own web browser, and download the
+# file accepting the security risks through clicking the appropriate buttons.
+# When the download starts, make sure you save the .mdb file into the same folder
+# as the TEM spreadsheet above.
+# https://a100.gov.bc.ca/pub/acat/public/viewReport.do?reportId=35895
+# download.file(
+#   "http://a100.gov.bc.ca/appsdata/acat/documents/r35895/tem_4678_eci_1363697969131_6de51d6c988801e3369406fe9a22713aa4dca27f63de77d54bf44b70a246813b.mdb", 
+#   destfile = file.path(field_data_dir, "raw", "tem_data.mdb"), mode = "wb")
+
+# Using RSelenium is tricky but it may work:
+# library(RSelenium)
+# eCaps <- list(
+#   chromeOptions = 
+#     list(prefs = list(
+#       "profile.default_content_settings.popups" = 0L,
+#       "download.prompt_for_download" = FALSE,
+#       "download.default_directory" = "C:/Users/matth/Downloads"
+#     )
+#     )
+# )
+# rsel <- rsDriver(chromever = "84.0.4147.30", extraCapabilities = eCaps)
+# remDr <- rsel[["client"]]
+# remDr$navigate("https://a100.gov.bc.ca/pub/acat/public/viewReport.do?reportId=35895")
+# webElem <- remDr$findElement(using = "xpath", "//a[@href='http://a100.gov.bc.ca/appsdata/acat/documents/r35895/tem_4678_eci_1363697969131_6de51d6c988801e3369406fe9a22713aa4dca27f63de77d54bf44b70a246813b.mdb']")
+# webElem$clickElement()
+# remDr$close()
+# rsel[["server"]]$stop()
 
 # Process the TEM spreadsheet by finding matching string in the comments portion
 # of the spreadsheet
@@ -236,10 +277,9 @@ tem_xls <- sapply(c("RUBUSPE", "VERAVIR", "CORNCAN", "LEDUGRO"), function(x) {
 }, simplify = FALSE, USE.NAMES = TRUE)
 
 # Process the .mdb file in a 32 bit R session, function passes variables 
-# to this R session in a single list entry (TableList)
-access_query_32(db_path = file.path(field_data_dir, "raw", "tem_data.mdb"))
-
-tem_mdb <- lapply(TableList, function(x) {
+# to this R session in a single list entry
+tem_mdb <- access_query_32(db_path = file.path(field_data_dir, "raw", "tem_data.mdb")) %>% 
+  lapply(function(x) {
   if(class(x) == "data.frame") {
     if(nrow(x) == 0) {
       x <- NULL
@@ -247,8 +287,6 @@ tem_mdb <- lapply(TableList, function(x) {
   } else x <- NULL
 }) %>% compact() %>% 
   .[grep("PlotData|VegLayer|VegSpecies", names(.))]
-
-rm(TableList)
 
 ```
 
@@ -299,7 +337,7 @@ tem_mdb_merge <- merge(tem_mdb$MDB_tblVegLayer, tem_mdb$MDB_tblVegSpecies) %>%
 tem_mdb_pres_cov <- sapply(c("RUBUSPE", "CORNCAN", "LEDUGRO", "VERAVIR"), function(x) {
   group_by(tem_mdb_merge, PlotID, Species) %>% 
     dplyr::filter(Species == x) %>% 
-    summarise_at(vars(Cover), sum) %>% 
+    summarise(across(Cover, sum), .groups = "drop_last") %>% 
     ungroup() %>% 
     mutate(Pres = Species == x) %>% 
     dplyr::select(PlotID, Pres, Cover) %>% 
@@ -408,17 +446,19 @@ dsmart_polygons <- dplyr::select(
     Subzone = as.factor(Subzone)) %>% 
   dplyr::select(
     POLY_NO, Subzone, MAP_CODE, MapUnit1, Sdec1, MapUnit2, Sdec2, MapUnit3, Sdec3) %>% 
-  replace(is.na(.), 0) %>% 
+  replace_na(list(Sdec1 = 0, Sdec2 = 0, Sdec3 = 0)) %>% 
   droplevels()
 
 # Inspect geometries and remove incorrect data types:
-tem_geom <- st_geometry(dsmart_polygons)
-for(i in 1:length(tem_geom)) {
-  if(!st_geometry_type(tem_geom[[i]]) %in% c("POLYGON", "MULTIPOLYGON")) {
-    tem_geom[[i]] <- st_collection_extract(tem_geom[[i]], "POLYGON")
+if(!st_geometry_type(dsmart_polygons, FALSE) %in% c("POLYGON", "MULTIPOLYGON")) {
+  tem_geom <- st_geometry(dsmart_polygons)
+  for(i in 1:length(tem_geom)) {
+    if(!st_geometry_type(tem_geom[[i]]) %in% c("POLYGON", "MULTIPOLYGON")) {
+      tem_geom[[i]] <- st_collection_extract(tem_geom[[i]], "POLYGON")
+    }
   }
+  st_geometry(dsmart_polygons) <- st_cast(tem_geom, "MULTIPOLYGON")
 }
-st_geometry(dsmart_polygons) <- st_cast(tem_geom, "MULTIPOLYGON")
 
 # Convert polygon composition to table with 5 columns
 dsmart_composition <- st_drop_geometry(dsmart_polygons) %>% 
@@ -439,6 +479,7 @@ dsmart_composition <- st_drop_geometry(dsmart_polygons) %>%
 # Create table of additional observations
 dsmart_observations <- lapply(list(sechelt_bec, tem_xls_bec, tem_mdb_bec), function(x) 
   dplyr::select(x, MapUnit) %>% 
+    st_set_agr("constant") %>% 
     st_transform(crs = st_crs(tem_sf)) %>% 
     st_intersection(aoi_sf) %>% 
     droplevels()) %>% 
@@ -450,17 +491,20 @@ dsmart_observations <- lapply(list(sechelt_bec, tem_xls_bec, tem_mdb_bec), funct
 
 # From the TEM data, create a subzone layer which will be used to stratify sampling
 dsmart_strata <- group_by(dsmart_polygons, Subzone) %>% 
-  dplyr::summarise() %>% 
+  dplyr::summarise(.groups = "drop_last") %>% 
   mutate(strata = as.integer(Subzone)) %>% 
   st_cast("MULTIPOLYGON")
 
 # Write DSMART outputs
-dir.create(file.path(dsmart_dir, "inputs"), recursive = TRUE, showWarnings = FALSE)
+dso <- file.path(dsmart_dir, "inputs")
+dir.create(dso, recursive = TRUE, showWarnings = FALSE)
 
-st_write(dsmart_polygons, file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), delete_layer = TRUE)
-st_write(dsmart_strata, file.path(dsmart_dir, "inputs", "dsmart_strata.gpkg"), delete_layer = TRUE)
-write.csv(dsmart_composition, file.path(dsmart_dir, "inputs", "dsmart_composition.csv"), row.names = FALSE)
-write.csv(dsmart_observations, file.path(dsmart_dir, "inputs", "dsmart_observations.csv"), row.names = FALSE)
+sapply(c("dsmart_polygons", "dsmart_strata"), function(x) st_write(
+  eval(parse(text = x)), file.path(dso, paste0(x, ".gpkg")), 
+  delete_layer = TRUE, quiet = TRUE))[0]
+
+sapply(c("dsmart_composition", "dsmart_observations"), function(x) write.csv(
+  eval(parse(text = x)), file.path(dso, paste0(x, ".csv")), row.names = FALSE))[0]
 
 ```
 
@@ -482,17 +526,21 @@ covars <- terra::rast(list.files(file.path(covariate_dir, paste0(map_res, "m")),
 pres_abs <- sapply(c("RUBUSPE", "CORNCAN", "LEDUGRO", "VERAVIR"), function(x) {
   rbind(sechelt_pres_cov[[x]][, "Pres"], tem_xls_pres[[x]][, "Pres"], 
         tem_mdb_pres_cov[[x]][, "Pres"]) %>% 
+    st_set_agr("constant") %>% 
     st_transform(crs = st_crs(aoi_sf)) %>% 
     st_intersection(aoi_sf) %>% 
     cbind(terra::extract(covars, st_coordinates(.))) %>% 
+    Filter(function(y) !all(is.na(y)), .) %>% 
     drop_na()
 }, simplify = FALSE, USE.NAMES = TRUE)
 
 cover <- sapply(c("RUBUSPE", "CORNCAN", "LEDUGRO", "VERAVIR"), function(x) {
   rbind(sechelt_pres_cov[[x]][, "Cover"], tem_mdb_pres_cov[[x]][, "Cover"]) %>% 
+    st_set_agr("constant") %>% 
     st_transform(crs = st_crs(aoi_sf)) %>% 
     st_intersection(aoi_sf) %>% 
     cbind(terra::extract(covars, st_coordinates(.))) %>% 
+    Filter(function(y) !all(is.na(y)), .) %>% 
     drop_na()
 }, simplify = FALSE, USE.NAMES = TRUE)
 
@@ -501,23 +549,26 @@ struct_stage <- dplyr::select(sechelt_bec_full, `Structural Stage`) %>%
   bind_rows(dplyr::select(tem_mdb_bec, StructuralStage)) %>% 
   mutate(StructuralStage = trimws(StructuralStage)) %>% 
   mutate(StructuralStage = gsub("^$", NA, StructuralStage)) %>% 
+  st_set_agr("constant") %>% 
   st_transform(crs = st_crs(aoi_sf)) %>% 
   st_intersection(aoi_sf) %>% 
   cbind(terra::extract(covars, st_coordinates(.))) %>% 
+  Filter(function(y) !all(is.na(y)), .) %>% 
   drop_na()
 
 # Write training data outputs
-dir.create(file.path(field_data_dir, "processed"), recursive = TRUE, showWarnings = FALSE)
+pto <- file.path(field_data_dir, "processed")
+dir.create(pto, recursive = TRUE, showWarnings = FALSE)
 
 for(layer in names(pres_abs)) {
-  st_write(pres_abs[[layer]], file.path(field_data_dir, "processed", "pres_abs.gpkg"), 
-           layer = layer, delete_layer = TRUE)
-  st_write(cover[[layer]], file.path(field_data_dir, "processed", "cover.gpkg"), 
-           layer = layer, delete_layer = TRUE)
+  st_write(pres_abs[[layer]], file.path(pto, "pres_abs.gpkg"), 
+           layer = layer, delete_layer = TRUE, quiet = TRUE)
+  st_write(cover[[layer]], file.path(pto, "cover.gpkg"), 
+           layer = layer, delete_layer = TRUE, quiet = TRUE)
 }
 
-st_write(struct_stage, file.path(field_data_dir, "processed", "struct_stage.gpkg"), 
-         delete_layer = TRUE)
+st_write(struct_stage, file.path(pto, "struct_stage.gpkg"), 
+         delete_layer = TRUE, quiet = TRUE)
 
 ```
 
