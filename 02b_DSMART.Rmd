@@ -14,8 +14,8 @@ June update: Thinking about this a bit, I have improved the DSMART algorithm int
 
 ```{r Load Packages}
 
-ls <- c("sf", "raster", "rgdal", "caret", "ranger", 
-        "tidyverse", "terra", "foreach", "GSIF", "gdalUtils", "MLmetrics")
+ls <- c("tidyverse", "terra", "sf", "raster", "foreach", "caret", "ranger", 
+        "GSIF", "gdalUtils", "MLmetrics")
 new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new.packages))
   install.packages(new.packages)
@@ -27,8 +27,7 @@ lapply(ls, library, character.only = TRUE)[0]
 rm(ls, new.packages)
 
 # Load custom DSMART files
-lapply(list.files("./_functions/dsmart_custom", full.names = TRUE, 
-                    all.files = TRUE, no.. = TRUE), source)[0]
+source("./_functions/dsmart_custom/dsmart.R")
 
 ```
 
@@ -38,7 +37,7 @@ Next, file paths are defined.
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 4
+map_res <- 25
 
 shapes_path <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
@@ -171,7 +170,7 @@ if(use_caret) {
   args.model <- list(
     trControl = trainControl(
       method = "repeatedcv", 
-      number = 10, 
+      number = 5, 
       repeats = 5, 
       classProbs = TRUE,
       returnData = FALSE,
@@ -189,46 +188,32 @@ if(use_caret) {
   method.model <- NULL
   args.model <- NULL
 }
+outputdir <- file.path(AOI_dir, "1_map_inputs", "dsmart2")
+dir.create(outputdir, recursive = TRUE, showWarnings = FALSE)
 
-disag <- disaggregate(
+dsm <- dsmart(
   covariates = covariates, 
   polygons = polygons, 
   composition = composition,
-  rate = 20, # How many samples to draw per polygon
-  reals = 5, # How many models to produce from the modelling run? Gets overridden by number of repeats if model type is ranger
+  rate = 5, # How many samples to draw per polygon
+  reals = 5, # How many models to produce from the modelling run? Gets overridden by number of repeats if caret package is used with repeated cross validation
   observations = observations, 
   method.sample = "by_polygon", 
   method.allocate = "weighted",
   method.model = method.model,
   args.model = args.model,
-  outputdir = file.path(AOI_dir, "1_map_inputs", "dsmart"), 
+  outputdir = outputdir, 
   factors = factors,
-  type = "prob"
+  type = "prob", 
+  nprob = 1
 )
 
-if(is.null(method.model)) {
-  summ <- summarise(
-    realisations = raster::stack(list.files(
-      file.path(AOI_dir, "1_map_inputs", "dsmart", "output", "realisations"), 
-      full.names = TRUE, pattern = ".tif$")),
-    lookup = read.table(
-      file.path(AOI_dir, "1_map_inputs", "dsmart", "output", "lookup.txt"), 
-      header = TRUE, sep = ","),
-    outputdir = file.path(AOI_dir, "1_map_inputs", "dsmart"), 
-    nprob = 1,
-    cpus = parallel::detectCores(), 
-    type = "raw"
-  )
-}
-
 # Save the file to a better location
-covariates_t <- rast(covariates)
-site_series <- rast(file.path(dsmart_dir, "output", "realisations", "realisation_1.tif")) %>% 
-  magrittr::set_names("site_series_dsmart")
-
-writeRaster(site_series, 
-            file.path(dsmart_dir, "output", "site_series_dsmart.tif"), 
-            overwrite = TRUE, wopt = list(datatype = "INT2S"))
+site_series <- rast(list.files(dsm$summarise$locations$mostprobable, 
+                          pattern = "mostprob_01_class", full.names = TRUE)) %>% 
+  magrittr::set_names("site_series_dsmart") %>% 
+  writeRaster(file.path(outputdir, "site_series_dsmart.tif"), 
+              overwrite = TRUE, wopt = list(datatype = "INT2S"))
 
 ```
 
@@ -249,5 +234,3 @@ Some ways in which this could be sped up:
 4. Decrease the "reals" parameter in the dsmart function. Con: fewer models are produced for comparison and final map generation
 5. Find a way to parallelize the caret::train function within dsmart (a cluster may need to be created prior to running the algorithm)
 6. Decrease the nprob parameter to generate only the most probable map instead of the top 3 most probable maps.
-
-
