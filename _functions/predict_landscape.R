@@ -103,21 +103,23 @@ predict_landscape <- function(
       r_out <- sf::st_sf(pred, sf::st_geometry(rsf))
       
       ## layers to keep (i.e. newly predicted layers)
-      keep <- names(pred)
-      
+      keep <- names(r_out)[-ncol(r_out)]
       r_out <- r_out %>% dplyr::select(all_of(keep))
       
       ## Save the names of the model response -----
       ## The levels are in the multiclass 'response'
+      if(type != "prob") {
+        names(r_out)[1] <- "pred"
+        keep <- names(r_out)[-ncol(r_out)]
+      }
+      
+      ## this becomes the dictionary to describe the raster values
       if(length(tiles_keep) == 1) {
         if(type != "prob") {
           if(is.numeric(r_out$pred)) {
             respNames <- "pred"
           } else respNames <- levels(r_out$pred)
-        } else {
-          respNames <- keep
-        }
-        ## this becomes the dictionary to describe the raster values
+        } else respNames <- keep
         write.csv(respNames, file.path(outDir, "response_names.csv"), row.names = TRUE)
       }
       
@@ -154,7 +156,7 @@ predict_landscape <- function(
   def_ops <- capture.output(terraOptions())
   terraOptions(progress = 0)
   
-  for(k in unique(dirname(tile_files))) {
+  pred_out <- foreach(k = unique(dirname(tile_files)), .combine = c) %do% {
     
     cat(paste("\nMosaicking", basename(k), "tiles"))
     
@@ -166,27 +168,24 @@ predict_landscape <- function(
       k, pattern = paste0("^", basename(k), "_", tiles_keep, ".tif$", collapse = "|"),
       full.names = TRUE)
     
-    # This will overwrite temp files, saving storage space on a PC
-    temp <- if(file.exists(grep(".tif$", tmpFiles(), value = TRUE)[1])) {
-      grep(".tif$", tmpFiles(), value = TRUE)[1]
-    } else ""
-    
-    ## mosaic
-    mos <- foreach(i = r_tiles, .final = function(x) 
-      do.call(merge, c(x, filename = paste0(k, ".tif"), overwrite = TRUE))) %do% {
+    ## mosaic, saves as temp file
+    mos <- foreach(i = r_tiles, .final = function(x) do.call(terra::merge, x)) %do% {
         rast(i)
       } %>% 
-      terra::resample(subset(covariates, mask_layer$layer), method = resamp_method, filename = temp, overwrite = TRUE) %>% 
+      terra::resample(subset(covariates, mask_layer$layer), method = resamp_method) %>% 
       magrittr::set_names(basename(k)) %>% 
-      mask(subset(covariates, mask_layer$layer), filename = paste0(k, ".tif"), overwrite = TRUE)
+      mask(subset(covariates, mask_layer$layer), 
+           filename = tempfile(pattern = basename(k), fileext = ".tif"), overwrite = TRUE)
+    
+    if(length(keep) == 1) {
+      return(mos)
+    } else {
+      return(terra::sources(mos)[, "source"])
+    }
   }
   
   terraOptions(progress = readr::parse_number(grep("progress", def_ops, value = TRUE)))
   
-  if(length(keep) == 1) {
-    return(mos)
-  } else {
-    return(list.files(file.path(outDir), pattern = paste0(keep, ".tif", collapse = "|"), full.names = TRUE))
-  }
+  return(pred_out)
   
 } ### end function
