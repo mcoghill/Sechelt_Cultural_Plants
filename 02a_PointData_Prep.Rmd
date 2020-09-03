@@ -314,7 +314,8 @@ After downloading the TEM datasets, we need to prepare them. The next chunk does
 # should be used. Initially, this was pure calls only, however it might be better
 # to do majority calls instead
 tem_xls_bec <- dplyr::select(tem_xls[[1]], Poly_Nbr, ECI_Tag, subzone,
-                             Sser1, Sser2, Sser3, SDec1, Sdec2, Sdec3) %>% 
+                             Sser1, Sser2, Sser3, SDec1, Sdec2, Sdec3, `Str. Stg.`) %>% 
+  dplyr::rename(StructuralStage = `Str. Stg.`) %>% 
   dplyr::filter(ifelse(is.na(Sdec3), SDec1 >= 6, SDec1 >= 5)) %>% 
   drop_na(SDec1) %>% 
   mutate(Sser1 = substr(Sser1, start = 1, stop = 2)) %>% 
@@ -324,7 +325,7 @@ tem_xls_bec <- dplyr::select(tem_xls[[1]], Poly_Nbr, ECI_Tag, subzone,
 # MDB_tblPlotData has way too many columns, keep only important ones for BEC
 tem_mdb_bec <- dplyr::select(
   tem_mdb$MDB_tblPlotData, PlotID, PlotNumber, BECUnit, SiteSeriesSymbol, 
-  UTMNorthing, UTMEasting, StructuralStage) %>% 
+  UTMNorthing, UTMEasting, StructuralStage, SiteNotes) %>% 
   separate(BECUnit, into = c("subzone", "site_series")) %>% 
   dplyr::mutate(MapUnit = ifelse(site_series == "00", as.character(SiteSeriesSymbol), 
                           paste0(subzone, "/", site_series))) %>% 
@@ -515,7 +516,7 @@ dsmart_strata <- group_by(dsmart_site_ser_polys, Subzone) %>%
   st_cast("MULTIPOLYGON")
 
 # Write DSMART outputs
-dso <- file.path(dsmart_dir, "inputs")
+dso <- file.path(paste0(dsmart_dir, "_site_ser"), "inputs")
 dir.create(dso, recursive = TRUE, showWarnings = FALSE)
 
 sapply(c("dsmart_site_ser_polys", "dsmart_strata"), function(x) st_write(
@@ -782,11 +783,28 @@ dsmart_struct_stg_composition <- st_drop_geometry(dsmart_struct_stg_polys) %>%
   group_by(POLYGON_ID, MAP_CODE, Subzone, ss) %>% 
   dplyr::summarise(across(proportion, sum), .groups = "drop")
 
+# Create table of additional observations
+# Fix incorrectly attributed structural stage calls
+tem_mdb_struct_stg <- dplyr::select(tem_mdb_bec, StructuralStage, SiteNotes) %>% 
+  dplyr::filter(StructuralStage != "") %>% 
+  dplyr::mutate(StructuralStage = ifelse(
+    StructuralStage == "3b/c", "3b", ifelse(
+      StructuralStage == 2, "2a", ifelse(
+        StructuralStage == 3 & grepl(
+          "logged in 1997|open grown with lots of salal|in lower portion of cutblock", 
+          .$SiteNotes), "3a", ifelse(
+            StructuralStage == 3 & grepl(
+              "young second growth|old cut block|Fd plantation", .$SiteNotes), 
+            "3b", StructuralStage)))))
+
+# Put all observations together in a single table
 dsmart_struct_stg_observations <- dplyr::select(sechelt_bec_full, `Structural Stage`) %>% 
   dplyr::rename(StructuralStage = `Structural Stage`) %>% 
-  bind_rows(dplyr::select(tem_mdb_bec, StructuralStage)) %>% 
+  dplyr::mutate(StructuralStage = ifelse(StructuralStage %in% c(2, 3), "3a", StructuralStage)) %>% 
+  bind_rows(dplyr::select(tem_mdb_struct_stg, StructuralStage),
+            dplyr::select(tem_xls_bec, StructuralStage)) %>% 
+  drop_na() %>% 
   mutate(StructuralStage = trimws(StructuralStage)) %>% 
-  mutate(StructuralStage = gsub("^$", NA, StructuralStage)) %>% 
   st_set_agr("constant") %>% 
   st_transform(crs = st_crs(aoi_sf)) %>% 
   st_intersection(aoi_sf) %>% 
@@ -795,12 +813,18 @@ dsmart_struct_stg_observations <- dplyr::select(sechelt_bec_full, `Structural St
   dplyr::select(X, Y, StructuralStage) %>% 
   dplyr::mutate(StructuralStage = as.factor(make.names(StructuralStage)))
 
+# Create extracted sf dataframe of observations
 struct_stg <- dsmart_struct_stg_observations %>% 
-  cbind(terra::extract(covars, matrix(c(.$X, .$Y), ncol = 2))) %>% 
+  st_as_sf(coords = c("X", "Y")) %>% 
+  cbind(terra::extract(covars, st_coordinates(.))) %>% 
   Filter(function(y) !all(is.na(y)), .) %>% 
+  dplyr::select(StructuralStage, names(covars)) %>% 
   drop_na()
 
 # Write data outputs
+dso <- file.path(paste0(dsmart_dir, "_struct_stg"), "inputs")
+dir.create(dso, recursive = TRUE, showWarnings = FALSE)
+
 st_write(dsmart_struct_stg_polys, file.path(dso, paste0("dsmart_struct_stg_polys.gpkg")), 
   delete_layer = TRUE, quiet = TRUE)
 sapply(c("dsmart_struct_stg_composition", "dsmart_struct_stg_observations"), function(x) write.csv(
