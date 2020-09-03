@@ -37,7 +37,7 @@ Next, file paths are defined.
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 25
+map_res <- 4
 
 shapes_path <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
@@ -45,6 +45,7 @@ dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
 
 include_bgc <- FALSE
 use_caret <- TRUE
+run <- "struct_stg" # option of "struct_stg" or "site_ser"
 
 ```
 
@@ -74,7 +75,8 @@ if(nrow(cov_check) != nlyr(covariates))
   covariates <- subset(covariates, cov_check$layer)
 
 # Load the polygons and associated observations
-polygons <- terra::vect(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"))
+polygons <- terra::vect(file.path(dsmart_dir, "inputs", paste0(
+  "dsmart_", run, "_polys.gpkg")))
 
 if(include_bgc) {
   bgc <- st_read(file.path(shapes_path, res_folder, "bec.gpkg"), quiet = TRUE) %>% 
@@ -108,9 +110,11 @@ if(include_bgc) {
 }
 
 # Load TEM composition and additional observations
-composition <- read.csv(file.path(dsmart_dir, "inputs", "dsmart_composition.csv")) %>% 
+composition <- read.csv(file.path(dsmart_dir, "inputs", paste0(
+  "dsmart_", run, "_composition.csv"))) %>% 
     dplyr::select(-Subzone)
-observations <- read.csv(file.path(dsmart_dir, "inputs", "dsmart_observations.csv"))
+observations <- read.csv(file.path(dsmart_dir, "inputs", paste0(
+  "dsmart_", run, "_observations.csv")))
 
 ```
 
@@ -118,41 +122,43 @@ observations <- read.csv(file.path(dsmart_dir, "inputs", "dsmart_observations.cs
 
 ```{r Simple TEM rasterization}
 
-dir.create(file.path(dsmart_dir, "simple"), showWarnings = FALSE)
-
-# Rasterize first calls only
-# tem_sf <- st_read(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), quiet = TRUE) %>% 
-#   mutate(MapUnit1 = as.factor(MapUnit1))
-
-tem <- terra::vect(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"))
-tem$MapUnit1_num <- as.numeric(as.factor(tem$MapUnit1))
-tem_rast <- terra::rasterize(tem, covariates[[1]], field = "MapUnit1_num", 
-                          filename = file.path(dsmart_dir, "simple", "site_series_simple.tif"), 
-                          overwrite = TRUE)
-
-# Generate probabilities based on composition
-ss_calls <- unique(composition$MapUnit)
-composition_remake <- foreach(i = unique(composition$POLY_NO), .combine = rbind) %do% {
-  composition %>% dplyr::filter(POLY_NO == i) %>% 
-    dplyr::select(POLY_NO, MapUnit, proportion) %>% 
-    rbind(data.frame(
-      POLY_NO = .$POLY_NO[1], 
-      MapUnit = ss_calls[!ss_calls %in% .$MapUnit],
-      proportion = 0
-    ))
-}
-
-tem_remake <- values(tem) %>% 
-  dplyr::select(POLY_NO) %>% 
-  merge(composition_remake) %>% 
-  mutate(proportion = proportion / 100) %>% 
-  merge(tem, .)
-
-tem_props <- foreach(i = unique(tem_remake$MapUnit), .combine = c) %do% {
-  tem_remake[tem_remake$MapUnit == i] %>% 
-    magrittr::set_names(c(names(.)[names(.) != "proportion"], paste0("probability_", i))) %>% 
-    rasterize(covariates[[1]], field = paste0("probability_", i), overwrite = TRUE, 
-              filename = file.path(dsmart_dir, "simple", paste0("probability_", i, ".tif")))
+if(run == "site_ser") {
+  dir.create(file.path(dsmart_dir, "simple"), showWarnings = FALSE)
+  
+  # Rasterize first calls only
+  # tem_sf <- st_read(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), quiet = TRUE) %>% 
+  #   mutate(MapUnit1 = as.factor(MapUnit1))
+  
+  tem <- terra::vect(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"))
+  tem$MapUnit1_num <- as.numeric(as.factor(tem$MapUnit1))
+  tem_rast <- terra::rasterize(tem, covariates[[1]], field = "MapUnit1_num", 
+                               filename = file.path(dsmart_dir, "simple", "site_series_simple.tif"), 
+                               overwrite = TRUE)
+  
+  # Generate probabilities based on composition
+  ss_calls <- unique(composition$MapUnit)
+  composition_remake <- foreach(i = unique(composition$POLY_NO), .combine = rbind) %do% {
+    composition %>% dplyr::filter(POLY_NO == i) %>% 
+      dplyr::select(POLY_NO, MapUnit, proportion) %>% 
+      rbind(data.frame(
+        POLY_NO = .$POLY_NO[1], 
+        MapUnit = ss_calls[!ss_calls %in% .$MapUnit],
+        proportion = 0
+      ))
+  }
+  
+  tem_remake <- values(tem) %>% 
+    dplyr::select(POLY_NO) %>% 
+    merge(composition_remake) %>% 
+    mutate(proportion = proportion / 100) %>% 
+    merge(tem, .)
+  
+  tem_props <- foreach(i = unique(tem_remake$MapUnit), .combine = c) %do% {
+    tem_remake[tem_remake$MapUnit == i] %>% 
+      magrittr::set_names(c(names(.)[names(.) != "proportion"], paste0("probability_", i))) %>% 
+      rasterize(covariates[[1]], field = paste0("probability_", i), overwrite = TRUE, 
+                filename = file.path(dsmart_dir, "simple", paste0("probability_", i, ".tif")))
+  }
 }
 
 ```
@@ -170,7 +176,7 @@ if(use_caret) {
   args.model <- list(
     trControl = trainControl(
       method = "repeatedcv", 
-      number = 5, 
+      number = 10, 
       repeats = 5, 
       classProbs = TRUE,
       returnData = FALSE,
@@ -188,7 +194,7 @@ if(use_caret) {
   method.model <- NULL
   args.model <- NULL
 }
-outputdir <- file.path(AOI_dir, "1_map_inputs", "dsmart2")
+outputdir <- file.path(AOI_dir, "1_map_inputs", paste0("dsmart_", run))
 dir.create(outputdir, recursive = TRUE, showWarnings = FALSE)
 
 dsm <- dsmart(
@@ -196,7 +202,7 @@ dsm <- dsmart(
   polygons = polygons, 
   composition = composition,
   rate = 5, # How many samples to draw per polygon
-  reals = 5, # How many models to produce from the modelling run? Gets overridden by number of repeats if caret package is used with repeated cross validation
+  reals = 5, # How many models to produce from the modeling run? Gets overridden by number of repeats if caret package is used with repeated cross validation
   observations = observations, 
   method.sample = "by_polygon", 
   method.allocate = "weighted",
@@ -209,10 +215,10 @@ dsm <- dsmart(
 )
 
 # Save the file to a better location
-site_series <- rast(list.files(dsm$summarise$locations$mostprobable, 
-                          pattern = "mostprob_01_class", full.names = TRUE)) %>% 
-  magrittr::set_names("site_series_dsmart") %>% 
-  writeRaster(file.path(outputdir, "site_series_dsmart.tif"), 
+out <- rast(list.files(dsm$summarise$locations$mostprobable, 
+                       pattern = "mostprob_01_class", full.names = TRUE)) %>% 
+  magrittr::set_names(paste0(run, "_dsmart")) %>% 
+  writeRaster(file.path(outputdir, paste0(run, "_dsmart.tif")), 
               overwrite = TRUE, wopt = list(datatype = "INT2S"))
 
 ```
