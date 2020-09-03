@@ -41,6 +41,7 @@ Additionally, we need to set the directory for where the 32-bit version of R is 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 map_res <- 4
+poi <- c("RUBUSPE", "CORNCAN", "VERAVIR", "LEDUGRO") # plants of interest
 
 shapes_path <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
 field_data_dir <- file.path(AOI_dir, "1_map_inputs", "field_data")
@@ -125,6 +126,8 @@ In the next chunk, we are processing the 2019 field data excel file. The file co
 4. Plant cover information for Cornus canadensis (dogwood) at each site; and
 5. Miscellaneous/extra plants that were recorded but not part of the sampling set
 
+It should be noted that this script deals with the raw datasheets as they were initially sent. No manipulation in Excel was performed, all manipulations are carried out here in code for transparencies sake.
+
 Each worksheet is read in separately but processed in a similar manner. First, the site information sheet is dealt with. This contains relevant BEC info for each site. The recorded site series was a bit of a jumble; however, a search and replace for the first two numerical values only aided significantly in defining site series consistently (i.e.: if there was a site series call of 10(11), the site series call was changed to 10. Depending on the modelling outcomes of dsmart, I might change this to look only for pure calls in the list). This sheet also contained lat/long for points, which were used to create an sf dataframe
 
 Each of the species specific sheets had the site ID but no lat/long for points, so the sheets had to be joined together using the site ID in order to associate species data with a location on a map. For presence/absence data, the query was essentially "if there was a recording of plant cover for this site, return a value of TRUE, and if not, return FALSE". Plant cover data was the sum of each of the plant cover types in each structural stage column.
@@ -160,15 +163,24 @@ sechelt_bec_full <- read_excel(spreadsheet, sheet = "Site data") %>%
   mutate(`Site Disturbance` = gsub(",$", "", `Site Disturbance`)) %>% # 8
   mutate(`Structural Stage` = substr(`Structural Stage`, start = 1, stop = 2)) %>% 
   mutate(`Structural Stage` = str_replace_all(`Structural Stage`, "[^[:alnum:]]", " ")) %>% 
-  mutate(`BGC Subzone/variant` = str_replace(`BGC Subzone/variant`, "CHWxm", "CWHxm"), 
-         `BGC Subzone/variant` = str_replace(`BGC Subzone/variant`, "CWHxm", "CWHxm1"), # 9
-         MapUnit = as.factor(make.names(paste0(`BGC Subzone/variant`, "/", 
-                                               `Forested Site Series`)))) %>% # 10
+  dplyr::rename(subzone = `BGC Subzone/variant`) %>% 
+  mutate(subzone = str_replace(subzone, "CHWxm", "CWHxm"), 
+         subzone = str_replace(subzone, "CWHxm", "CWHxm1")) %>% # 9
   st_as_sf(coords = c("Long", "Lat"), crs = 4326) %>% # 11
   st_transform(3005)
 
 # Make site series calls pure calls only (for simplicity)
-sechelt_bec <- dplyr::filter(sechelt_bec_full, nchar(`Forested Site Series`) == 2)
+# sechelt_bec <- dplyr::filter(sechelt_bec_full, nchar(`Forested Site Series`) == 2) %>% 
+#   dplyr::mutate(MapUnit = as.factor(make.names(paste0(subzone, "/", 
+#                                                `Forested Site Series`))))
+
+# Make site series calls majority (or first) calls only
+sechelt_bec <- dplyr::mutate(
+  sechelt_bec_full, `Forested Site Series` = stringi::stri_extract_first_regex(
+    `Forested Site Series`, "[0-9]+"
+  )) %>% 
+  dplyr::mutate(MapUnit = as.factor(make.names(paste0(subzone, "/", 
+                                               `Forested Site Series`))))
 
 ```
 
@@ -193,10 +205,11 @@ sechelt_plants <- sapply(sheets[!sheets %in% c("Site data")], function(x) {
       Species %in% c("Rubuspe", "Corncan", "Ledgro", "Veravir"),
       rowSums(st_drop_geometry(.)[, c("A1", "A2", "A3", "B1", "B2", "C", "D")], 
               na.rm = TRUE), 0)) %>% 
-    mutate(Pres = Cover > 0, 
+    mutate(Pres = Cover > 0.1, 
            `Structural Stage` = as.factor(`Structural Stage`), 
            `Site Disturbance` = as.factor(`Site Disturbance`)) %>% 
-    dplyr::select(`Point ID`, Cover, Pres, `Structural Stage`, 
+    dplyr::rename(point_id = `Point ID`) %>% 
+    dplyr::select(point_id, Pres, Cover, `Structural Stage`, 
                   `Site Disturbance`, `% Canopy Cover`) %>% 
     drop_na()
 }, simplify = FALSE, USE.NAMES = TRUE)
@@ -206,7 +219,7 @@ names(sechelt_plants) <- ifelse(names(sechelt_plants) == "Other species",
                                 "LEDUGRO", toupper(names(sechelt_plants)))
 
 sechelt_pres_cov <- lapply(sechelt_plants, function(x) {
-  dplyr::select(x, Pres, Cover) %>% 
+  dplyr::select(x, point_id, Pres, Cover) %>% 
     {if(!any(.$Pres)) return(.[0, ]) else return(.)}
   })
 
@@ -268,9 +281,10 @@ download.file(
 
 # Process the TEM spreadsheet by finding matching string in the comments portion
 # of the spreadsheet
-tem_xls <- sapply(c("RUBUSPE", "VERAVIR", "CORNCAN", "LEDUGRO"), function(x) {
+tem_xls <- sapply(poi, function(x) {
   read_xls(file.path(field_data_dir, "raw", "tem_data.xls"), skip = 1) %>% 
     mutate(Pres = grepl(x, Comments)) %>% 
+    dplyr::mutate(subzone = paste0(`BGC Zone`, tolower(Subzone), ifelse(is.na(Variant), "", Variant))) %>% 
     as.data.frame() %>% 
     st_as_sf(coords = c("UTM_East", "UTM_North"), crs = 26910) %>% 
     st_transform(3005)
@@ -286,7 +300,8 @@ tem_mdb <- access_query_32(db_path = file.path(field_data_dir, "raw", "tem_data.
     } else x
   } else x <- NULL
 }) %>% compact() %>% 
-  .[grep("PlotData|VegLayer|VegSpecies", names(.))]
+  .[grep("PlotData|VegLayer|VegSpecies", names(.))] %>% 
+  lapply(function(x) Filter(function(y)!all(is.na(y)), x))
 
 ```
 
@@ -295,24 +310,24 @@ After downloading the TEM datasets, we need to prepare them. The next chunk does
 ```{r TEM data - Site}
 
 # TEM excel spreadsheet - BEC info (just uses one of the species since all species has same data)
-tem_xls_bec <- dplyr::select(tem_xls[[1]], Poly_Nbr, ECI_Tag, `BGC Zone`, 
-                             Subzone, Variant, Sser1, Sser2, Sser3, SDec1, 
-                             Sdec2, Sdec3) %>% 
-  dplyr::filter(is.na(Sdec2), is.na(Sdec3)) %>% 
+# This data will be used in generating a site series raster. so the "best" calls
+# should be used. Initially, this was pure calls only, however it might be better
+# to do majority calls instead
+tem_xls_bec <- dplyr::select(tem_xls[[1]], Poly_Nbr, ECI_Tag, subzone,
+                             Sser1, Sser2, Sser3, SDec1, Sdec2, Sdec3) %>% 
+  dplyr::filter(ifelse(is.na(Sdec3), SDec1 >= 6, SDec1 >= 5)) %>% 
   drop_na(SDec1) %>% 
-  mutate(Variant = str_replace_na(Variant, replacement = ""),
-         Sser1 = substr(Sser1, start = 1, stop = 2), 
-         Subzone = tolower(Subzone)) %>% 
-  mutate(MapUnit = as.factor(make.names(paste0(`BGC Zone`, Subzone, Variant, "/", Sser1)))) %>% 
+  mutate(Sser1 = substr(Sser1, start = 1, stop = 2)) %>% 
+  mutate(MapUnit = as.factor(make.names(paste0(subzone, "/", Sser1)))) %>% 
   st_sf()
 
 # MDB_tblPlotData has way too many columns, keep only important ones for BEC
 tem_mdb_bec <- dplyr::select(
-  tem_mdb$MDB_tblPlotData, PlotID, PlotNumber, BECUnit, SiteSeries, SiteSeriesSymbol, 
+  tem_mdb$MDB_tblPlotData, PlotID, PlotNumber, BECUnit, SiteSeriesSymbol, 
   UTMNorthing, UTMEasting, StructuralStage) %>% 
-  dplyr::rename(MapUnit = BECUnit) %>% 
-  mutate(MapUnit = ifelse(SiteSeries == 0, as.character(SiteSeriesSymbol), 
-                          as.character(MapUnit))) %>% 
+  separate(BECUnit, into = c("subzone", "site_series")) %>% 
+  dplyr::mutate(MapUnit = ifelse(site_series == "00", as.character(SiteSeriesSymbol), 
+                          paste0(subzone, "/", site_series))) %>% 
   mutate(MapUnit = as.factor(make.names(MapUnit))) %>% 
   st_as_sf(coords = c("UTMEasting", "UTMNorthing"), crs = 26910) %>% 
   st_transform(3005)
@@ -324,32 +339,30 @@ Further data wrangling is applied to plant data from the TEM datasets.
 ```{r TEM Data - Plants}
 
 tem_xls_pres <- lapply(tem_xls, function(x) {
-  dplyr::select(x, Pres) %>% 
+  dplyr::select(x, Poly_Nbr, ECI_Tag, Pres) %>% 
+    unite(point_id, c(Poly_Nbr, ECI_Tag), sep = "_", remove = TRUE) %>% 
     {if(!any(.$Pres)) return(.[0, ]) else return(.)}
   })
 
 # Merge all 3 .mdb tables and filter plants of interest
-tem_mdb_merge <- merge(tem_mdb$MDB_tblVegLayer, tem_mdb$MDB_tblVegSpecies) %>% 
-  merge(tem_mdb$MDB_tblPlotData) %>% 
+tem_mdb_merge <- expand.grid(PlotID = unique(tem_mdb$MDB_tblPlotData$PlotID), 
+                             Species = unique(tem_mdb$MDB_tblVegSpecies$Species)) %>% 
+  merge(
+    merge(tem_mdb$MDB_tblVegLayer[, c("PlotID", "VegLayerID")], 
+          tem_mdb$MDB_tblVegSpecies[, c("VegLayerID", "Species", "Cover")]), all = TRUE) %>% 
+  merge(tem_mdb$MDB_tblPlotData[, c("PlotID", "PlotNumber", "PolygonNumber", 
+                                    "UTMEasting", "UTMNorthing")]) %>% 
+  unite(point_id, c(PolygonNumber, PlotNumber), sep = "_", remove = TRUE) %>% 
+  group_by(point_id, Species, UTMEasting, UTMNorthing) %>% 
+  dplyr::summarise(across(Cover, sum), .groups = "drop") %>% 
+  dplyr::mutate(Pres = Cover > 0.1) %>% 
+  replace_na(list(Pres = FALSE, Cover = 0)) %>% 
   st_as_sf(coords = c("UTMEasting", "UTMNorthing"), crs = 26910) %>% 
-  st_transform(3005) 
+  st_transform(3005)
 
-tem_mdb_pres_cov <- sapply(c("RUBUSPE", "CORNCAN", "LEDUGRO", "VERAVIR"), function(x) {
-  group_by(tem_mdb_merge, PlotID, Species) %>% 
-    dplyr::filter(Species == x) %>% 
-    summarise(across(Cover, sum), .groups = "drop_last") %>% 
-    ungroup() %>% 
-    mutate(Pres = Species == x) %>% 
-    dplyr::select(PlotID, Pres, Cover) %>% 
-    rbind(st_transform(st_as_sf(data.frame(
-      PlotID = tem_mdb$MDB_tblPlotData$PlotID[!tem_mdb$MDB_tblPlotData$PlotID %in% .$PlotID],
-      Pres = FALSE,
-      Cover = 0,
-      UTMEasting = tem_mdb$MDB_tblPlotData$UTMEasting[!tem_mdb$MDB_tblPlotData$PlotID %in% .$PlotID],
-      UTMNorthing = tem_mdb$MDB_tblPlotData$UTMNorthing[!tem_mdb$MDB_tblPlotData$PlotID %in% .$PlotID]),
-      coords = c("UTMEasting", "UTMNorthing"), crs = 26910), 3005)) %>% 
-    dplyr::select(Pres, Cover) %>% 
-    {if(!any(.$Pres)) return(.[0, ]) else return(.)}
+tem_mdb_pres_cov <- sapply(poi, function(x) {
+  dplyr::filter(tem_mdb_merge, Species == x) %>% 
+    dplyr::select(point_id, Pres, Cover)
 }, simplify = FALSE, USE.NAMES = TRUE)
 
 ```
@@ -385,7 +398,7 @@ aoi_sf <- st_read(file.path(shapes_path, paste0(map_res, "m"), "aoi.gpkg"), quie
   st_geometry() %>% st_make_valid()
 
 # TEM polygon processing as a DSMART input
-dsmart_polygons <- dplyr::select(
+dsmart_site_ser_polys <- dplyr::select(
     tem_sf, PROJECT_POLYGON_IDENTIFIER, BIOGEOCLIMATIC_LBL, 
     ECOSYSTEM_DECILE_CPNT_1, 
     ECOSYSTEM_DECILE_CPNT_2,
@@ -450,18 +463,18 @@ dsmart_polygons <- dplyr::select(
   droplevels()
 
 # Inspect geometries and remove incorrect data types:
-if(!st_geometry_type(dsmart_polygons, FALSE) %in% c("POLYGON", "MULTIPOLYGON")) {
-  tem_geom <- st_geometry(dsmart_polygons)
+if(!st_geometry_type(dsmart_site_ser_polys, FALSE) %in% c("POLYGON", "MULTIPOLYGON")) {
+  tem_geom <- st_geometry(dsmart_site_ser_polys)
   for(i in 1:length(tem_geom)) {
     if(!st_geometry_type(tem_geom[[i]]) %in% c("POLYGON", "MULTIPOLYGON")) {
       tem_geom[[i]] <- st_collection_extract(tem_geom[[i]], "POLYGON")
     }
   }
-  st_geometry(dsmart_polygons) <- st_cast(tem_geom, "MULTIPOLYGON")
+  st_geometry(dsmart_site_ser_polys) <- st_cast(tem_geom, "MULTIPOLYGON")
 }
 
 # Convert polygon composition to table with 5 columns
-dsmart_composition <- st_drop_geometry(dsmart_polygons) %>% 
+dsmart_site_ser_composition <- st_drop_geometry(dsmart_site_ser_polys) %>% 
   pivot_longer(cols = c("Sdec1", "Sdec2", "Sdec3")) %>% 
   mutate(MapUnit = ifelse(name == "Sdec1", as.character(MapUnit1), 
                                     ifelse(name == "Sdec2", as.character(MapUnit2), 
@@ -473,24 +486,30 @@ dsmart_composition <- st_drop_geometry(dsmart_polygons) %>%
          Subzone = as.integer(Subzone)) %>% 
   dplyr::select(POLY_NO, MAP_CODE, Subzone, MapUnit, proportion) %>% 
   group_by(POLY_NO, MAP_CODE, Subzone, MapUnit) %>% 
-  dplyr::summarise_at(vars(proportion), sum) %>% 
-  ungroup()
+  dplyr::summarise(across(proportion, sum), .groups = "drop")
 
 # Create table of additional observations
-dsmart_observations <- lapply(list(sechelt_bec, tem_xls_bec, tem_mdb_bec), function(x) 
-  dplyr::select(x, MapUnit) %>% 
-    st_set_agr("constant") %>% 
-    st_transform(crs = st_crs(tem_sf)) %>% 
-    st_intersection(aoi_sf) %>% 
+# Subzone renaming occurs at this step as I suspect a certain amount of human error is
+# incurred in some of the datasets, so subzones change to match subzones in the TEM
+dsmart_site_ser_observations <- lapply(list(sechelt_bec, tem_xls_bec, tem_mdb_bec), function(x) 
+  dplyr::select(x, MapUnit, subzone) %>% 
+    sf::st_set_agr("constant") %>% 
+    sf::st_transform(crs = st_crs(tem_sf)) %>% 
+    sf::st_intersection(aoi_sf) %>% 
     droplevels()) %>% 
-  do.call(what = rbind, args = .) %>%
+  do.call(what = rbind, args = .) %>% 
+  sf::st_join(dsmart_site_ser_polys) %>% 
+  dplyr::mutate(MapUnit = as.character(MapUnit), Subzone = as.character(Subzone)) %>% 
+  dplyr::mutate(MapUnit = ifelse((subzone != Subzone & !is.na(Subzone)), 
+                                 str_replace(MapUnit, ".*\\.", paste0(Subzone, ".")), 
+                                 MapUnit)) %>%
   cbind(st_coordinates(.)) %>% 
-  st_drop_geometry() %>% 
+  sf::st_drop_geometry() %>% 
   dplyr::select(X, Y, MapUnit) %>% 
-  mutate(MapUnit = as.factor(make.names(MapUnit)))
+  dplyr::mutate(MapUnit = as.factor(make.names(MapUnit)))
 
 # From the TEM data, create a subzone layer which will be used to stratify sampling
-dsmart_strata <- group_by(dsmart_polygons, Subzone) %>% 
+dsmart_strata <- group_by(dsmart_site_ser_polys, Subzone) %>% 
   dplyr::summarise(.groups = "drop_last") %>% 
   mutate(strata = as.integer(Subzone)) %>% 
   st_cast("MULTIPOLYGON")
@@ -499,11 +518,11 @@ dsmart_strata <- group_by(dsmart_polygons, Subzone) %>%
 dso <- file.path(dsmart_dir, "inputs")
 dir.create(dso, recursive = TRUE, showWarnings = FALSE)
 
-sapply(c("dsmart_polygons", "dsmart_strata"), function(x) st_write(
+sapply(c("dsmart_site_ser_polys", "dsmart_strata"), function(x) st_write(
   eval(parse(text = x)), file.path(dso, paste0(x, ".gpkg")), 
   delete_layer = TRUE, quiet = TRUE))[0]
 
-sapply(c("dsmart_composition", "dsmart_observations"), function(x) write.csv(
+sapply(c("dsmart_site_ser_composition", "dsmart_site_ser_observations"), function(x) write.csv(
   eval(parse(text = x)), file.path(dso, paste0(x, ".csv")), row.names = FALSE))[0]
 
 ```
@@ -518,33 +537,252 @@ The three data sources (TEM excel spreadsheet, TEM mdb, and 2019 point data) are
 
 ```{r Pres/Abs and Cover Merge}
 
+pto <- file.path(field_data_dir, "processed")
+dir.create(pto, recursive = TRUE, showWarnings = FALSE)
+
 # Create the raster stack (terra package) which will be used for data extraction
 covars <- terra::rast(list.files(file.path(covariate_dir, paste0(map_res, "m")), 
                                    full.names = TRUE))
 
 # Combine them all
-pres_abs <- sapply(c("RUBUSPE", "CORNCAN", "LEDUGRO", "VERAVIR"), function(x) {
-  rbind(sechelt_pres_cov[[x]][, "Pres"], tem_xls_pres[[x]][, "Pres"], 
-        tem_mdb_pres_cov[[x]][, "Pres"]) %>% 
+pres_abs <- sapply(poi, function(x) {
+  
+  # Create unattributed points and write those
+  out <- dplyr::bind_rows(sechelt_pres_cov[[x]], tem_xls_pres[[x]], tem_mdb_pres_cov[[x]]) %>% 
+    dplyr::select(point_id, Pres) %>% 
     st_set_agr("constant") %>% 
     st_transform(crs = st_crs(aoi_sf)) %>% 
-    st_intersection(aoi_sf) %>% 
-    cbind(terra::extract(covars, st_coordinates(.))) %>% 
+    st_intersection(aoi_sf)
+  st_write(out, file.path(pto, "pres_abs_no_atts.gpkg"), layer = x, 
+           delete_layer = TRUE, quiet = TRUE)
+  
+  # Attribute the points and write those separately
+  out_att <- cbind(out, terra::extract(covars, st_coordinates(out))) %>% 
     Filter(function(y) !all(is.na(y)), .) %>% 
+    dplyr::select(Pres, names(covars)) %>% 
     drop_na()
+  st_write(out_att, file.path(pto, "pres_abs.gpkg"), layer = x, 
+           delete_layer = TRUE, quiet = TRUE)
+  return(out_att)
 }, simplify = FALSE, USE.NAMES = TRUE)
 
-cover <- sapply(c("RUBUSPE", "CORNCAN", "LEDUGRO", "VERAVIR"), function(x) {
-  rbind(sechelt_pres_cov[[x]][, "Cover"], tem_mdb_pres_cov[[x]][, "Cover"]) %>% 
+cover <- sapply(poi, function(x) {
+  out <- dplyr::bind_rows(sechelt_pres_cov[[x]], tem_mdb_pres_cov[[x]]) %>% 
+    dplyr::select(point_id, Cover) %>% 
     st_set_agr("constant") %>% 
     st_transform(crs = st_crs(aoi_sf)) %>% 
-    st_intersection(aoi_sf) %>% 
-    cbind(terra::extract(covars, st_coordinates(.))) %>% 
+    st_intersection(aoi_sf) 
+  st_write(out, file.path(pto, "cover_no_atts.gpkg"), layer = x, 
+           delete_layer = TRUE, quiet = TRUE)
+  
+  out_att <- cbind(out, terra::extract(covars, st_coordinates(out))) %>% 
     Filter(function(y) !all(is.na(y)), .) %>% 
+    dplyr::select(Cover, names(covars)) %>% 
     drop_na()
+  st_write(out_att, file.path(pto, "cover.gpkg"), layer = x, 
+           delete_layer = TRUE, quiet = TRUE)
+  return(out_att)
 }, simplify = FALSE, USE.NAMES = TRUE)
 
-struct_stage <- dplyr::select(sechelt_bec_full, `Structural Stage`) %>% 
+```
+
+Using the land cover classification manual, create decisions for attributing each VRI polygon with a structural stage. This is complex. 
+
+The land cover classifications use the BCLCS codes in 5 different layers to detail what a polygon might look like. Additionally, there are 3 "LAND_COVER_CLASS_CD" columns which detail how much of a given polygon is of a particular land classification; however, this is largely incomplete. Where it is, the best guess from the BCLCS layers will be used to determine the land class. Because there are three different calls sometimes, we can plug the final result into DSMART to spit out a raster of structural stage.
+
+***Currently, I'm not sure how to implement water bodies. I'm currently putting all water classified polygons (freshwater and marine) into the 2c classification, but that may change.
+
+```{r Structural stage prep}
+
+# Read in VRI data
+vri <- st_read(file.path(shapes_path, paste0(map_res, "m"), "vri_full.gpkg"), quiet = TRUE)
+vri_bgc <- dplyr::select(vri, BEC_ZONE_CODE, BEC_SUBZONE, BEC_VARIANT) %>% 
+  dplyr::mutate(bgc = ifelse(!is.na(BEC_VARIANT), 
+                             paste0(BEC_ZONE_CODE, BEC_SUBZONE, BEC_VARIANT), 
+                             paste0(BEC_ZONE_CODE, BEC_SUBZONE))) %>% 
+  group_by(bgc) %>% dplyr::summarise(.groups = "drop")
+
+st_write(vri_bgc, file.path(shapes_path, paste0(map_res, "m"), "bgc_vri.gpkg"), 
+         delete_layer = TRUE, quiet = TRUE)
+
+# Use VRI to interpret structural stage
+# First splits: Vegetated and non-vegetated, then trees vs. no trees in vegetated table
+vri_veg_only <- dplyr::select(vri, starts_with(c(
+  "POLYGON_ID", "MAP_ID", "BCLCS", "LAND_COVER_CLASS", "EST_COVERAGE_PCT", 
+  "SPECIES_PCT", "PROJ_AGE", "BEC"))) %>% 
+  dplyr::filter(BCLCS_LEVEL_1 == "V")
+vri_no_veg <- dplyr::select(vri, starts_with(c(
+  "POLYGON_ID", "MAP_ID", "BCLCS", "LAND_COVER_CLASS", "EST_COVERAGE_PCT", 
+  "SPECIES_PCT", "PROJ_AGE", "BEC"))) %>% 
+  dplyr::filter(BCLCS_LEVEL_1 != "V")
+vri_trees <- dplyr::filter(vri_veg_only, BCLCS_LEVEL_2 == "T")
+vri_no_trees <- dplyr::filter(vri_veg_only, BCLCS_LEVEL_2 != "T")
+
+# Focus on ss 1 - 3
+# In the Sechelt dataset, I treat ES (exposed soil) as 1a, 
+# BM (bryoid moss) gets 1b, and BL (bryoid lichens) gets 1c
+ss_1a <- dplyr::filter(vri_no_veg, ifelse(
+  is.na(LAND_COVER_CLASS_CD_1), BCLCS_LEVEL_4 == "EL", 
+  LAND_COVER_CLASS_CD_1 == "ES")) %>% 
+  dplyr::mutate(ss1 = "1a", ss2 = NA, ss3 = NA)
+ss_1b <- dplyr::filter(vri_no_trees, ifelse(
+  is.na(LAND_COVER_CLASS_CD_1), BCLCS_LEVEL_4 == "BM",
+  LAND_COVER_CLASS_CD_1 == "BM")) %>% 
+  dplyr::mutate(ss1 = "1b", ss2 = NA, ss3 = NA)
+ss_1c <- dplyr::filter(vri_no_trees, ifelse(
+  is.na(LAND_COVER_CLASS_CD_1), BCLCS_LEVEL_4 == "BL",
+  LAND_COVER_CLASS_CD_1 == "BL")) %>% 
+  dplyr::mutate(ss1 = "1c", ss2 = NA, ss3 = NA)
+
+# Additional entries classified as BY get randomly assigned to either 1b or 1c:
+ss_1 <- dplyr::filter(vri_no_trees, ifelse(
+  is.na(LAND_COVER_CLASS_CD_1), BCLCS_LEVEL_4 == "BY",
+  LAND_COVER_CLASS_CD_1 == "BY")) %>% 
+  dplyr::mutate(LAND_COVER_CLASS_CD_1 = ifelse(round(runif(nrow(.))) == 1, "BM", "BL")) %>% 
+  dplyr::mutate(ss1 = ifelse(LAND_COVER_CLASS_CD_1 == "BM", "1b", "1c"), 
+                ss2 = NA, ss3 = NA)
+ss_1b <- if(any(ss_1$LAND_COVER_CLASS_CD_1 == "BM")) {
+  rbind(ss_1b, ss_1[ss_2$LAND_COVER_CLASS_CD_1 == "BM", ])
+} else ss_1b
+ss_1c <- if(any(ss_1$LAND_COVER_CLASS_CD_1 == "BL")) {
+  rbind(ss_1c, ss_1[ss_2$LAND_COVER_CLASS_CD_1 == "BL", ])
+} else ss_1c
+
+# The herb dominated polygons will be assigned structural stage 2
+# Forb dominants (HF) get 2a, graminoid dominants (HG) get 2b
+# All polygons that are designated lakes or ocean get assigned 2c, though this may change
+ss_2a <- dplyr::filter(vri_no_trees, ifelse(
+  is.na(LAND_COVER_CLASS_CD_1), BCLCS_LEVEL_4 == "HF", 
+  LAND_COVER_CLASS_CD_1 == "HF")) %>% 
+  dplyr::mutate(ss1 = "2a", ss2 = NA, ss3 = NA)
+ss_2b <- dplyr::filter(vri_no_trees, ifelse(
+  is.na(LAND_COVER_CLASS_CD_1), BCLCS_LEVEL_4 == "HG", 
+  LAND_COVER_CLASS_CD_1 == "HG")) %>% 
+  dplyr::mutate(ss1 = "2b", ss2 = NA, ss3 = NA)
+ss_2c <- rbind(
+  dplyr::filter(vri_no_veg, ifelse(
+    is.na(LAND_COVER_CLASS_CD_1), BCLCS_LEVEL_5 %in% c("LA", "RE", "RI", "OC"), 
+    LAND_COVER_CLASS_CD_1 %in% c("LA", "RE", "RI", "OC"))),
+  dplyr::filter(vri_no_trees, 
+    LAND_COVER_CLASS_CD_1 %in% c("LA", "RE", "RI", "OC"))) %>% 
+  dplyr::mutate(ss1 = "2c", ss2 = NA, ss3 = NA)
+
+# No foreseeable way to distinguish structural stage 2d from VRI data
+# Additional entries that may go into 2a, 2b, or 2d, or be randomly assigned to
+# 2a or 2b:
+ss_2 <- dplyr::filter(vri_no_trees, ifelse(
+  is.na(LAND_COVER_CLASS_CD_1), BCLCS_LEVEL_4 == "HE",
+  LAND_COVER_CLASS_CD_1 == "HE")) %>% 
+  dplyr::mutate(LAND_COVER_CLASS_CD_1 = ifelse(round(runif(nrow(.))) == 1, "HF", "HG")) %>% 
+  dplyr::mutate(ss1 = ifelse(LAND_COVER_CLASS_CD_1 == "HF", "2a", "2b"), 
+                ss2 = NA, ss3 = NA)
+ss_2a <- if(any(ss_2$LAND_COVER_CLASS_CD_1 == "HF")) {
+  rbind(ss_2a, ss_2[ss_2$LAND_COVER_CLASS_CD_1 == "HF", ])
+} else ss_2a
+ss_2b <- if(any(ss_2$LAND_COVER_CLASS_CD_1 == "HG")) {
+  rbind(ss_2b, ss_2[ss_2$LAND_COVER_CLASS_CD_1 == "HG", ])
+} else ss_2b
+
+# SL stands for shrub low, ST shrub tall. Those easily get assigned to 3a and 3b,
+# respectively
+ss_3a <- rbind(
+  dplyr::filter(vri_no_trees, ifelse(
+    is.na(LAND_COVER_CLASS_CD_1), BCLCS_LEVEL_4 == "SL", 
+    LAND_COVER_CLASS_CD_1 == "SL")),
+  dplyr::filter(vri_no_veg, ifelse(
+    is.na(LAND_COVER_CLASS_CD_1), BCLCS_LEVEL_4 == "SL", 
+    LAND_COVER_CLASS_CD_1 == "SL"
+  ))) %>% 
+  dplyr::mutate(
+    ss1 = "3a", 
+    ss2 = ifelse(LAND_COVER_CLASS_CD_2 == "HE", ifelse(round(runif(nrow(.))) == 1, "2a", "2b"), 
+                 ifelse(LAND_COVER_CLASS_CD_2 == "TC", "5", LAND_COVER_CLASS_CD_2)),
+    ss3 = ifelse(LAND_COVER_CLASS_CD_3 == "LA", "2c", LAND_COVER_CLASS_CD_3))
+ss_3b <- rbind(
+  dplyr::filter(vri_no_trees, ifelse(
+    is.na(LAND_COVER_CLASS_CD_1), BCLCS_LEVEL_4 == "ST", 
+    LAND_COVER_CLASS_CD_1 == "ST")),
+  dplyr::filter(vri_no_veg, ifelse(
+    is.na(LAND_COVER_CLASS_CD_1), BCLCS_LEVEL_4 == "ST", 
+    LAND_COVER_CLASS_CD_1 == "ST"
+  ))) %>% 
+  dplyr::mutate(ss1 = "3b", ss2 = NA, ss3 = NA)
+
+### Moving on to treed polygons
+# First, create columns of the weighted average stand age of the two most
+# dominant tree species
+vri_avg <- dplyr::mutate(vri_trees,
+  age_avg = ifelse(
+    !is.na(PROJ_AGE_2), 
+    ((SPECIES_PCT_1 * PROJ_AGE_1) + (SPECIES_PCT_2 * PROJ_AGE_2)) / (SPECIES_PCT_1 + SPECIES_PCT_2), 
+    PROJ_AGE_1))
+
+# Basing all decisions on average stand age...might not be overly accurate, but
+# closest approximation given the data currently at hand. Structural stage 4
+# gets < 20 years, 5 gets 20-80 years, 6 gets 80-250 years (based on NDT from
+# subzone), and 7 gets greater than 250 years. I cannot find an accurate way to 
+# decipher between structural stages 7a and 7b from VRI data, so they are lumped 
+# together here.
+ss_4 <- dplyr::filter(vri_avg, age_avg < 20) %>% 
+  dplyr::mutate(ss1 = "4", ss2 = NA, ss3 = NA)
+ss_5 <- dplyr::filter(vri_avg, age_avg >= 20, age_avg < 80) %>% 
+  dplyr::mutate(
+    ss1 = "5", 
+    ss2 = ifelse(LAND_COVER_CLASS_CD_2 == "SL", "3a", LAND_COVER_CLASS_CD_2),
+    ss3 = ifelse(LAND_COVER_CLASS_CD_3 == "BR", "1a", LAND_COVER_CLASS_CD_3)
+  )
+ss_6 <- dplyr::filter(vri_avg, age_avg >= 80, age_avg < 250) %>% 
+  dplyr::mutate(ss1 = "6", ss2 = NA, ss3 = NA)
+ss_7 <- dplyr::filter(vri_avg, age_avg >= 250) %>% 
+  dplyr::mutate(
+    ss1 = "7", 
+    ss2 = ifelse(LAND_COVER_CLASS_CD_2 == "BR", "1a", LAND_COVER_CLASS_CD_2),
+    ss3 = NA
+  )
+
+# Combine each of the structural stages together and create columns used in 
+# DSMART 
+dsmart_struct_stg_polys <- rbind(ss_1a, ss_1b, ss_1c, ss_2a, ss_2b, ss_2c, ss_3a, ss_3b, 
+                rbind(ss_4, ss_5, ss_6, ss_7) %>% dplyr::select(names(ss_1a))) %>% 
+  dplyr::mutate(EST_COVERAGE_PCT_1 = ifelse(is.na(EST_COVERAGE_PCT_1), 100, EST_COVERAGE_PCT_1), 
+                EST_COVERAGE_PCT_2 = ifelse(is.na(EST_COVERAGE_PCT_2), 0, EST_COVERAGE_PCT_2), 
+                EST_COVERAGE_PCT_3 = ifelse(is.na(EST_COVERAGE_PCT_3), 0, EST_COVERAGE_PCT_3), 
+                MAP_CODE = paste0(MAP_ID, "_", POLYGON_ID), 
+                ss1 = as.factor(make.names(ss1)), 
+                ss2 = as.factor(sub(".*NA\\.", NA, make.names(ss2))), 
+                ss3 = as.factor(sub(".*NA\\.", NA, make.names(ss3)))) %>% 
+  unite(Subzone, c(BEC_ZONE_CODE, BEC_SUBZONE, BEC_VARIANT), sep = "", remove = TRUE, na.rm = TRUE) %>% 
+  dplyr::select(POLYGON_ID, Subzone, MAP_CODE, ss1, EST_COVERAGE_PCT_1, ss2, EST_COVERAGE_PCT_2, 
+                ss3, EST_COVERAGE_PCT_3) %>% 
+  mutate(across(Subzone,as.factor))
+
+# Inspect geometries and remove incorrect data types:
+if(!st_geometry_type(dsmart_struct_stg_polys, FALSE) %in% c("POLYGON", "MULTIPOLYGON")) {
+  ss_geom <- st_geometry(dsmart_struct_stg_polys)
+  for(i in 1:length(ss_geom)) {
+    if(!st_geometry_type(ss_geom[[i]]) %in% c("POLYGON", "MULTIPOLYGON")) {
+      ss_geom[[i]] <- st_collection_extract(ss_geom[[i]], "POLYGON")
+    }
+  }
+  st_geometry(dsmart_struct_stg_polys) <- st_cast(ss_geom, "MULTIPOLYGON")
+}
+
+# Convert polygon composition to table with 5 columns
+dsmart_struct_stg_composition <- st_drop_geometry(dsmart_struct_stg_polys) %>% 
+  pivot_longer(cols = c("EST_COVERAGE_PCT_1", "EST_COVERAGE_PCT_2", "EST_COVERAGE_PCT_3")) %>% 
+  mutate(ss = ifelse(name == "EST_COVERAGE_PCT_1", as.character(ss1), 
+                     ifelse(name == "EST_COVERAGE_PCT_2", as.character(ss2), 
+                            ifelse(name == "EST_COVERAGE_PCT_3", as.character(ss3), NA))),
+         POLYGON_ID = as.integer(POLYGON_ID), 
+         proportion = as.integer(value)) %>% 
+  drop_na(ss) %>% 
+  mutate(ss = as.factor(ss), 
+         Subzone = as.integer(Subzone)) %>% 
+  dplyr::select(POLYGON_ID, MAP_CODE, Subzone, ss, proportion) %>% 
+  group_by(POLYGON_ID, MAP_CODE, Subzone, ss) %>% 
+  dplyr::summarise(across(proportion, sum), .groups = "drop")
+
+dsmart_struct_stg_observations <- dplyr::select(sechelt_bec_full, `Structural Stage`) %>% 
   dplyr::rename(StructuralStage = `Structural Stage`) %>% 
   bind_rows(dplyr::select(tem_mdb_bec, StructuralStage)) %>% 
   mutate(StructuralStage = trimws(StructuralStage)) %>% 
@@ -552,28 +790,24 @@ struct_stage <- dplyr::select(sechelt_bec_full, `Structural Stage`) %>%
   st_set_agr("constant") %>% 
   st_transform(crs = st_crs(aoi_sf)) %>% 
   st_intersection(aoi_sf) %>% 
-  cbind(terra::extract(covars, st_coordinates(.))) %>% 
+  cbind(st_coordinates(.)) %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(X, Y, StructuralStage) %>% 
+  dplyr::mutate(StructuralStage = as.factor(make.names(StructuralStage)))
+
+struct_stg <- dsmart_struct_stg_observations %>% 
+  cbind(terra::extract(covars, matrix(c(.$X, .$Y), ncol = 2))) %>% 
   Filter(function(y) !all(is.na(y)), .) %>% 
   drop_na()
 
-# Write training data outputs
-pto <- file.path(field_data_dir, "processed")
-dir.create(pto, recursive = TRUE, showWarnings = FALSE)
+# Write data outputs
+st_write(dsmart_struct_stg_polys, file.path(dso, paste0("dsmart_struct_stg_polys.gpkg")), 
+  delete_layer = TRUE, quiet = TRUE)
+sapply(c("dsmart_struct_stg_composition", "dsmart_struct_stg_observations"), function(x) write.csv(
+  eval(parse(text = x)), file.path(dso, paste0(x, ".csv")), row.names = FALSE))[0]
 
-for(layer in names(pres_abs)) {
-  st_write(pres_abs[[layer]], file.path(pto, "pres_abs.gpkg"), 
-           layer = layer, delete_layer = TRUE, quiet = TRUE)
-  st_write(cover[[layer]], file.path(pto, "cover.gpkg"), 
-           layer = layer, delete_layer = TRUE, quiet = TRUE)
-}
-
-st_write(struct_stage, file.path(pto, "struct_stage.gpkg"), 
+st_write(struct_stg, file.path(pto, "struct_stg_pts.gpkg"), 
          delete_layer = TRUE, quiet = TRUE)
 
 ```
 
-Part of the issue with a couple of the metrics is that for a couple of the plant species of interest, there are only a small handful of presence data. This can create issues with overfitting/underfitting a model; however, there are ways around this issue. The RFUtilities package includes a class balance function to balance your sample classes, while native caret has the SMOTE or ROSE algorithm to artificially increase the low class dataset and decrease the high class datasets. Once some maps have been made, it is likely that multiple renditions of these maps will be created in order to see if any of the class balancing acts have any major effects on modelling accuracy.
-
-The models created above are binary classification models. Since we want to look at the probability associated with locating a given plant on a map, we need to generate the probability maps for each plant species. The model will produce probability maps for each class, however we only need the output of the "TRUE" class. This will likely take a while since there are ~200 covariate layers to work with
-
-Now we will move on to cover data. Cover data is only present in two data sources: The 2019 point dataset, and the TEM mdb file. The TEM excel file will be left out of the analysis here.
