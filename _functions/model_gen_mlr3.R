@@ -142,7 +142,10 @@ model_gen_mlr3 <- function(
   # Create pipeop learner, note I had some issues with this, error included duplicated value
   # in "name" column, but if the mlr3spatiaotempcv package is not loaded here, this 
   # works fine. I submitted this as an issue to the mlr3pipelines page: 
-  # https://github.com/mlr-org/mlr3pipelines/issues/368
+  # https://github.com/mlr-org/mlr3pipelines/issues/368, which resulted in a PR
+  # here: https://github.com/mlr-org/mlr3pipelines/pull/371, which was eventually
+  # moved to here: https://github.com/mlr-org/mlr3/issues/470, and another PR 
+  # here: https://github.com/mlr-org/mlr3/pull/529
   # The issue is still ongoing as of June 26...I appear to have opened a can of
   # worms with this!
   
