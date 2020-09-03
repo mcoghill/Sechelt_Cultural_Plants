@@ -1,0 +1,182 @@
+---
+title: "04_Model_Enhancement_DataPrep"
+author: "Matt"
+date: "8/25/2020"
+output: html_document
+---
+
+In August 2020, another field visit to the Sechelt study area was organized and another week worth of field data was collected. New methods were used to collect this data and certain methods of how cover data was collected was even changed during the course of the field visit. This document is intended to walk through the steps of preparing the field data for model enhancement use. Essentially, data from the previous model runs will be combined with the data collected from this field visit and the models will be reran to see if the additional data helped with model accuracy.
+
+First, R packages need to be loaded. (currently copied and pasted from 02a document)
+
+```{r Load Packages}
+
+suppressMessages(suppressWarnings({
+  ls <- c("plyr", "tidyverse", "readxl", "foreach", "RODBC", "sf", "terra")
+  new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+  if(length(new.packages))
+    install.packages(new.packages)
+  sapply(ls, library, character.only = TRUE, quietly = TRUE)[0]
+  rm(ls, new.packages)
+}))
+
+```
+
+Next, data from the field visits will be loaded in and processed. I'll first deal with site related data, and then move on to plant related data.
+
+Since 2019, I've edited the original field data Excel spreadhseet. Instead of having separate sheets for each species of interest, they are all on a single page for presences only. This will indicate that if at a given point, there is no data for a given plant, then it will be treated as an absence. Additionally, I've sifted through the data very carefully and where there were certain issues with the way it was laid out previously (e.g.: transition calls in the site series column, descriptions where it wasn't necessary for the structural stage and disturbance classes, etc.), I've edited them manually. This was done to maintain continuity between the newly collected field data and the data from 2019.
+
+```{r Set directories}
+
+AOI <- "Sechelt"
+AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
+map_res <- 4
+
+shapes_path <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
+field_data_dir <- file.path(AOI_dir, "1_map_inputs", "field_data")
+covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
+dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
+out_path <- file.path(AOI_dir, "2_map_predictions")
+
+```
+
+
+
+```{r Field data 2019 2020 merge - Site}
+
+data_2019 <- file.path(field_data_dir, "raw", "shishalhBECandCulturalPlants_FieldData_2019_EDITS.xlsx")
+data_2020 <- file.path(field_data_dir, "raw", "Sechelt_FieldSampling_Aug2020.xlsx")
+sheets <- excel_sheets(data_2019)
+
+bgc_2019 <- read_excel(data_2019, sheet = "sechelt_site")
+bgc_2020 <- read_excel(data_2020, sheet = "sechelt_site")
+
+bgc_merge <- rbind(
+  bgc_2019[, names(bgc_2019) %in% names(bgc_2020)], 
+  bgc_2020[, names(bgc_2020) %in% names(bgc_2019)]) %>% 
+  magrittr::set_names(make.names(names(.)))
+
+```
+
+This chunk will combine the two field data sets into a single plant data dataframe. For the 2019 data, fewer focal species were recorded after the first week of data collection, so the Excel sheet reflects the points where data was "not recorded" for a given species at a site. For those records that indicate not being recorded, those records are removed from the final pres/abs dataset
+
+```{r Field data 2019 2020 merge - Plants}
+
+plants_2019 <- read_excel(data_2019, sheet = "sechelt_plants")
+plants_2020 <- read_excel(data_2020, sheet = "sechelt_plants")
+
+plant_list_2019 <- unique(plants_2019$Species)
+plant_list_2020 <- unique(plants_2020$Species)
+
+# Only consider points that had greater than 0.1% cover in a plot
+plants_merge <- rbind(
+  plants_2019[, names(plants_2019) %in% names(plants_2020)], 
+  plants_2020[, names(plants_2020) %in% names(plants_2019)]) %>% 
+  dplyr::mutate(
+    Pres = rowSums(.[, c("A1", "A2", "A3", "B1", "B2", "C", "D")], na.rm = TRUE) > 0.1) %>% 
+  magrittr::set_names(make.names(names(.)))
+
+# The data currently has points for plant presence for a given plant at each 
+# site, but absence records were never recorded so those need to be added in.
+# Comments from 2019 indicate if a given plant species was in fact recorded there
+# or not.
+plant_expand <- foreach(i = unique(bgc_merge$Point.ID), .combine = rbind) %do% {
+  site <- plants_merge %>% 
+    dplyr::filter(Point.ID == i) %>% 
+    as.data.frame()
+  if(nrow(site) == 0) {
+    site[1, c("Point.ID", "Lat", "Long")] <- c(i, bgc_merge[bgc_merge$Point.ID == i, ]$Lat,
+                                               bgc_merge[bgc_merge$Point.ID == i, ]$Long)
+  }
+  sp_add <- if(any(grepl("_2019$", site$Point.ID))) {
+    plant_list_2019[!plant_list_2019 %in% site$Species]
+    } else plant_list_2020[!plant_list_2020 %in% site$Species]
+  
+  out <- dplyr::filter(site, !Comments %in% "*not recorded") %>% 
+    {if(length(sp_add) > 0) {
+      rbind(., data.frame(
+        Point.ID = i, 
+        Lat = site$Lat[1], 
+        Long = site$Long[1], 
+        Species = sp_add, 
+        A1 = NA, A2 = NA, A3 = NA, B1 = NA, B2 = NA, C = NA, D = NA, 
+        Flowers = NA, Fruit = NA, Comments = NA, Pres = FALSE
+      )) %>% 
+        drop_na(Species)
+    } else .}
+} %>% dplyr::rename(point_id = Point.ID)
+
+# Use a list of dataframes for each plant species
+plant_data <- lapply(plant_list, function(x) {
+  dplyr::filter(plant_expand, Species == x) %>% 
+    dplyr::select(point_id, Lat, Long, Pres)
+}) %>% magrittr::set_names(plant_list) %>% 
+  lapply(function(x) {
+    st_as_sf(x, coords = c("Long", "Lat"), crs = 4326) %>% 
+      st_transform(3005) %>% 
+      dplyr::rename(geom = geometry)
+  })
+
+plant_table <- lapply(plant_data, function(x) data.frame(table(x$Pres)))
+
+# If there is a skewed presence/absence ratio, remove the entire collection
+# of data from the list. Arbitrary value of 5% given here. May want to remove this...
+plant_data <- plant_data[sapply(plant_table, function(x) 
+  if(min(x$Freq) / sum(x$Freq) >= 0.05) TRUE else FALSE)]
+
+```
+
+The next chunk will load in processed points from the 02a script, i.e.: unattributed points from TEM data collection as well as 2019 point data
+
+```{r}
+
+pto <- file.path(field_data_dir, "processed")
+old_points <- lapply(c("RUBUSPE", "CORNCAN", "VERAVIR", "LEDUGRO"), function(x) {
+  st_read(file.path(pto, "pres_abs_no_atts.gpkg"), layer = x, quiet = TRUE)
+}) %>% magrittr::set_names(c("Rubu spe", "Corn can", "Vera vir", "Ledu gro"))
+
+# Using an underscore character as a filter will filter out the 2019 points 
+# that were processed in 2019 as they had no underscore character. All other
+# points (2019 and 2020 points processed for this map, and all TEM points)
+# have underscore values in their ID's, so we can filter by that.
+points_comb <- c(
+  sapply(names(old_points)[names(old_points) %in% names(plant_data)], 
+         function(x) {
+           rbind(old_points[[x]], plant_data[[x]]) %>% 
+             dplyr::filter(grepl("_", point_id))
+         }, simplify = FALSE, USE.NAMES = TRUE), 
+  plant_data[!names(plant_data) %in% names(old_points)], 
+  old_points[!names(old_points) %in% names(plant_data)]
+)
+  
+```
+
+Now that the points are brought together from all data sources, the extraction from the rasters on them can once again be performed.
+
+```{r}
+
+pto <- file.path(field_data_dir, "processed")
+dir.create(pto, recursive = TRUE, showWarnings = FALSE)
+
+# Create the raster stack (terra package) which will be used for data extraction
+covars <- terra::rast(list.files(file.path(covariate_dir, paste0(map_res, "m")), 
+                                   full.names = TRUE))
+
+pres_abs_2020 <- sapply(names(points_comb), function(x) {
+  
+  # Create unattributed points and write those
+  st_write(points_comb[[x]], file.path(pto, "2020_pres_abs_no_atts.gpkg"), layer = x, 
+           delete_layer = TRUE, quiet = TRUE)
+  
+  # Attribute the points and write those separately
+  out_att <- cbind(points_comb[[x]], terra::extract(covars, st_coordinates(points_comb[[x]]))) %>% 
+    Filter(function(y) !all(is.na(y)), .) %>% 
+    dplyr::select(Pres, names(covars)) %>% 
+    drop_na()
+  st_write(out_att, file.path(pto, "2020_pres_abs.gpkg"), layer = x, 
+           delete_layer = TRUE, quiet = TRUE)
+  return(out_att)
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+```
+
