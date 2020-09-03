@@ -135,10 +135,16 @@ summarise <- function(
     probabilities = file.path(outputdir, "output", "probabilities"), 
     mostprobable = file.path(outputdir, "output", "mostprobable"))
   
+  # Don't want to display a bunch of progress bars here, so turn that off for
+  # the time being
+  def_ops <- capture.output(terraOptions())
+  terraOptions(progress = 0)
+  
   # Make sure lookup table column names are correct
   names(lookup) <- c("name", "code")
   
   # If raw predictions are used, calculate class probabilities by counting.
+  cat("\nComputing class probabilities from realisations")
   if(type != "prob") {
     # Define layer for masking output NA areas
     mask_layer <- realisations[[1]]
@@ -186,6 +192,7 @@ summarise <- function(
   }
   
   # Compute the class indices of the n-most-probable soil classes
+  cat("\nGenerating most probable classification rasters")
   ordered.indices <- if(type != "prob") {
     # If raw class predictions are used, use "counts" for indicing.
     # If nprob = 1, terra::modal performs the same function faster
@@ -211,6 +218,7 @@ summarise <- function(
       overwrite = TRUE, wopt = list(datatype = "INT2S"))
   
   # Compute the class probabilities of the n-most-probable soil classes
+  cat("\nCalculating probabilities of classification rasters being accurate")
   ordered.probs <- terra::app(probs, sort, decreasing = TRUE, 
                               na.last = TRUE)[[1:max(2, nprob)]] %>% 
     terra::mask(mask_layer) %>% 
@@ -219,6 +227,7 @@ summarise <- function(
                                         format = "d", flag = "0"), "_probs"))
   
   # Compute the confusion index on the class probabilities
+  cat("\nGenerating confusion index raster from the class probabilities")
   confusion <- terra::app(ordered.probs, function(x) {
     (1 - (x[[1]] - x[[2]]))
   }, filename = file.path(outputdir, "output", "mostprobable", 
@@ -227,6 +236,7 @@ summarise <- function(
   # Compute Shannon's entropy on the class probabilities
   # See rationale in section 2.5 of Kempen et al. (2009) "Updating the 1:50,000
   # Dutch soil map"
+  cat("\nGenerating Shannon diversity raster (entropy) from the class probabilities")
   shannon <- terra::app(ordered.probs, function(x) {
     -sum(x * (log(x, base = length(x))), na.rm = TRUE)}) %>% 
     terra::mask(mask_layer, filename = file.path(
@@ -234,6 +244,7 @@ summarise <- function(
       paste0(stub, "shannon.tif")), overwrite = TRUE)
   
   # Write ith-most-probable soil class probability raster to file
+  cat("\nWriting probability raster(s)")
   ordered.probs <- terra::subset(ordered.probs, 1:nprob) %>% 
     terra::writeRaster(filename = file.path(
       outputdir, "output", "mostprobable", 
@@ -245,6 +256,9 @@ summarise <- function(
   
   # Save finish time
   output$timing$finish <- base::date()
+  
+  # Reapply default progress bar options
+  terraOptions(progress = readr::parse_number(grep("progress", def_ops, value = TRUE)))
   
   # Return output
   return(output)
