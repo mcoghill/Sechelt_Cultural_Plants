@@ -44,8 +44,6 @@
   covariates, polygons, composition, n.realisations = 100, 
   rate = 15, method.sample = "by_polygon", method.allocate = "weighted") {
   
-  source("./_functions/dsmart_custom/.allocate.R")
-  
   # Need to add cell number to ouput. Easiest way is to create a raster of
   # cell values
   cell <- covariates[[1]] %>% magrittr::set_names("cell")
@@ -147,8 +145,6 @@
 .getStratifiedVirtualSamples <- function(
   covariates, polygons, composition, strata, n.realisations = 100, 
   rate = 15, method.sample = "by_polygon", method.allocate = "weighted") {
-  
-  source("./_functions/dsmart_custom/.allocate.R")
   
   # Make sure composition column names are formatted properly
   if(ncol(composition) == 4) {
