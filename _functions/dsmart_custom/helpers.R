@@ -6,7 +6,7 @@
 #' through \code{.allocate}, allocates each sample to a soil class. See 
 #' \emph{Details} for more information.
 #' 
-#' @param covariates A \code{RasterStack} of \emph{scorpan} environmental 
+#' @param covariates A \code{SpatRaster} of \emph{scorpan} environmental 
 #'   covariates to calibrate the \code{C50} classification trees against. See 
 #'   \emph{Details} for more information.
 #' @param polygons A \code{SpatVector} containing the soil map 

@@ -9,10 +9,10 @@
 #' class probabilities, and the degree of confusion between the most probable 
 #' and second-most-probable soil classes.
 #' 
-#' @param realisations A \code{RasterStack} where each layer contains one 
+#' @param realisations A \code{SpatRaster} where each layer contains one 
 #'   realisation of the soil class distribution across the soil map area, as 
 #'   produced by \code{\link{disaggregate}}. If probabilistic predictions are
-#'   used (\code{type = "prob"}), a list of RasterBrick objects with predicted
+#'   used (\code{type = "prob"}), a list of SpatRaster objects with predicted
 #'   class probabilities must be passed.
 #' @param lookup A two-column \code{data.frame} containing a mapping between the
 #'   integer soil class codes in the layers of \code{realisations}, and the soil
@@ -23,7 +23,7 @@
 #'   soil class code.
 #' @param n.realisations An integer that identifies the number of realisations
 #'   of the soil class distribution that were computed by \code{disaggregate}.
-#'   Default value is \code{raster::nlayers(realisations)}.
+#'   Default value is \code{terra::nlyr(realisations)}.
 #' @param nprob At any location, disaggregated soil class predictions can be 
 #'   ranked according to their probabilities of occurence. \code{rdsmart} can 
 #'   map the class predictions, and their probabilities, at any rank. 
@@ -163,17 +163,11 @@ summarise <- function(
   } else {
     # If probabilistic predictions are used, calculate class probabilities by 
     # averaging the predicted probabilities across the realisations.
-    # If only one realisation is used, no averaging is needed.
     
     # Define layer for masking output NA areas
     mask_layer <- realisations[[1]][[1]]
     if(length(realisations) == 1 | n.realisations == 1) {
-      # keep <- names(realisations[[1]])[!names(realisations[[1]]) %in% "pred"]
-      # probs <- terra::writeRaster(realisations[[1]][[keep]], filename = file.path(
-      #   outputdir, "output", "probabilities", 
-      #   paste0(stub, "prob_", keep, ".tif")), 
-      #   overwrite = TRUE)
-      
+      # If only one realisation is used, no averaging is needed.
       probs <- terra::writeRaster(realisations[[1]], filename = file.path(
         outputdir, "output", "probabilities", 
         paste0(stub, "prob_", names(realisations[[1]]), ".tif")), 

@@ -6,12 +6,12 @@
 #' downscaling, and \code{summarise}, which computes the soil class 
 #' probabilities and n-most-probable soil classes.
 #' 
-#' @param covariates A \code{RasterStack} of \emph{scorpan} environmental 
+#' @param covariates A \code{SpatRaster} of \emph{scorpan} environmental 
 #'   covariates to calibrate the \code{C50} classification trees against. See 
 #'   \emph{Details} for more information.
-#' @param polygons A \code{SpatialPolygonsDataFrame} containing the soil map 
-#'   unit polygons that will be disaggregated. The first field of the data frame
-#'   must be an integer that identifies each polygon.
+#' @param polygons A \code{SpatVector} containing the soil map unit polygons 
+#'   that will be disaggregated. The first field of the data frame must be an 
+#'   integer that identifies each polygon.
 #' @param composition A \code{data.frame} that contains information on the 
 #'   soil-class composition of each polygon in \code{polygons}. Each row 
 #'   contains information about one soil class component of one polygon, which 
@@ -25,7 +25,7 @@
 #'   that the soil class corresponds to. See the example data 
 #'   \code{data(dalrymple_composition)}.
 #'   
-#'   If \code{strata} is a \code{RasterLayer}, third column contains an integer 
+#'   If \code{strata} is a \code{SpatRaster}, third column contains an integer 
 #'   that identifies the stratum in \code{strata}, fourth column contains a code
 #'   that identifies the soil class and fifth column contains a number in the
 #'   range \code{(0, 100)} that identifies the proportion of the
@@ -60,7 +60,7 @@
 #' @param args.model A list of arguments to be passed to the caret::train function.
 #'   The list can include a trainControl object, arguments to be passed directly
 #'   to the train function and arguments to be passed to the predictive model.
-#' @param strata \emph{optional} An integer-valued \code{RasterLayer} that will 
+#' @param strata \emph{optional} An integer-valued \code{SpatRaster} that will 
 #'   be used to stratify the allocation of virtual samples to soil classes. 
 #'   Integer values could represent classes of slope position (e.g. crest, 
 #'   backslope, footslope, etc.) or land use (e.g. cropland, native vegetation, 

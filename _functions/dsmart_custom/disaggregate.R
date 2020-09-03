@@ -12,7 +12,7 @@
 #' There is no prescription for the layers that compose \code{covariates} other
 #' than that they should represent the \emph{scorpan} factors (McBratney
 #' \emph{et al.}, 2003) as effectively as possible. The order of the layers in
-#' the RasterStack is not important. See \code{data(dsT_covariates)} for an
+#' the SpatRaster is not important. See \code{data(dsT_covariates)} for an
 #' example.
 #'
 #' DSMART assumes, but does not currently check, that \code{covariates},
@@ -31,12 +31,12 @@
 #' the \code{realisations} subfolder and the classification models are saved
 #' into the \code{models} subfolder.
 #'
-#' @param covariates A \code{RasterStack} of \emph{scorpan} environmental
+#' @param covariates A \code{SpatRaster} of \emph{scorpan} environmental
 #'   covariates to calibrate the \code{C50} classification trees against. See
 #'   \emph{Details} for more information.
-#' @param polygons A \code{SpatialPolygonsDataFrame} containing the soil map
-#'   unit polygons that will be disaggregated. The first field of the data frame
-#'   must be an integer that identifies each polygon.
+#' @param polygons A \code{SpatVector} containing the soil map unit polygons 
+#'   that will be disaggregated. The first field of the data frame must be an 
+#'   integer that identifies each polygon.
 #' @param composition A \code{data.frame} that contains information on the
 #'   soil-class composition of each polygon in \code{polygons}. Each row
 #'   contains information about one soil class component of one polygon, which
@@ -50,7 +50,7 @@
 #'   that the soil class corresponds to. See the example data
 #'   \code{data(dalrymple_composition)}.
 #'
-#'   If \code{strata} is a \code{RasterLayer}, third column contains an integer
+#'   If \code{strata} is a \code{SpatRaster}, third column contains an integer
 #'   that identifies the stratum in \code{strata}, fourth column contains a code
 #'   that identifies the soil class and fifth column contains a number in the
 #'   range \code{(0, 100)} that identifies the proportion of the
@@ -86,7 +86,7 @@
 #'   function. The list can include a trainControl object, arguments to be
 #'   passed directly to the train function and arguments to be passed to the
 #'   predictive model.
-#' @param strata \emph{optional} An integer-valued \code{RasterLayer} that will
+#' @param strata \emph{optional} An integer-valued \code{SpatRaster} that will
 #'   be used to stratify the allocation of virtual samples to soil classes.
 #'   Integer values could represent classes of slope position (e.g. crest,
 #'   backslope, footslope, etc.) or land use (e.g. cropland, native vegetation,
@@ -100,8 +100,8 @@
 #' @param factors A character vector with the names of the covariates that
 #'   should be treated as factors.
 #' @param prob A character vector to specify the type of the predictions. By
-#'   default, raw class predictions are used. If set to "prob", a rasterbrick
-#'   with class probabilities will be produced for each realisation.
+#'   default, raw class predictions are used. If set to "prob", a multiband
+#'   SpatRaster with class probabilities will be produced for each realisation.
 #'
 #' @return A list that contains metadata about the current run of
 #'   \code{disaggregate}.
@@ -124,13 +124,7 @@
 #' @references McBratney, A.B., Mendonca Santos, M. de L., Minasny, B., 2003. On
 #'   digital soil mapping. Geoderma 117, 3--52. doi:
 #'   \href{http://dx.doi.org/10.1016/S0016-7061(03)00223-4}{10.1016/S0016-7061(03)00223-4}
-#'
-#'
-#'
-#'
-#'
-#'
-#'
+#'   
 #'   Odgers, N.P., McBratney, A.B., Minasny, B., Sun, W., Clifford, D., 2014.
 #'   DSMART: An algorithm to spatially disaggregate soil map units, \emph{in:}
 #'   Arrouays, D., McKenzie, N.J., Hempel, J.W., Richer de Forges, A.,
