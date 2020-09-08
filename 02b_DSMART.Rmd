@@ -45,7 +45,7 @@ dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
 
 include_bgc <- FALSE
 use_caret <- TRUE
-run <- "struct_stg" # option of "struct_stg" or "site_ser"
+run <- "struct_stg" # option of "struct_stg" or "site_ser" or "struct_stg_simple"
 
 ```
 
@@ -75,7 +75,7 @@ if(nrow(cov_check) != nlyr(covariates))
   covariates <- subset(covariates, cov_check$layer)
 
 # Load the polygons and associated observations
-polygons <- terra::vect(file.path(dsmart_dir, "inputs", paste0(
+polygons <- terra::vect(file.path(paste0(dsmart_dir, "_", run), "inputs", paste0(
   "dsmart_", run, "_polys.gpkg")))
 
 if(include_bgc) {
@@ -100,7 +100,7 @@ if(include_bgc) {
   
   # File needs to be written to disk and then reloaded back into R for proper 
   # feature assignments
-  bgc_rast <- writeRaster(bgc_rast, file.path(dsmart_dir, "inputs", "bgc.tif"), 
+  bgc_rast <- writeRaster(bgc_rast, file.path(paste0(dsmart_dir, "_", run), "inputs", "bgc.tif"), 
                           overwrite = TRUE, wopt = list(datatype = "INT2S"))
   covariates <- c(covariates, bgc_rast)
   factors <- "bgc"
@@ -110,10 +110,10 @@ if(include_bgc) {
 }
 
 # Load TEM composition and additional observations
-composition <- read.csv(file.path(dsmart_dir, "inputs", paste0(
+composition <- read.csv(file.path(paste0(dsmart_dir, "_", run), "inputs", paste0(
   "dsmart_", run, "_composition.csv"))) %>% 
     dplyr::select(-Subzone)
-observations <- read.csv(file.path(dsmart_dir, "inputs", paste0(
+observations <- read.csv(file.path(paste0(dsmart_dir, "_", run), "inputs", paste0(
   "dsmart_", run, "_observations.csv")))
 
 ```

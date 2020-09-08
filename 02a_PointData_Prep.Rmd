@@ -835,3 +835,42 @@ st_write(struct_stg, file.path(pto, "struct_stg_pts.gpkg"),
 
 ```
 
+After an initial DSMART run on the structural stage, I was not very satisfied with the results. I believe that there were too few samples from certain categories, so I will instead lump groups together (e.g.: 3a and 3b will simply become 3)
+
+```{r Simple structural stage}
+
+dsmart_struct_stg_polys <- dsmart_struct_stg_polys %>% 
+  dplyr::mutate(across(starts_with("ss"), as.character)) %>% 
+  dplyr::mutate(across(starts_with("ss"), function(x) {
+    ifelse(
+    x %in% c("X1a", "X1b", "X1c"), "X1", ifelse(
+      x %in% c("X2a", "X2b", "X2c", "X2d"), "X2", ifelse(
+        x %in% c("X3a", "X3b"), "X3", x)))}))
+
+dsmart_struct_stg_composition <- dsmart_struct_stg_composition %>% 
+  dplyr::mutate(ss = as.character(ss)) %>% 
+  dplyr::mutate(ss = ifelse(
+    ss %in% c("X1a", "X1b", "X1c"), "X1", ifelse(
+      ss %in% c("X2a", "X2b", "X2c", "X2d"), "X2", ifelse(
+        ss %in% c("X3a", "X3b"), "X3", ss)))) %>% 
+  dplyr::mutate(ss = as.factor(ss))
+
+dsmart_struct_stg_observations <- dsmart_struct_stg_observations %>% 
+  dplyr::mutate(StructuralStage = as.character(StructuralStage)) %>% 
+  dplyr::mutate(StructuralStage = ifelse(
+    StructuralStage %in% c("X1a", "X1b", "X1c"), "X1", ifelse(
+      StructuralStage %in% c("X2a", "X2b", "X2c", "X2d"), "X2", ifelse(
+        StructuralStage %in% c("X3a", "X3b"), "X3", StructuralStage)))) %>% 
+  dplyr::mutate(StructuralStage = as.factor(StructuralStage))
+
+# Write data outputs
+dso <- file.path(paste0(dsmart_dir, "_struct_stg_simple"), "inputs")
+dir.create(dso, recursive = TRUE, showWarnings = FALSE)
+
+st_write(dsmart_struct_stg_polys, file.path(dso, paste0("dsmart_struct_stg_simple_polys.gpkg")), 
+  delete_layer = TRUE, quiet = TRUE)
+sapply(c("dsmart_struct_stg_simple_composition", "dsmart_struct_stg_simple_observations"), function(x) write.csv(
+  eval(parse(text = x)), file.path(dso, paste0(x, ".csv")), row.names = FALSE))[0]
+
+```
+
