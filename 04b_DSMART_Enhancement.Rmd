@@ -5,3 +5,172 @@ date: "9/8/2020"
 output: html_document
 ---
 
+```{r Load Packages}
+
+ls <- c("tidyverse", "terra", "sf", "raster", "foreach", "caret", "ranger", 
+        "GSIF", "gdalUtils", "MLmetrics")
+new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+if(length(new.packages))
+  install.packages(new.packages)
+
+# Make sure terra package is up to date! This may take a moment
+if(compareVersion(as.character(packageVersion("terra")), "0.7-4") < 0)
+  install.packages("terra")
+lapply(ls, library, character.only = TRUE)[0]
+rm(ls, new.packages)
+
+# Load custom DSMART files
+source("./_functions/dsmart_custom/dsmart.R")
+
+```
+
+
+
+```{r Set directories}
+
+AOI <- "Sechelt"
+AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
+map_res <- 4
+
+shapes_path <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
+covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
+pto <- file.path(AOI_dir, "1_map_inputs", "field_data", "processed")
+
+include_bgc <- FALSE
+use_caret <- TRUE
+run <- "site_ser" # option of "struct_stg" or "site_ser"
+dsmart_dir <- file.path(AOI_dir, "1_map_inputs", paste0("dsmart_", run))
+
+```
+
+
+
+```{r Load 2020 data}
+
+# Load covariates
+res_folder <- paste0(map_res, "m")
+terrain_covariates <- grep(pattern = "normal|sentinel2", list.files(
+  file.path(covariate_dir, res_folder), full.names = TRUE, pattern = ".tif$"), invert = TRUE, 
+  value = TRUE)
+sentinel_covariates <- list.files(file.path(covariate_dir, res_folder), 
+                                  pattern = "^sentinel2.*.2019.tif$", full.names = TRUE)
+climate_covariates <- list.files(file.path(covariate_dir, res_folder), 
+                                 pattern = "^normal_1981_2010y", full.names = TRUE)
+covariates <- terra::rast(c(terrain_covariates, sentinel_covariates, climate_covariates))
+
+# Preliminary check of covariate data to eliminate any outlying rasters containing
+# less data than normal
+cov_check <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
+  new <- subset(covariates, i) * 0
+  data.frame(layer = names(new), 
+             data_cells = data.frame(freq(new))$count)
+} %>% dplyr::filter(data_cells >= 0.95 * median(.$data_cells))
+if(nrow(cov_check) != nlyr(covariates)) 
+  covariates <- subset(covariates, cov_check$layer)
+
+# Load the polygons and associated observations
+polygons <- terra::vect(file.path(dsmart_dir, "inputs", paste0(
+  "dsmart_", run, "_polys.gpkg")))
+
+if(include_bgc) {
+  bgc <- st_read(file.path(shapes_path, res_folder, "bec.gpkg"), quiet = TRUE) %>% 
+    mutate(MAP_LABEL = as.factor(MAP_LABEL), bgc = as.numeric(as.factor(MAP_LABEL))) 
+  tem_geom <- st_geometry(bgc)
+  
+  # Fix geometries that aren't polygon/multipolygon
+  for(i in 1:length(tem_geom)) {
+    if(!st_geometry_type(tem_geom[[i]]) %in% c("POLYGON", "MULTIPOLYGON")) 
+      tem_geom[[i]] <- st_collection_extract(tem_geom[[i]], "POLYGON") %>% 
+        st_multipolygon()
+  }
+  st_geometry(bgc) <- st_cast(tem_geom, "MULTIPOLYGON")
+  
+  level_table <- unique.data.frame(data.frame(
+    label = as.character(bgc$MAP_LABEL), 
+    value = as.numeric(bgc$MAP_LABEL)))
+  
+  bgc_rast <- as.factor(terra::rasterize(vect(bgc), covariates[[1]], field = "bgc"))
+  levels(bgc_rast) <- level_table
+  
+  # File needs to be written to disk and then reloaded back into R for proper 
+  # feature assignments
+  bgc_rast <- writeRaster(bgc_rast, file.path(paste0(dsmart_dir, "_", run), "inputs", "bgc.tif"), 
+                          overwrite = TRUE, wopt = list(datatype = "INT2S"))
+  covariates <- c(covariates, bgc_rast)
+  factors <- "bgc"
+  
+} else {
+  factors <- NULL
+}
+
+composition <- read.csv(file.path(dsmart_dir, "inputs", paste0(
+  "dsmart_", run, "_composition.csv"))) %>% 
+    dplyr::select(-Subzone)
+
+# From 2019, the difference here is that this contains additional observations
+observations <- st_read(file.path(pto, paste0("2020_", run, "_pts.gpkg")), quiet = TRUE) %>% 
+  cbind(st_coordinates(.)) %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(X, Y, everything())
+
+```
+
+
+
+```{r Editing the dsmart functions}
+
+# Note: for randomForest model method, you only need to have the mtry defined in 
+# the tuneGrid part. Also note that if class probabilities are requested, the 
+# value needs to be changed to TRUE and "type" in the disaggregate function 
+# needs to be changed to "prob".
+if(use_caret) {
+  method.model <- "ranger"
+  args.model <- list(
+    trControl = trainControl(
+      method = "repeatedcv", 
+      number = 10, 
+      repeats = 5, 
+      classProbs = TRUE,
+      returnData = FALSE,
+      returnResamp = "final",
+      savePredictions = "final",
+      summaryFunction = multiClassSummary, # Adds a suite of performance metrics to the output
+      allowParallel = TRUE),
+    tuneGrid = expand.grid(
+      mtry = floor(sqrt(nlyr(covariates))), # Default random forest options
+      min.node.size = 1,
+      splitrule = "gini"
+    )
+  )
+} else {
+  method.model <- NULL
+  args.model <- NULL
+}
+outputdir <- file.path(dirname(dsmart_dir), paste0("2020_", basename(dsmart_dir)))
+dir.create(outputdir, recursive = TRUE, showWarnings = FALSE)
+
+dsm <- dsmart(
+  covariates = covariates, 
+  polygons = polygons, 
+  composition = composition,
+  rate = 5, # How many samples to draw per polygon
+  reals = 5, # How many models to produce from the modeling run? Gets overridden by number of repeats if caret package is used with repeated cross validation
+  observations = observations, 
+  method.sample = "by_polygon", 
+  method.allocate = "weighted",
+  method.model = method.model,
+  args.model = args.model,
+  outputdir = outputdir, 
+  factors = factors,
+  type = "prob", 
+  nprob = 1
+)
+
+# Save the file to a better location
+out <- rast(list.files(dsm$summarise$locations$mostprobable, 
+                       pattern = "mostprob_01_class", full.names = TRUE)) %>% 
+  magrittr::set_names(paste0(run, "_dsmart")) %>% 
+  writeRaster(file.path(outputdir, paste0(run, "_dsmart.tif")), 
+              overwrite = TRUE, wopt = list(datatype = "INT2S"))
+
+```
