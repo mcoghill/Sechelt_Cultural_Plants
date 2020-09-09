@@ -1,0 +1,391 @@
+---
+title: "04c_Model_Enhancement"
+author: "Matt"
+date: "9/9/2020"
+output: html_document
+---
+
+```{r Load Packages}
+
+ls <- c("tidyverse", "tools", "terra", "sf", "ranger", "mlr3verse", "parallel", 
+        "parallelMap", "randomForest", "ModelMap", "foreach", "gdalUtils")
+new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+if(length(new.packages))
+  install.packages(new.packages)
+lapply(ls, library, character.only = TRUE)[0]
+rm(ls, new.packages)
+
+source("./_functions/model_gen_mlr3.R")
+source("./_functions/predict_landscape_mlr3.R")
+
+```
+
+
+
+```{r Define directories}
+
+AOI <- "Sechelt"
+AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
+map_res <- 4
+
+input_dir <- file.path("./Sechelt_AOI/1_map_inputs/field_data/processed")
+covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
+dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
+output_dir <- file.path(AOI_dir, "2_map_predictions")
+tile_dir <- file.path(output_dir, "tiles")
+dir.create(tile_dir, showWarnings = FALSE)
+dir.create(file.path(output_dir, "pres_abs_predictions"), showWarnings = FALSE)
+dir.create(file.path(output_dir, "cover_predictions"), showWarnings = FALSE)
+
+```
+
+
+
+```{r Load data}
+
+# List of processing options...
+res_folder <- paste0(map_res, "m")
+temporal <- c("annual") # either or both of annual and seasonal
+ss <- c("simple", "dsmart", NA) # any of simple, dsmart, and/or NA
+probabilities <- c(TRUE, FALSE) # Use probabilites or classification
+bgc <- c(TRUE, FALSE) # Whether or not to use classified BGC subzone layer
+climate_vars <- c(TRUE, FALSE) # TRUE, FALSE
+perms <- expand.grid(
+  temporal = c(temporal, paste0(temporal, collapse = ", ")), 
+  ss = ss, 
+  probabilities = c(probabilities, paste0(probabilities, collapse = ", ")),
+  bgc = bgc, 
+  climate_vars = climate_vars, 
+  stringsAsFactors = FALSE) %>% 
+  mutate(probabilities = ifelse(is.na(ss), NA, probabilities)) %>% 
+  distinct()
+
+# Raster covariates
+terrain_covariates <- grep(pattern = "normal|sentinel2", list.files(
+  file.path(covariate_dir, res_folder), full.names = TRUE, pattern = ".tif$"), 
+  invert = TRUE, value = TRUE)
+
+if("annual" %in% temporal && "seasonal" %in% temporal) {
+  s_pattern <- "sentinel2.*..tif$"
+  c_pattern <- "normal.*..tif$"
+} else if("annual" %in% temporal && !"seasonal" %in% temporal) {
+  s_pattern <- "sentinel2.*.2019.tif$"
+  c_pattern <- "normal(?!.*(_at.tif|_sm.tif|_sp.tif|_wt.tif))"
+} else if(!"annual" %in% temporal && "seasonal" %in% temporal) {
+  s_pattern <- "sentinel2.*.(fall.tif|spring.tif|summer.tif|winter.tif)"
+  c_pattern <- "normal.*.(_at.tif|_sm.tif|_sp.tif|_wt.tif)"
+}
+
+sentinel_covariates <- grep(file.path(covariate_dir, res_folder, s_pattern), 
+                            list.files(file.path(covariate_dir, res_folder), full.names = TRUE), 
+                            value = TRUE, perl = TRUE)
+
+climate_covariates <- if(any(climate_vars)) {
+  grep(file.path(covariate_dir, res_folder, c_pattern),
+       list.files(file.path(covariate_dir, res_folder), full.names = TRUE), 
+       value = TRUE, perl = TRUE)
+} else NULL
+
+bgc_layer <- if(any(bgc)) {
+  file.path(dsmart_dir, "inputs", "bgc.tif")
+} else NULL
+
+# There are 2 sources of site series calls: simple and DSMART. under both of those,
+# there are class outputs and probabilities. We need to create model permutations
+# for each scenario
+if(!all(is.na(ss))) {
+  site_series <- c(
+    rast(file.path(dsmart_dir, "simple", "site_series_simple.tif")) %>% 
+      magrittr::set_names("simple_ss_class"),
+    rast(grep(
+      "site_series_simple.tif", 
+      list.files(file.path(dsmart_dir, "simple"), full.names = TRUE),
+      invert = TRUE, value = TRUE)) %>% 
+      magrittr::set_names(paste0("simple_ss_", names(.))),
+    rast(file.path(dsmart_dir, "output", "realisations", "realisation_1.tif")) %>% 
+      magrittr::set_names("dsmart_ss_class"),
+    rast(list.files(
+      file.path(dsmart_dir, "output", "probabilities"), full.names = TRUE)) %>% 
+      magrittr::set_names(paste0("dsmart_ss_probability_", names(.))))
+  
+  # Create filter based on ss and bgc variables
+  ss_pattern <- grep(ifelse(length(probabilities) > 1, "probability|class", 
+                            ifelse(probabilities, "probability", "class")),
+                     grep(paste0(ss, collapse = "|"), names(site_series), value = TRUE), 
+                     value = TRUE)
+  site_series <- subset(site_series, ss_pattern)
+} else site_series <- NULL
+
+# Combine all covariates
+covariates <- c(rast(c(terrain_covariates, sentinel_covariates, 
+                       climate_covariates, bgc_layer)),
+                site_series)
+
+# Find the best masking layer to use in the predict_landscape algorithm
+mask_layers <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
+    cat(paste0("Counting NA values in ", names(covariates[[i]]), 
+               " [", i, " of ", nlyr(covariates), "]\n"))
+    new <- subset(covariates, i) * 0
+    data.frame(layer = names(new), 
+               data_cells = data.frame(freq(new))$count)
+  } %>% arrange(desc(data_cells))
+
+# Attributed point data - limit to only CORNCAN and RUBUSPE
+pres_abs_points <- sapply(c("CORNCAN", "RUBUSPE"), function(x) {
+  st_read(file.path(input_dir, "pres_abs.gpkg"), layer = x, quiet = TRUE) %>% 
+    cbind(st_coordinates(.)) %>% 
+    {if(!is.null(site_series)) {
+      cbind(., terra::extract(site_series, st_coordinates(.)))
+    } else .} %>% 
+    {if(!is.null(bgc_layer)) {
+      cbind(., terra::extract(rast(bgc_layer), st_coordinates(.)))
+    } else .} %>% 
+    st_drop_geometry() %>%
+    mutate_at(vars(one_of("Pres", "simple_ss_class", "dsmart_ss_class", "bgc")), as.factor) %>%
+    dplyr::select(Pres, names(covariates), X, Y)
+  }, simplify = FALSE, USE.NAMES = TRUE)
+
+cover_points <- sapply(c("CORNCAN", "RUBUSPE"), function(x) {
+  st_read(file.path(input_dir, "cover.gpkg"), layer = x, quiet = TRUE) %>% 
+    cbind(st_coordinates(.)) %>% 
+    {if(!is.null(site_series)) {
+      cbind(., terra::extract(site_series, st_coordinates(.)))
+    } else .} %>% 
+    {if(!is.null(bgc_layer)) {
+      cbind(., terra::extract(rast(bgc_layer), st_coordinates(.)))
+    } else .} %>% 
+    st_drop_geometry() %>% 
+    mutate_at(vars(one_of("simple_ss_class", "dsmart_ss_class", "bgc")), as.factor) %>%
+    dplyr::select(Cover, names(covariates), X, Y)
+  }, simplify = FALSE, USE.NAMES = TRUE)
+
+# Create list of variable names to be selected 
+var_list <- foreach(i = 1:nrow(perms), .combine = c) %do% {
+  
+  # Generate output ID
+  id <- paste0(
+    
+    if(perms[i, "bgc"]) {
+      "_bec_"
+    } else "_",
+    
+    if(perms[i, "temporal"] == "annual, seasonal") {
+      "ann_seas_"
+    } else if(perms[i, "temporal"] == "annual") {
+      "annual_"
+    } else if(perms[i, "temporal"] == "seasonal") "seasonal_",
+    
+    if(perms[i, "climate_vars"]) {
+      "climate_"
+    } else NULL,
+    
+    if(!is.na(perms[i, "ss"])) {
+      paste0(perms[i, "ss"], "_", ifelse(
+        length(unlist(strsplit(perms[i, "probabilities"], split = "[, ]"))) > 1,
+        "probs_class", ifelse(perms[i, "probabilities"], "probs", "class")))
+    } else "no_ss")
+  
+  # Use character matching to select layers used in each model permutation
+  filtered_data <- lapply(pres_abs_points[1], function(x) {
+    variables <- c(
+      basename(tools::file_path_sans_ext(terrain_covariates)), 
+      if("annual" %in% unlist(strsplit(perms[i, "temporal"], split = "[, ]"))) {
+        c(grep("sentinel2.*.2019", names(x), value = TRUE),
+          grep("normal(?!.*(_at|_sm|_sp|_wt))", names(x), value = TRUE, perl = TRUE))
+      },
+      if("seasonal" %in% unlist(strsplit(perms[i, "temporal"], split = "[, ]"))) {
+        c(grep("sentinel2.*.(fall|spring|summer|winter)", names(x), value = TRUE), 
+          grep("normal.*.(_at|_sm|_sp|_wt)", names(x), value = TRUE, perl = TRUE))
+      },
+      
+      if(!is.na(perms[i, "ss"])) {
+        grep(ifelse(
+          length(unlist(strsplit(perms[i, "probabilities"], split = "[, ]"))) > 1, 
+          "probability|class", ifelse(perms[i, "probabilities"], "probability", "class")), 
+          grep(perms[i, "ss"], names(x), value = TRUE), 
+          value = TRUE)
+      },
+      
+      if(perms[i, "bgc"]) "bgc"
+    )
+    if(!perms[i, "climate_vars"]) {
+      variables <- variables[!startsWith(variables, "normal")]
+    }
+    return(variables)
+  }) %>% magrittr::set_names(id)
+}
+
+```
+
+
+
+```{r mlr3 Presence probability modelling}
+
+# Create the list of input datasets
+pres_abs <- foreach(i = names(var_list)) %do% {
+  lapply(pres_abs_points, function(x) {
+    x %>% dplyr::select(all_of(c("Pres", var_list[[i]], "x", "y"))) %>% 
+      drop_na() %>% 
+      dplyr::rename(x = X, y = Y)
+  }) %>% magrittr::set_names(paste0(names(.), i))
+} %>% unlist(recursive = FALSE)
+
+# Write input data
+dir_out <- file.path(output_dir, "pres_abs_predictions")
+dir.create(dir_out, showWarnings = FALSE, recursive = TRUE)
+lapply(names(pres_abs), function(x) {
+  y <- st_as_sf(pres_abs[[x]], coords = c("X", "Y"), crs = crs(covariates))
+  st_write(y, file.path(dir_out, paste0("pres_abs_input_data.gpkg")), 
+           layer = x, delete_layer = TRUE)
+})[0]
+
+# To save a bit of memory and in order to see results as they are generated, 
+# iterate through the list of input data to model and predict
+# REDO 1:16
+for(i in 1:length(pres_abs)) {
+  
+  dir_out <- file.path(output_dir, "pres_abs_predictions", names(pres_abs[i]))
+  dir.create(dir_out, showWarnings = FALSE)
+  
+  # Create models for each dataset. Each model is a 10-fold spatial cross validation
+  # repeated 5 times.
+  pres_models <- model_gen_mlr3(traindat = pres_abs[i], target = "Pres", 
+                                     feature_selection = "filter", type = "prob")
+  
+  # Extract and write performance metrics
+  pres_performance <- sapply(names(pres_models$learners), function(x) {
+    
+    tune_results <- data.frame(
+      filter_fraction = sapply(pres_models$learners[[x]]$archive()$tune_x, function(y)
+        y[[1]]), 
+      classif.ce = pres_models$learners[[x]]$archive()$classif.ce
+    ) %>% dplyr::arrange(classif.ce)
+    
+    confusion <- as.data.frame(
+      pres_models$learners[[x]]$model$tuning_instance$best()$prediction()$confusion)
+    
+    # There were no rep and fold ID's in the table so I had to create them from scratch
+    test_data <- cbind(
+      pres_models$learners[[x]]$model$tuning_instance$best()$data$resampling[[1]]$instance %>% 
+        dplyr::arrange(row_id), 
+      pres_models$learners[[x]]$model$tuning_instance$best()$prediction()$data$tab %>% 
+        dplyr::arrange(row_id) %>% 
+        dplyr::select(-row_id)
+    )
+    
+    imp <- data.frame(importance = pres_models$learners[[x]]$learner$model$importance$scores) %>% 
+      rownames_to_column("layer") %>% 
+      dplyr::filter(layer %in% pres_models$learners[[x]]$learner$model$importance$features) %>% 
+      arrange(desc(importance))
+    
+    out <- utils::capture.output(pres_models$learners[[x]]$learner$model$classif.ranger$model)
+    best_model <- pres_models$learners[[x]]$learner$model$classif.ranger$model
+    
+    write.csv(tune_results, file = file.path(dir_out, paste0(x, "_pres_abs_tune_results.csv")),
+              row.names = FALSE)
+    cat(out, file = file.path(dir_out, paste0(x, "_pres_abs_model.txt")), sep = "\n")
+    save(best_model, file = file.path(dir_out, paste0(x, "_pres_abs_model.RData")))
+    write.csv(test_data, file = file.path(dir_out, paste0(x, "_pres_abs_model_resampling.csv")), 
+              row.names = FALSE)
+    write.csv(confusion, file = file.path(dir_out, paste0(x, "_pres_abs_confusion.csv")), 
+              row.names = FALSE)
+    write.csv(imp, file.path(dir_out, paste0(x, "_pres_abs_var_importance.csv")), 
+              row.names = FALSE)
+    write.csv(pres_abs[i][[x]], file.path(dir_out, paste0(x, "_pres_abs_input_data.csv")), 
+              row.names = FALSE)
+    
+    return(list(
+      tune_results = tune_results,
+      best_model = best_model, 
+      resampling = test_data,
+      confusion = confusion,
+      importance = imp
+    ))
+    
+  }, simplify = FALSE, USE.NAMES = TRUE)
+  
+  # Run the map predictions
+  pres_abs_predictions <- sapply(names(pres_models$learners), function(x) {
+    
+    cov_sub <- subset(covariates, pres_models$tasks[[x]]$col_roles$feature)
+    
+    for(j in 1:nrow(mask_layers)) {
+      if(mask_layers[j, "layer"] %in% names(cov_sub)) {
+        pred_mask <- mask_layers[j, "layer"]
+        break
+      }
+    }
+    
+    out <- predict_landscape_mlr3(
+      learner = pres_models$learners[[x]],
+      task = pres_models$tasks[[x]], 
+      type = "prob",
+      covariates = cov_sub,
+      tilesize = 500, 
+      outDir = tile_dir, 
+      mask_layer = pred_mask
+    )
+    
+    # with predict_landscape_mlr3 type set to "prob", the output is a list of files
+    for(j in out) {
+      file.copy(
+        from = j,
+        to = file.path(dir_out, paste0(x, "_", basename(j))),
+        overwrite = TRUE)
+    }
+    return(out)
+  }, simplify = FALSE, USE.NAMES = TRUE)
+}
+
+# Using the available cover model results, find the best models for each species
+# First, collect all of that data together and then use an upper percentile or top
+# number of models from the entire collection for a single species
+best_model_sets <- foreach(x = c("CORNCAN", "RUBUSPE"), .combine = rbind) %do% {
+  
+  sp_dirs <- dir(file.path(output_dir, "pres_abs_predictions"), pattern = x, 
+                 full.names = TRUE)
+  
+  result_list <- foreach(i = sp_dirs, .combine = rbind) %do% {
+    
+    read.csv(file.path(i, list.files(i, pattern = "_tune_results.csv$"))) %>% 
+      dplyr::slice(which.min(classif.ce)) %>% 
+      mutate(model = basename(i))
+  } %>% arrange(classif.ce)
+}
+
+write.csv(best_model_sets, file.path(output_dir, "pres_abs_predictions", "model_performance_index.csv"), 
+          row.names = FALSE)
+
+```
+
+
+
+```{r Zonal statistics}
+
+# Using the dsmart TEM as the zonal layer, run zonal statistics for each map model
+site_series_t <- rast(file.path(dsmart_dir, "output", "realisations", "realisation_1.tif")) %>% 
+      magrittr::set_names("dsmart_ss_class")
+dsmart_lookup <- read.csv(file.path(dsmart_dir, "output", "lookup.txt"))
+
+pres_zonal <- sapply(list.dirs(
+  file.path(output_dir, "pres_abs_predictions"), 
+  full.names = FALSE)[-1], function(x) {
+    
+    t <- rast(file.path(output_dir, "pres_abs_predictions", x, paste0(x, "_TRUE.tif")))
+    zonal_stats <- cbind(
+      zonal(t, site_series_t, fun = "mean", na.rm = TRUE), 
+      min = zonal(t, site_series_t, fun = "min", na.rm = TRUE)[, names(t)], 
+      max = zonal(t, site_series_t, fun = "max", na.rm = TRUE)[,  names(t)],
+      sd = zonal(t, site_series_t, fun = "sd", na.rm = TRUE)[,  names(t)]) %>% 
+      merge(dsmart_lookup, by.x = "zone", by.y = "code") %>% 
+      dplyr::rename_at(vars(names(t), name), ~c("mean", "site_series")) %>% 
+      dplyr::select(site_series, mean, min, max, sd)
+    
+    write.csv(zonal_stats, file.path(
+      output_dir, "pres_abs_predictions", x, paste0(x, "_pres_abs_zonal_stats.csv")), 
+      row.names = FALSE)
+    return(zonal_stats)
+  }, simplify = FALSE, USE.NAMES = TRUE
+)
+
+```
