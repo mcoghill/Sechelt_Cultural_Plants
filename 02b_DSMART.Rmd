@@ -41,11 +41,11 @@ map_res <- 4
 
 shapes_path <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
-dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
 
 include_bgc <- FALSE
 use_caret <- TRUE
-run <- "struct_stg" # option of "struct_stg" or "site_ser" or "struct_stg_simple"
+run <- "site_ser" # option of "struct_stg" or "site_ser" or "struct_stg_simple"
+dsmart_dir <- file.path(AOI_dir, "1_map_inputs", paste0("dsmart_", run))
 
 ```
 
@@ -75,7 +75,7 @@ if(nrow(cov_check) != nlyr(covariates))
   covariates <- subset(covariates, cov_check$layer)
 
 # Load the polygons and associated observations
-polygons <- terra::vect(file.path(paste0(dsmart_dir, "_", run), "inputs", paste0(
+polygons <- terra::vect(file.path(dsmart_dir, "inputs", paste0(
   "dsmart_", run, "_polys.gpkg")))
 
 if(include_bgc) {
@@ -100,7 +100,7 @@ if(include_bgc) {
   
   # File needs to be written to disk and then reloaded back into R for proper 
   # feature assignments
-  bgc_rast <- writeRaster(bgc_rast, file.path(paste0(dsmart_dir, "_", run), "inputs", "bgc.tif"), 
+  bgc_rast <- writeRaster(bgc_rast, file.path(dsmart_dir, "inputs", "bgc.tif"), 
                           overwrite = TRUE, wopt = list(datatype = "INT2S"))
   covariates <- c(covariates, bgc_rast)
   factors <- "bgc"
@@ -110,10 +110,10 @@ if(include_bgc) {
 }
 
 # Load TEM composition and additional observations
-composition <- read.csv(file.path(paste0(dsmart_dir, "_", run), "inputs", paste0(
+composition <- read.csv(file.path(dsmart_dir, "inputs", paste0(
   "dsmart_", run, "_composition.csv"))) %>% 
     dplyr::select(-Subzone)
-observations <- read.csv(file.path(paste0(dsmart_dir, "_", run), "inputs", paste0(
+observations <- read.csv(file.path(dsmart_dir, "inputs", paste0(
   "dsmart_", run, "_observations.csv")))
 
 ```
@@ -129,7 +129,7 @@ if(run == "site_ser") {
   # tem_sf <- st_read(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), quiet = TRUE) %>% 
   #   mutate(MapUnit1 = as.factor(MapUnit1))
   
-  tem <- terra::vect(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"))
+  tem <- terra::vect(file.path(dsmart_dir, "inputs", paste0("dsmart_", run, "_polys.gpkg")))
   tem$MapUnit1_num <- as.numeric(as.factor(tem$MapUnit1))
   tem_rast <- terra::rasterize(tem, covariates[[1]], field = "MapUnit1_num", 
                                filename = file.path(dsmart_dir, "simple", "site_series_simple.tif"), 
@@ -223,7 +223,7 @@ out <- rast(list.files(dsm$summarise$locations$mostprobable,
 
 ```
 
-USING RANGER METHOD, TOOK A TOTAL OF 6 HOURS TO COMPLETE
+USING RANGER METHOD, TOOK A TOTAL OF 2 HOURS TO COMPLETE
 
 Finally, we need to run the algorithm. This version of DSMART has implementation allowing the use of the caret package to make models, and that functionality is leveraged here. We will use a parallelized implementation of Random Forest modelling in order to predict site series fore each pixel.
 
