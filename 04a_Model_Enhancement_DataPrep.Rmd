@@ -1,5 +1,5 @@
 ---
-title: "04_Model_Enhancement_DataPrep"
+title: "04a_Model_Enhancement_DataPrep"
 author: "Matt"
 date: "8/25/2020"
 output: html_document
@@ -37,6 +37,9 @@ field_data_dir <- file.path(AOI_dir, "1_map_inputs", "field_data")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
 dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
 out_path <- file.path(AOI_dir, "2_map_predictions")
+
+aoi_sf <- st_read(file.path(shapes_path, paste0(map_res, "m"), "aoi.gpkg"), quiet = TRUE) %>% 
+  st_geometry() %>% st_make_valid() %>% st_set_crs(3005)
 
 ```
 
@@ -107,10 +110,10 @@ plant_expand <- foreach(i = unique(bgc_merge$Point.ID), .combine = rbind) %do% {
 } %>% dplyr::rename(point_id = Point.ID)
 
 # Use a list of dataframes for each plant species
-plant_data <- lapply(plant_list, function(x) {
+plant_data <- lapply(unique(plant_expand$Species), function(x) {
   dplyr::filter(plant_expand, Species == x) %>% 
     dplyr::select(point_id, Lat, Long, Pres)
-}) %>% magrittr::set_names(plant_list) %>% 
+}) %>% magrittr::set_names(unique(plant_expand$Species)) %>% 
   lapply(function(x) {
     st_as_sf(x, coords = c("Long", "Lat"), crs = 4326) %>% 
       st_transform(3005) %>% 
@@ -179,4 +182,47 @@ pres_abs_2020 <- sapply(names(points_comb), function(x) {
 }, simplify = FALSE, USE.NAMES = TRUE)
 
 ```
+
+Lastly, we have incorporated using structural stage into the modelling process. The data here needs to be appended to the old dataset:
+
+```{r}
+
+pto <- file.path(field_data_dir, "processed")
+
+site_ser_old <- st_read(file.path(pto, "site_ser_pts.gpkg"), quiet = TRUE)
+
+site_ser_pts <- dplyr::select(bgc_2020, `BGC Subzone / Variant`, `Forested Site Series`,
+                              `Nonforested Class`, Long, Lat) %>% 
+  dplyr::mutate(`Forested Site Series` = toupper(`Forested Site Series`)) %>% 
+  tidyr::unite(MapUnit, c(`BGC Subzone / Variant`, `Forested Site Series`,
+                              `Nonforested Class`), sep = ".", na.rm = TRUE) %>% 
+  st_as_sf(coords = c("Long", "Lat")) %>% 
+  st_set_crs(4326) %>% 
+  st_transform(crs = st_crs(site_ser_old)) %>% 
+  dplyr::rename(geom = geometry) %>% 
+  rbind(site_ser_old) %>% 
+  st_set_agr("constant") %>% 
+  st_intersection(aoi_sf)
+
+struct_stg_old <- st_read(file.path(pto, "struct_stg_pts.gpkg"), quiet = TRUE) %>% 
+  dplyr::select(StructuralStage)
+
+struct_stg_pts <- dplyr::select(bgc_2020, `Structural Stage`, Long, Lat) %>% 
+  drop_na(`Structural Stage`) %>% 
+  st_as_sf(coords = c("Long", "Lat")) %>% 
+  st_set_crs(4326) %>% 
+  st_transform(crs = st_crs(struct_stg_old)) %>% 
+  dplyr::mutate(`Structural Stage` = make.names(`Structural Stage`)) %>% 
+  dplyr::rename(StructuralStage = `Structural Stage`, 
+                geom = geometry) %>% 
+  rbind(struct_stg_old) %>% 
+  st_set_agr("constant") %>% 
+  st_intersection(aoi_sf)
+
+sapply(c("site_ser_pts", "struct_stg_pts"), function(x) st_write(
+  eval(parse(text = x)), file.path(pto, paste0("2020_", x, ".gpkg")), 
+  delete_layer = TRUE, quiet = TRUE))[0]
+
+```
+
 
