@@ -526,6 +526,13 @@ sapply(c("dsmart_site_ser_polys", "dsmart_strata"), function(x) st_write(
 sapply(c("dsmart_site_ser_composition", "dsmart_site_ser_observations"), function(x) write.csv(
   eval(parse(text = x)), file.path(dso, paste0(x, ".csv")), row.names = FALSE))[0]
 
+# Write output as processed points in separate folder
+dsmart_site_ser_observations %>% 
+  st_as_sf(coords = c("X", "Y")) %>% 
+  st_set_crs(st_crs(tem_sf)) %>% 
+  st_write(file.path(field_data_dir, "processed", "site_ser_pts.gpkg"), quiet = TRUE, 
+           delete_layer = TRUE)
+
 ```
 
 With the essential data configured for the dsmart run, some extra data can be added as "observations". These will be point data of Map Unit calls, which is compiled from the TEM excel spreadsheet, the TEM mdb, and the 2019 sampling data. Depending on how the data is organized, various processing needed to occur for each dataset.
@@ -815,7 +822,8 @@ dsmart_struct_stg_observations <- dplyr::select(sechelt_bec_full, `Structural St
 
 # Create extracted sf dataframe of observations
 struct_stg <- dsmart_struct_stg_observations %>% 
-  st_as_sf(coords = c("X", "Y")) %>% 
+  sf::st_as_sf(coords = c("X", "Y")) %>% 
+  sf::st_set_crs(sf::st_crs(dsmart_struct_stg_polys)) %>% 
   cbind(terra::extract(covars, st_coordinates(.))) %>% 
   Filter(function(y) !all(is.na(y)), .) %>% 
   dplyr::select(StructuralStage, names(covars)) %>% 
