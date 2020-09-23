@@ -40,6 +40,7 @@ include_bgc <- FALSE
 use_caret <- TRUE
 run <- "site_ser" # option of "struct_stg" or "site_ser"
 dsmart_dir <- file.path(AOI_dir, "1_map_inputs", paste0("dsmart_", run))
+out_dir <- file.path(AOI_dir, "1_map_inputs", paste0("2020_dsmart_", run))
 
 ```
 
@@ -112,6 +113,48 @@ observations <- st_read(file.path(pto, paste0("2020_", run, "_pts.gpkg")), quiet
   cbind(st_coordinates(.)) %>% 
   st_drop_geometry() %>% 
   dplyr::select(X, Y, everything())
+
+```
+
+
+
+```{r Simple TEM rasterization}
+
+if(run == "site_ser") {
+  dir.create(file.path(out_dir, "simple"), showWarnings = FALSE)
+  
+  # Get the TEM polygons from the original DSMART input data folder
+  tem <- terra::vect(file.path(dsmart_dir, "inputs", paste0("dsmart_", run, "_polys.gpkg")))
+  tem$MapUnit1_num <- as.numeric(as.factor(tem$MapUnit1))
+  tem_rast <- terra::rasterize(tem, covariates[[1]], field = "MapUnit1_num", 
+                               filename = file.path(out_dir, "simple", "site_series_simple.tif"), 
+                               overwrite = TRUE)
+  
+  # Generate probabilities based on composition
+  ss_calls <- unique(composition$MapUnit)
+  composition_remake <- foreach(i = unique(composition$POLY_NO), .combine = rbind) %do% {
+    composition %>% dplyr::filter(POLY_NO == i) %>% 
+      dplyr::select(POLY_NO, MapUnit, proportion) %>% 
+      rbind(data.frame(
+        POLY_NO = .$POLY_NO[1], 
+        MapUnit = ss_calls[!ss_calls %in% .$MapUnit],
+        proportion = 0
+      ))
+  }
+  
+  tem_remake <- values(tem) %>% 
+    dplyr::select(POLY_NO) %>% 
+    merge(composition_remake) %>% 
+    mutate(proportion = proportion / 100) %>% 
+    merge(tem, .)
+  
+  tem_props <- foreach(i = unique(tem_remake$MapUnit), .combine = c) %do% {
+    tem_remake[tem_remake$MapUnit == i] %>% 
+      magrittr::set_names(c(names(.)[names(.) != "proportion"], paste0("probability_", i))) %>% 
+      rasterize(covariates[[1]], field = paste0("probability_", i), overwrite = TRUE, 
+                filename = file.path(out_dir, "simple", paste0("probability_", i, ".tif")))
+  }
+}
 
 ```
 
