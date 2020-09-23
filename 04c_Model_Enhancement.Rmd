@@ -139,15 +139,15 @@ covariates <- c(rast(c(terrain_covariates, sentinel_covariates,
                 site_series, struct_stg)
 
 # Find the best masking layer to use in the predict_landscape algorithm
-# mask_layers <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
-#     cat(paste0("Counting NA values in ", names(covariates[[i]]), 
-#                " [", i, " of ", nlyr(covariates), "]\n"))
-#     new <- subset(covariates, i) * 0
-#     data.frame(layer = names(new), 
-#                data_cells = data.frame(freq(new))$count)
-#   } %>% arrange(desc(data_cells))
+mask_layers <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
+    cat(paste0("Counting NA values in ", names(covariates[[i]]),
+               " [", i, " of ", nlyr(covariates), "]\n"))
+    new <- subset(covariates, i) * 0
+    data.frame(layer = names(new),
+               data_cells = data.frame(freq(new))$count)
+  } %>% arrange(desc(data_cells))
 
-mask_layers <- data.frame(layer = "chm", data_cells = Inf)
+# mask_layers <- data.frame(layer = "chm", data_cells = Inf)
 
 # Attributed point data - limit to only CORNCAN and RUBUSPE
 pres_abs_points <- sapply(c("Corn can", "Rubu spe"), function(x) {
@@ -195,6 +195,7 @@ var_list <- foreach(i = 1:nrow(perms), .combine = c) %do% {
   filtered_data <- lapply(pres_abs_points[1], function(x) {
     variables <- c(
       basename(tools::file_path_sans_ext(terrain_covariates)), 
+      names(struct_stg),
       if("annual" %in% unlist(strsplit(perms[i, "temporal"], split = "[, ]"))) {
         c(grep("sentinel2.*.2019", names(x), value = TRUE),
           grep("normal(?!.*(_at|_sm|_sp|_wt))", names(x), value = TRUE, perl = TRUE))
@@ -208,7 +209,7 @@ var_list <- foreach(i = 1:nrow(perms), .combine = c) %do% {
         grep(ifelse(
           length(unlist(strsplit(perms[i, "probabilities"], split = "[, ]"))) > 1, 
           "probability|class", ifelse(perms[i, "probabilities"], "probability", "class")), 
-          grep(perms[i, "ss"], names(x), value = TRUE), 
+          grep(paste0(perms[i, "ss"], "|_struct_stg"), names(x), value = TRUE), 
           value = TRUE)
       },
       
