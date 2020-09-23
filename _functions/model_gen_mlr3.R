@@ -74,7 +74,15 @@ model_gen_mlr3 <- function(
   if(all(sapply(traindat, function(x) 
     length(which(names(x) %in% c("X", "x"))) == 1 && length(which(names(x) %in% c("Y", "y"))) == 1))) {
     spatial <- TRUE
-    coordinate_cols <- lapply(traindat, function(x)
+    traindat <- lapply(traindat, function(z) {
+      if("X" %in% names(z)) 
+        z <- dplyr::rename(z, x = X)
+      if("Y" %in% names(z))
+        z <- dplyr::rename(z, y = Y)
+      return(z)
+    })
+      
+    coordinate_cols <- lapply(traindat, function(x) 
       names(x)[names(x) %in% c("X", "x", "Y", "y")])
     
     if(!("mlr3spatiotempcv" %in% installed.packages()[, "Package"]))
@@ -84,28 +92,29 @@ model_gen_mlr3 <- function(
     message("Performing spatial sampling")
     
     # Fixes issue descrived above
-    mlr_reflections$task_types <- mlr_reflections$task_types[package == "mlr3spatiotempcv", ]
+    # mlr_reflections$task_types <- mlr_reflections$task_types[package == "mlr3spatiotempcv", ]
     
-    resampling_outer <- rsmp("repeated-spcv-coords", folds = folds, repeats = repeats)
+    resampling_outer <- rsmp("repeated_spcv_coords", folds = folds, repeats = repeats)
     
     if(mod_type == "regr.ranger") {
       tasks <- lapply(seq_along(traindat), function(x) {
         TaskRegrST$new(id = gsub(".gpkg$", "", basename(names(traindat[x]))), 
                        backend = traindat[[x]], 
                        target = target, 
-                       coords_as_features = FALSE, 
-                       crs = st_crs(3005)$proj4string, 
-                       coordinate_names = coordinate_cols[[x]])
+                       extra_args = list(
+                         coords_as_features = FALSE, crs = "3005", 
+                         coordinate_names = coordinate_cols[[x]]
+                       ))
       })
     } else {
       tasks <- lapply(seq_along(traindat), function(x) {
         TaskClassifST$new(id = gsub(".gpkg$", "", basename(names(traindat[x]))), 
                           backend = traindat[[x]], 
-                          target = target, 
-                          coords_as_features = FALSE, 
-                          crs = st_crs(3005)$proj4string, 
-                          positive = positive,
-                          coordinate_names = coordinate_cols[[x]])
+                          target = target, positive = positive,
+                          extra_args = list(
+                            coords_as_features = FALSE, crs = st_crs(3005)$proj4string, 
+                            coordinate_names = coordinate_cols[[x]]
+                          ))
       })
     }
     
@@ -164,8 +173,8 @@ model_gen_mlr3 <- function(
     filter <- po("filter", filter = mlr3filters::flt("importance", learner = lrn))
     
     # Create process (new learner) for filtering the task
-    glrn <- GraphLearner$new(filter %>>% po_lrn)
-    glrn$predict_type <- type
+    glrn <- GraphLearner$new(graph = filter %>>% po_lrn, 
+                             predict_type = type)
     
     # Create filter parameters (i.e.: filter the top features of importance using
     # a given percentage of total features)
@@ -184,20 +193,21 @@ model_gen_mlr3 <- function(
     # resampling task.)
     resolution <- round(max(sapply(tasks, function(x) length(x$feature_names))) / 10)
     feature_sel <- AutoTuner$new(
-      learner = glrn, 
-      resampling = resampling_outer, 
-      measures = msr(measures),
-      tune_ps = param_set, 
-      terminator = term("none"), 
+      learner = glrn,
+      resampling = resampling_outer,
+      measure = msr(measures),
+      search_space = param_set,
+      terminator = trm("none"),
       tuner = tnr("grid_search", resolution = resolution)
     )
-    feature_sel$store_tuning_instance <- TRUE
-    
-    design <- benchmark_grid(tasks, feature_sel, resamplings = rsmp("holdout", ratio = 1))
+
+    design <- benchmark_grid(tasks = tasks, learners = feature_sel, resamplings = rsmp("holdout"))
     bmr <- benchmark(design, store_models = TRUE)
     all_results <- lapply(1:bmr$n_resample_results, function(x)
       bmr$resample_result(x)$learners[[1]])
     names(all_results) <- names(traindat)
+    
+    
     
   } else if(feature_selection == "rfe") {
     f_select <- fs("rfe", min_features = 2, recursive = TRUE) # Recalculates importance each iteration
@@ -209,24 +219,17 @@ model_gen_mlr3 <- function(
     
     # PROBLEM WITH INTEGRATING THIS INTO A BENCHMARK: THERE IS NO PROPER WAY
     # TO STORE THE MODELS, SO I HAVE TO GET CREATIVE AND DO IT MYSELF
-    # feature_sel <- AutoFSelect$new(
-    #   learner = lrn,
-    #   resampling = resampling_outer, 
-    #   measure = msr(measures), 
-    #   terminator = term("stagnation", iters = 5, threshold = 1e-5), 
-    #   fselect = f_select
-    # )
-    # feature_sel$store_fselect_instance <- TRUE
+    feature_sel <- AutoFSelect$new(
+      learner = lrn,
+      resampling = resampling_outer,
+      measure = msr(measures),
+      terminator = trm("stagnation", iters = 5, threshold = 1e-5),
+      fselect = f_select
+    )
+    feature_sel$store_fselect_instance <- TRUE
     
     all_results <- lapply(tasks, function(x) {
-      feature_sel <- FSelectInstance$new(
-        task = x,
-        learner = lrn,
-        resampling = resampling_outer,
-        measure = msr(measures),
-        terminator = term("stagnation", iters = round(0.1 * x$ncol), threshold = 1e-5),
-        store_models = TRUE
-      )
+     
       f_select$optimize(feature_sel)
       
       find_feats <- lapply(feature_sel$archive$data()$x_domain, unlist)
