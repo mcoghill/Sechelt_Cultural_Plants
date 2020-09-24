@@ -38,7 +38,8 @@ map_res <- 4
 
 input_dir <- file.path("./Sechelt_AOI/1_map_inputs/field_data/processed")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
-dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
+dsmart_site_ser_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_site_ser")
+dsmart_struct_stg_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_struct_stg")
 output_dir <- file.path(AOI_dir, "2_map_predictions")
 tile_dir <- file.path(output_dir, "tiles")
 dir.create(tile_dir, showWarnings = FALSE)
@@ -101,7 +102,7 @@ climate_covariates <- if(any(climate_vars)) {
 } else NULL
 
 bgc_layer <- if(any(bgc)) {
-  file.path(dsmart_dir, "inputs", "bgc.tif")
+  file.path(dsmart_site_ser_dir, "inputs", "bgc.tif")
 } else NULL
 
 # There are 2 sources of site series calls: simple and DSMART. under both of those,
@@ -109,17 +110,17 @@ bgc_layer <- if(any(bgc)) {
 # for each scenario
 if(!all(is.na(ss))) {
   site_series <- c(
-    rast(file.path(dsmart_dir, "simple", "site_series_simple.tif")) %>% 
+    rast(file.path(dsmart_site_ser_dir, "simple", "site_series_simple.tif")) %>% 
       magrittr::set_names("simple_ss_class"),
     rast(grep(
       "site_series_simple.tif", 
-      list.files(file.path(dsmart_dir, "simple"), full.names = TRUE),
+      list.files(file.path(dsmart_site_ser_dir, "simple"), full.names = TRUE),
       invert = TRUE, value = TRUE)) %>% 
       magrittr::set_names(paste0("simple_ss_", names(.))),
-    rast(file.path(dsmart_dir, "output", "realisations", "realisation_1.tif")) %>% 
+    rast(file.path(dsmart_site_ser_dir, "output", "realisations", "realisation_1.tif")) %>% 
       magrittr::set_names("dsmart_ss_class"),
     rast(list.files(
-      file.path(dsmart_dir, "output", "probabilities"), full.names = TRUE)) %>% 
+      file.path(dsmart_site_ser_dir, "output", "probabilities"), full.names = TRUE)) %>% 
       magrittr::set_names(paste0("dsmart_ss_probability_", names(.))))
   
   # Create filter based on ss and bgc variables
@@ -130,10 +131,19 @@ if(!all(is.na(ss))) {
   site_series <- subset(site_series, ss_pattern)
 } else site_series <- NULL
 
+# We also need to include the structural stage rasters in this analysis as well
+struct_stg <- c(
+  rast(file.path(dsmart_struct_stg_dir, "struct_stg_dsmart.tif")) %>% 
+    magrittr::set_names("dsmart_struct_stg_class"),
+  rast(list.files(
+    file.path(dsmart_struct_stg_dir, "output", "probabilities"), full.names = TRUE)) %>% 
+    magrittr::set_names(paste0("dsmart_struct_stg_probability_", names(.)))
+)
+
 # Combine all covariates
 covariates <- c(rast(c(terrain_covariates, sentinel_covariates, 
                        climate_covariates, bgc_layer)),
-                site_series)
+                site_series, struct_stg)
 
 # Find the best masking layer to use in the predict_landscape algorithm
 mask_layers <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
@@ -149,13 +159,14 @@ pres_abs_points <- sapply(c("CORNCAN", "RUBUSPE"), function(x) {
   st_read(file.path(input_dir, "pres_abs.gpkg"), layer = x, quiet = TRUE) %>% 
     cbind(st_coordinates(.)) %>% 
     {if(!is.null(site_series)) {
-      cbind(., terra::extract(site_series, st_coordinates(.)))
+      cbind(., terra::extract(c(site_series, struct_stg), st_coordinates(.)))
     } else .} %>% 
     {if(!is.null(bgc_layer)) {
       cbind(., terra::extract(rast(bgc_layer), st_coordinates(.)))
     } else .} %>% 
     st_drop_geometry() %>%
-    mutate_at(vars(one_of("Pres", "simple_ss_class", "dsmart_ss_class", "bgc")), as.factor) %>%
+    mutate(across(c("Pres", "simple_site_ser_class", "dsmart_site_ser_class", 
+                    "dsmart_struct_stg_class", "bgc"), as.factor)) %>%
     dplyr::select(Pres, names(covariates), X, Y)
   }, simplify = FALSE, USE.NAMES = TRUE)
 
@@ -216,7 +227,7 @@ var_list <- foreach(i = 1:nrow(perms), .combine = c) %do% {
         grep(ifelse(
           length(unlist(strsplit(perms[i, "probabilities"], split = "[, ]"))) > 1, 
           "probability|class", ifelse(perms[i, "probabilities"], "probability", "class")), 
-          grep(perms[i, "ss"], names(x), value = TRUE), 
+          grep(paste0(perms[i, "ss"], "|_struct_stg"), names(x), value = TRUE), 
           value = TRUE)
       },
       
@@ -269,27 +280,44 @@ for(i in 1:length(pres_abs)) {
   # Extract and write performance metrics
   pres_performance <- sapply(names(pres_models$learners), function(x) {
     
+    folds <- pres_models$learners[[x]]$instance_args$resampling$param_set$values$folds
+    reps <- pres_models$learners[[x]]$instance_args$resampling$param_set$values$repeats
+    n_iters <- pres_models$learners[[x]]$archive$benchmark_result$n_resample_results
+    
     tune_results <- data.frame(
-      filter_fraction = sapply(pres_models$learners[[x]]$archive()$tune_x, function(y)
-        y[[1]]), 
-      classif.ce = pres_models$learners[[x]]$archive()$classif.ce
+      filter_fraction = pres_models$learners[[x]]$archive$data()$importance.filter.frac, 
+      classif.ce = pres_models$learners[[x]]$archive$data()$classif.ce
     ) %>% dplyr::arrange(classif.ce)
     
     confusion <- as.data.frame(
-      pres_models$learners[[x]]$model$tuning_instance$best()$prediction()$confusion)
+      pres_models$learners[[x]]$model$tuning_instance$archive$benchmark_result$
+        resample_results$resample_result[[
+          pres_models$learners[[x]]$model$tuning_instance$archive$best()$batch_nr]]$
+        prediction()$confusion)
     
-    # There were no rep and fold ID's in the table so I had to create them from scratch
-    test_data <- cbind(
-      pres_models$learners[[x]]$model$tuning_instance$best()$data$resampling[[1]]$instance %>% 
-        dplyr::arrange(row_id), 
-      pres_models$learners[[x]]$model$tuning_instance$best()$prediction()$data$tab %>% 
-        dplyr::arrange(row_id) %>% 
-        dplyr::select(-row_id)
-    )
+    model_data <- foreach(j = 1:n_iters) %do% {
+      test_data <- pres_models$learners[[x]]$archive$benchmark_result$resample_result(j)$
+        resampling$instance %>% 
+        cbind(batch_nr = j)
+      train_data <- foreach(k = 1:reps, .combine = rbind) %do% { 
+        foreach(l = 1:folds, .combine = rbind) %do% {
+          test_rows <- dplyr::filter(test_data, rep == k, fold == l)
+          missing <- as.numeric(rownames(pres_abs[[i]])[
+            !as.numeric(rownames(pres_abs[[i]])) %in% test_rows$row_id])
+          data.frame(row_id = missing, rep = k, fold = l, batch_nr = j)
+        }
+      }
+      return(list(test_data = test_data, train_data = train_data))
+    } %>% magrittr::set_names(paste0(
+      "filter_frac = ", 
+      pres_models$learners[[x]]$model$tuning_instance$archive$data()$
+        importance.filter.frac))
     
-    imp <- data.frame(importance = pres_models$learners[[x]]$learner$model$importance$scores) %>% 
+    imp <- data.frame(importance = pres_models$learners[[x]]$learner$model$
+                        importance$scores) %>% 
       rownames_to_column("layer") %>% 
-      dplyr::filter(layer %in% pres_models$learners[[x]]$learner$model$importance$features) %>% 
+      dplyr::filter(layer %in% pres_models$learners[[x]]$learner$model$
+                      importance$features) %>% 
       arrange(desc(importance))
     
     out <- utils::capture.output(pres_models$learners[[x]]$learner$model$classif.ranger$model)
@@ -299,7 +327,9 @@ for(i in 1:length(pres_abs)) {
               row.names = FALSE)
     cat(out, file = file.path(dir_out, paste0(x, "_pres_abs_model.txt")), sep = "\n")
     save(best_model, file = file.path(dir_out, paste0(x, "_pres_abs_model.RData")))
-    write.csv(test_data, file = file.path(dir_out, paste0(x, "_pres_abs_model_resampling.csv")), 
+    write.csv(model_data$test_data, file = file.path(dir_out, paste0(x, "_pres_abs_model_resampling_test_data.csv")), 
+              row.names = FALSE)
+    write.csv(model_data$train_data, file = file.path(dir_out, paste0(x, "_pres_abs_model_resampling_train_data.csv")), 
               row.names = FALSE)
     write.csv(confusion, file = file.path(dir_out, paste0(x, "_pres_abs_confusion.csv")), 
               row.names = FALSE)
@@ -329,7 +359,7 @@ for(i in 1:length(pres_abs)) {
         break
       }
     }
-    
+    # source("./_functions/predict_landscape_mlr3.R")
     out <- predict_landscape_mlr3(
       learner = pres_models$learners[[x]],
       task = pres_models$tasks[[x]], 
@@ -344,7 +374,7 @@ for(i in 1:length(pres_abs)) {
     for(j in out) {
       file.copy(
         from = j,
-        to = file.path(dir_out, paste0(x, "_", basename(j))),
+        to = file.path(dir_out, paste0(x, "_", gsub("_.*", "", basename(j)), ".tif")),
         overwrite = TRUE)
     }
     return(out)
@@ -509,9 +539,9 @@ write.csv(best_model_sets, file.path(output_dir, "cover_predictions", "model_per
 ```{r Zonal statistics}
 
 # Using the dsmart TEM as the zonal layer, run zonal statistics for each map model
-site_series_t <- rast(file.path(dsmart_dir, "output", "realisations", "realisation_1.tif")) %>% 
+site_series_t <- rast(file.path(dsmart_site_ser_dir, "output", "realisations", "realisation_1.tif")) %>% 
       magrittr::set_names("dsmart_ss_class")
-dsmart_lookup <- read.csv(file.path(dsmart_dir, "output", "lookup.txt"))
+dsmart_lookup <- read.csv(file.path(dsmart_site_ser_dir, "output", "lookup.txt"))
 
 pres_zonal <- sapply(list.dirs(
   file.path(output_dir, "pres_abs_predictions"), 
