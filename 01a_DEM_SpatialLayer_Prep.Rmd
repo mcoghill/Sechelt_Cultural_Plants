@@ -92,9 +92,7 @@ new_ext <- ext(c(xmin = min(sapply(raw, xmin)), xmax = max(sapply(raw, xmax)),
                  ymin = min(sapply(raw, ymin)), ymax = max(sapply(raw, ymax))))
 
 # Adjust the raw extents to be the new, larger extent. Saved as temp files
-raw_adjust <- lapply(raw, function(x) {
-  expand(x, new_ext)
-})
+raw_adjust <- lapply(raw, function(x) expand(x, new_ext))
 
 # Give a new extent to project rasters to
 # Note: As of terra 0.8.3, the wopt's for project() are ignored and are written

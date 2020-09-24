@@ -10,20 +10,15 @@ The purpose of this script is to download the relevant spatial data for BEC zone
 ```{r packages, include=FALSE}
 
 ls <- c("bcdata", "bcmaps", "tidyverse", "terra", "foreach", "doParallel", "raster")
-github_ls <- c("bcmapsdata")
 new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
-github_new_packages <- github_ls[!(github_ls %in% installed.packages()[, "Package"])]
 if(length(new_packages))
   install.packages(new_packages)
-if(length(github_new_packages))
-  install.packages('bcmapsdata', repos = 'https://bcgov.github.io/drat/')
 if(compareVersion(packageDescription("raster")$Version, "3.3-14") < 0) 
   devtools::install_github("rspatial/raster")
 if(compareVersion(packageDescription("terra")$Version, "0.8-5") < 0) 
   install.packages("rspatial/terra")
-ls <- c(ls, github_ls)
 lapply(ls, library, character.only = TRUE)[0]
-rm(ls, github_ls, new_packages, github_new_packages)
+rm(ls, new_packages)
 
 ```
 
@@ -65,14 +60,14 @@ In order to get accurate polygon edges for each raster resolution, they need to 
 
 ```{r Raster to polygon}
 
-dem_files <- list.files(cov_dir, pattern = "dem.tif", full.names = TRUE, recursive = TRUE)
+dem_files <- list.files(cov_dir, pattern = "dem.tif$", full.names = TRUE, recursive = TRUE)
 
 for(i in dem_files) {
   shp_subdir <- file.path(shp_dir, basename(dirname(i)))
   dir.create(shp_subdir, recursive = TRUE, showWarnings = FALSE)
   
   dem <- rast(i) * 0
-  dem_shp <- as.polygons(dem, trunc = TRUE, dissolve = TRUE, values = FALSE, 
+  dem_shp <- as.polygons(dem, trunc = TRUE, dissolve = TRUE, values = TRUE, 
                          extent = FALSE, crs = crs(dem)) %>% 
     as("Spatial") %>% 
     st_as_sfc() %>% 
