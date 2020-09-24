@@ -1,7 +1,7 @@
-# Please note that I have tried many different things to try to get probability estimation to work
-# using the ranger package in mlr and mlr3 however it never seems to work when there are
-# few data points for a class, hence why predict_type is response. Other learners have no
-# issue using the prob predict_type
+# Please note that I have tried many different things to try to get probability 
+# estimation to work using the ranger package in mlr and mlr3 however it never 
+# seems to work when there are few data points for a class, hence why predict_type 
+# defaults to "response". Other learners have no issue using the prob predict_type
 
 # Essentially the way I have this working is as follows: First, create the pipe
 # operators which allows for subsetting certain percentages of the top variables
@@ -10,9 +10,9 @@
 # and then the best model is fitted. This is the "tuning" step and it is performed
 # on each of the input "traindat" dataframes. The other option for
 # tuning is recursive feature elimination, however this would take much longer, 
-# especially if there are a lot fo variables in a dataset. 
-# After the best feature subset is found, 10 fold cross validation repeated 5 times 
-# is performed in order to generate the model metrics
+# especially if there are a lot of variables in a dataset. 
+# 10 fold cross validation repeated 5 times is performed on each of the data 
+# subsets in order to generate the final models and metrics
 
 model_gen_mlr3 <- function(
   traindat, 
@@ -39,7 +39,7 @@ model_gen_mlr3 <- function(
   
   if(feature_selection == "rfe") {
     if(!("mlr3fselect" %in% installed.packages()[, "Package"]))
-      devtools::install_github("mlr-org/mlr3fselect", force = TRUE)
+      install.packages("mlr3fselect")
     
     library(mlr3fselect)
     
@@ -64,15 +64,12 @@ model_gen_mlr3 <- function(
     }
   }
   
-  measures <- if(mod_type == "regr.ranger") {
-    "regr.mse"
-  } else {
-    "classif.ce"
-  }
+  measures <- ifelse(mod_type == "regr.ranger", "regr.mse", "classif.ce")
   
   # Check for X and Y columns. If present, a spatial cv will be performed
   if(all(sapply(traindat, function(x) 
-    length(which(names(x) %in% c("X", "x"))) == 1 && length(which(names(x) %in% c("Y", "y"))) == 1))) {
+    length(which(names(x) %in% c("X", "x"))) == 1 && 
+    length(which(names(x) %in% c("Y", "y"))) == 1))) {
     spatial <- TRUE
     traindat <- lapply(traindat, function(z) {
       if("X" %in% names(z)) 
@@ -90,9 +87,6 @@ model_gen_mlr3 <- function(
     
     library(mlr3spatiotempcv)
     message("Performing spatial sampling")
-    
-    # Fixes issue descrived above
-    # mlr_reflections$task_types <- mlr_reflections$task_types[package == "mlr3spatiotempcv", ]
     
     resampling_outer <- rsmp("repeated_spcv_coords", folds = folds, repeats = repeats)
     
@@ -125,9 +119,11 @@ model_gen_mlr3 <- function(
     message("Performing non-spatial sampling")
     
     sp_index <- which(sapply(traindat, function(x) 
-      length(which(names(x) %in% c("X", "Y"))) == 2 || length(which(names(x) %in% c("x", "y")))))
+      length(which(names(x) %in% c("X", "Y"))) == 2 || 
+        length(which(names(x) %in% c("x", "y")))))
     
-    traindat <- lapply(traindat, function(x) x[, names(x)[!names(x) %in% c("X", "Y", "x", "y")]])
+    traindat <- lapply(traindat, function(x) 
+      x[, names(x)[!names(x) %in% c("X", "Y", "x", "y")]])
     
     resampling_outer <- rsmp("repeated_cv", folds = folds, repeats = repeats)
     
@@ -148,15 +144,18 @@ model_gen_mlr3 <- function(
   }
   names(tasks) <- names(traindat)
   
-  # Create pipeop learner, note I had some issues with this, error included duplicated value
-  # in "name" column, but if the mlr3spatiaotempcv package is not loaded here, this 
-  # works fine. I submitted this as an issue to the mlr3pipelines page: 
+  # Create pipeop learner, note I had some issues with this, error included 
+  # duplicated value in "name" column, but if the mlr3spatiaotempcv package is 
+  # not loaded here, this works fine. I submitted this as an issue to the 
+  # mlr3pipelines page: 
   # https://github.com/mlr-org/mlr3pipelines/issues/368, which resulted in a PR
   # here: https://github.com/mlr-org/mlr3pipelines/pull/371, which was eventually
   # moved to here: https://github.com/mlr-org/mlr3/issues/470, and another PR 
   # here: https://github.com/mlr-org/mlr3/pull/529
   # The issue is still ongoing as of June 26...I appear to have opened a can of
   # worms with this!
+  # Edit Sep. 23, 2020: The issue is now resolved and no more workarounds should
+  # be necessary provided that a users packages are up to date.
   
   # Note: don't use the mtry argument here, or problems will arrive later on
   lrn <- lrn(
@@ -200,52 +199,51 @@ model_gen_mlr3 <- function(
       terminator = trm("none"),
       tuner = tnr("grid_search", resolution = resolution)
     )
-
-    design <- benchmark_grid(tasks = tasks, learners = feature_sel, resamplings = rsmp("holdout"))
-    bmr <- benchmark(design, store_models = TRUE)
-    all_results <- lapply(1:bmr$n_resample_results, function(x)
-      bmr$resample_result(x)$learners[[1]])
-    names(all_results) <- names(traindat)
     
-    
+    # Create a benchmark grid which describes the models to be run
+    design <- benchmark_grid(tasks = tasks, learners = feature_sel, 
+                             resamplings = rsmp("holdout", ratio = 1))
     
   } else if(feature_selection == "rfe") {
-    f_select <- fs("rfe", min_features = 2, recursive = TRUE) # Recalculates importance each iteration
-    resampling_outer <- rsmp("repeated_cv", folds = folds, repeats = repeats) # Fixes problem for resampling
+    # Do recursive feature selection, recursive = TRUE will recalculate importance
+    # at each iteration
+    f_select <- fs("rfe", min_features = 2, recursive = TRUE) 
+    
+    # rfe early on had problems with spatial resampling, this fixed the problem
+    # but it is unclear if that is still a lingering issue
+    # resampling_outer <- rsmp("repeated_cv", folds = folds, repeats = repeats) 
     
     # Create the feature selection learner. Models will be compared at each iteration
     # of a feature being removed. If the models don't improve after 5 iterations, then
     # feature selection stops, using the best evaluated model
-    
-    # PROBLEM WITH INTEGRATING THIS INTO A BENCHMARK: THERE IS NO PROPER WAY
-    # TO STORE THE MODELS, SO I HAVE TO GET CREATIVE AND DO IT MYSELF
-    feature_sel <- AutoFSelect$new(
+    feature_sel <- AutoFSelector$new(
       learner = lrn,
       resampling = resampling_outer,
       measure = msr(measures),
       terminator = trm("stagnation", iters = 5, threshold = 1e-5),
-      fselect = f_select
+      fselect = f_select,
+      store_models = TRUE
     )
-    feature_sel$store_fselect_instance <- TRUE
     
-    all_results <- lapply(tasks, function(x) {
-     
-      f_select$optimize(feature_sel)
-      
-      find_feats <- lapply(feature_sel$archive$data()$x_domain, unlist)
-      feature_sel_id <- which(unlist(lapply(find_feats, function(y)
-        all(y == unlist(feature_sel$result$x_domain[[1]])))))
-      
-      model_set <- feature_sel$archive$data()[feature_sel_id, ]$resample_result[[1]]
-      best_learner <- model_set$learners[[which.min(lapply(model_set$learners, function(y) y$oob_error()))]]
-      return(best_learner)
-    })
-    names(all_results) <- names(tasks)
+    design <- benchmark_grid(tasks = tasks, learners = feature_sel, 
+                             resamplings = rsmp("holdout", ratio = 1))
+    
   } else if (feature_selection == "none") {
     
-    rr <- resample(tasks[[1]], lrn, resampling_outer, store_models = TRUE)
-    bmr <- as_benchmark_result(rr)
+    design <- benchmark_grid(tasks = tasks, learners = lrn, 
+                             resamplings = resampling_outer)
     
   }
+  
+  bmr <- benchmark(design, store_models = TRUE)
+  all_results <- lapply(1:bmr$n_resample_results, function(x) {
+    if(feature_selection == "none") {
+      bmr$resample_result(x)
+    } else {
+      bmr$resample_result(x)$learners[[1]]
+    }
+  })
+  names(all_results) <- names(traindat)
+  
   return(list(learners = all_results, tasks = tasks))
 }
