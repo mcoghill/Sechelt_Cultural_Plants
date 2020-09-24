@@ -44,12 +44,12 @@ covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
 
 include_bgc <- FALSE
 use_caret <- TRUE
-run <- "site_ser" # option of "struct_stg" or "site_ser" or "struct_stg_simple"
+run <- "site_ser" # option of "struct_stg" or "site_ser"
 dsmart_dir <- file.path(AOI_dir, "1_map_inputs", paste0("dsmart_", run))
 
 ```
 
-Next, important data is loaded. There are a lot of covariate layers created from DEM derivatives, satellite imagery, and climate data layers; however, in order to speed up processing, the amount of covariates are limited to only DEM derivatives, annual satellite imagery indices, and more recent annual climate data. These variables were chosen since it makes sense to model a landscape using more recent data in my mind, and not worry about older factors that may have influenced the landscape previously. If a BGC layer is to be used to create the DSMART maps as well, then that is included as well.
+Next, important data is loaded. There are a lot of covariate layers created from DEM derivatives, satellite imagery, and climate data layers; however, in order to speed up processing, the amount of covariates are limited to only DEM derivatives, annual satellite imagery indices, and more recent annual climate data. These variables were chosen since it makes sense to model a landscape using more recent data in my mind, and not worry about older factors that may have influenced the landscape previously. Additionally, the climate variables are not much different between the 1961-1990 dataset and the 1981-2010 dataset, so autocorrelation effects may be induced if all of the climate variables were kept here. If a BGC layer is to be used to create the DSMART maps as well, then that is included as well.
 
 ```{r Load data}
 
@@ -126,9 +126,6 @@ if(run == "site_ser") {
   dir.create(file.path(dsmart_dir, "simple"), showWarnings = FALSE)
   
   # Rasterize first calls only
-  # tem_sf <- st_read(file.path(dsmart_dir, "inputs", "dsmart_polygons.gpkg"), quiet = TRUE) %>% 
-  #   mutate(MapUnit1 = as.factor(MapUnit1))
-  
   tem <- terra::vect(file.path(dsmart_dir, "inputs", paste0("dsmart_", run, "_polys.gpkg")))
   tem$MapUnit1_num <- as.numeric(as.factor(tem$MapUnit1))
   tem_rast <- terra::rasterize(tem, covariates[[1]], field = "MapUnit1_num", 
@@ -163,7 +160,9 @@ if(run == "site_ser") {
 
 ```
 
+The following section sets up some additional parameters for the DSAMRT algorithm. The args.model object specifies some of the modelling intricacies. Modelling will be passed on to the caret package where it will run a parallelized version of random forest analysis to generate class probabilities. 
 
+There was a point in time that I tried to do the modelling via the mlr3 package since it has spatial capabilities; however, this proved to be a very difficult challenge and did not incur any speed benefit in terms of processing since the ranger package (used for the core modelling aspects) is written in C++ as it is. For those reasons, I did not implement the mlr3 modelling techniques into the DSMART algorithm.
 
 ```{r Editing the dsmart functions}
 
@@ -223,20 +222,20 @@ out <- rast(list.files(dsm$summarise$locations$mostprobable,
 
 ```
 
-USING RANGER METHOD, TOOK A TOTAL OF 2 HOURS TO COMPLETE
+Finally, we need to run the algorithm. This version of DSMART has implementation allowing the use of the caret package to make models, and that functionality is leveraged here. We will use a parallelized implementation of Random Forest modelling (i.e.: the "ranger" package) in order to predict site series or structural stage at each pixel. Even though I have rewritten this code to be faster using more updated packages, the algorithm still takes approximately 2 hours to run with the following parameters:
 
-Finally, we need to run the algorithm. This version of DSMART has implementation allowing the use of the caret package to make models, and that functionality is leveraged here. We will use a parallelized implementation of Random Forest modelling in order to predict site series fore each pixel.
+- Study area size of 122.507 km^2
+- Pixel size of 4 m^2
+- Using ~ 100 covariate raster datasets
 
-It's very important to note that this is a very slow program, thus it's important that all of the datasets created above are in fact correct prior to running the algorithm less you get a few hours in and it fails because the names of the MapUnit columns are not valid in R.
+Unless there are thousands of observations, the number of observations will not likely have an influence on the processing speed here. Beyond that, the way that DSMART works is as follows:
 
-That said, I'll try to explain the process here. First, we need to build a covariate dataset. For the PEM project, we used DEM and satellite derived layers to build our site series maps, and I'll stick to that here as well in order to speed up some of the processing. I'm getting rid of covariate layers whose name starts with "normal" because all of the climate layers (of which there are about 150) begin with the word "normal", so it's a simple way to omit those layers from analysis. The next part (fit_control) specifies some of the modelling intricacies. Modelling will be passed on to the caret package where it will run a parallelized version of random forest analysis to generate class probabilities.
+1. At each polygon unit, perform raster data extraction at each pixel. Afterwards, sample that dataset so that there are rate * reals (number) of samples per polygon. Note that when repeated cross validation is used, the number of model realisations drops down to 1 since the model is repeating itself anyway.
 
-Finally, we can run the dsmart algorithm to predict site series for a given pixel. At the time of running this algorithm, for a 4m resolution, the first part of the algorithm (sampling) took approximately 6.5 hours to run. After that, it starts to produce models and maps from the data, and it takes about 1 hour per model to produce a "realization" (for 5 models that's 5 hours). The final part of the algorithm takes those realizations and summarizes them into n most probable maps (nprob), and for 1 probability map it took about 30 minutes. The first is the most probable map, and the last defined would be the least probable map of that series. The verbose output seems to throw a lot of errors, but when the models are loaded back into a given R session they seem unphased, so I think that there is some issue with the verbose nature of the output seen here so it can be ignored as long as the algorithm is running.
+2. Once all samples are collected, add the remaining observations to each realisation of the model. Using that entire dataset, create a model (in this case, a repeated cross validation using the ranger and caret packages). That model is then used to generate map predictions using a tiling system implemented through the "stars" package, with tiles being mosaicked together at the end. This is implemented for both probability and raw classification methods: if probabilities are used, the realisation is a multi-layer raster file where each layer is a class probability, and if raw classification is used the realisation is a single layer raster file of predicted classes. Here, class probabilities are used as realisations.
 
-Some ways in which this could be sped up:
-1. Reduce the map resolution. Con: the map is a lower resolution
-2. Decrease the "rate" parameter in the dsmart function. Con: fewer samples are drawn per polygon so the accuracy may be skewed
-3. Change the "method.sample" parameter to "by_area" and draw "rate" number of samples per square km. Con: Doing this could potentially miss small polygons and their associated site series calls.
-4. Decrease the "reals" parameter in the dsmart function. Con: fewer models are produced for comparison and final map generation
-5. Find a way to parallelize the caret::train function within dsmart (a cluster may need to be created prior to running the algorithm)
-6. Decrease the nprob parameter to generate only the most probable map instead of the top 3 most probable maps.
+3. With all realisations produced, compute class probabilities. If class probabilites were produced initially, the mean of a class probability is calculated across each realisation (unless there is only one realisation in which case probabilities are written out to single layer files for each class). If raw classes were produced, classes will be tabulated across each realisation and then probabilites are produced from those and written to individual raster files.
+
+4. With the class probabilities produced, raw classifications are subsequently produced. Because certain areas may have overlap with what site series/structural stage it is, you can get a most probable layer, a second most probable layer, etc. At least 2 most probable layers are created (more may be specified, but in our case we just want the best one), and then a confusion layer (where classes disagree in an area) and Shannon index (where there are diverse classes) are created from calculations on the most probable layers. The final files include the most probable classification, a layer describing the probability of the most probable classification being correct, a confusion layer, and Shannon index layer. 
+
+The files used in future modelling include the most probable classification layer, and the probability layers produced as well.
