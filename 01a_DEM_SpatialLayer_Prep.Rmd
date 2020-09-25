@@ -28,15 +28,16 @@ Before getting started, the first thing to do is to load the required packages. 
 
 ```{r Load Packages}
 
-ls <- c("tidyverse", "terra", "xml2", "sf", "lubridate", "foreach", "rvest", 
-        "httr", "tools")
-new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
-if(length(new_packages)) install.packages(new_packages)
-lapply(ls, library, character.only = TRUE)[0]  # load the required packages
-rm(ls, new_packages)
-
-source(file.path('_functions', 'get_saga.R'))
-source(file.path("_functions", "derive_terrain.R"))
+suppressMessages(suppressWarnings({
+  ls <- c("tidyverse", "terra", "xml2", "sf", "lubridate", "foreach", "rvest", 
+          "httr", "tools")
+  new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+  if(length(new_packages)) install.packages(new_packages)
+  lapply(ls, library, character.only = TRUE)[0]  # load the required packages
+  rm(ls, new_packages)
+  
+  source(file.path('_functions', 'get_saga.R'))
+  source(file.path("_functions", "derive_terrain.R"))}))
 
 ```
 
@@ -77,37 +78,71 @@ raw_files <- c(file.path(raw_file_path, "dem", "w001001.adf"),
 
 # I want to use the terra package for this since it has the ability to be 
 # functionized over any number of input layers so long as their CRS's are all
-# the same, however there is currently a flaw in the project() function...
-# Normally, I would have stacked these in a single "rast" function, however,
-# the extents do not match between the files, hence the list placement of each
-# file
+# the same. Normally, I would have stacked these in a single "rast" function, 
+# however, the extents do not match between the files, hence the list placement of
+# each file
 raw <- lapply(raw_files, function(x) {
-  rast(x) %>% magrittr::set_names(basename(dirname(x)))
-}) %>% magrittr::set_names(basename(dirname(raw_files)))
+  rast(x) %>% magrittr::set_names(basename(dirname(x)))}) %>% 
+  magrittr::set_names(basename(dirname(raw_files)))
 
 # Get the spatial area of each file. From those, the largest possible spatial 
 # extent is created. This assumes that the raw files have the same CRS's
-exts <- lapply(raw, ext)
 new_ext <- ext(c(xmin = min(sapply(raw, xmin)), xmax = max(sapply(raw, xmax)), 
                  ymin = min(sapply(raw, ymin)), ymax = max(sapply(raw, ymax))))
 
-# Adjust the raw extents to be the new, larger extent. Saved as temp files
-raw_adjust <- lapply(raw, function(x) expand(x, new_ext))
-
-# Give a new extent to project rasters to
-# Note: As of terra 0.8.3, the wopt's for project() are ignored and are written
-# as 8 byte signed floating point. Very large, would rather have as 4 byte
+# Give a new extent to project rasters to by projecting the extent and defining
+# the resolution we want the raster to be at
 new_proj <- project(rast(new_ext, crs = crs(raw[[1]])), 
                     paste0("epsg:", epsg))
 res(new_proj) <- 1
 
-# Project rasters to new extent and resolution
-# May be able to use %dopar% here. Test that out
-# Turns out doing it in parallel will be challenging
-lidar <- foreach(x = names(raw_adjust), .final = rast) %do% {
-  project(raw_adjust[[x]], new_proj, overwrite = TRUE, 
-          filename = file.path(AOI.dir, "_original_files", x, paste0(x, ".tif")))
-}
+# Project rasters to new extent and resolution, and trim NA areas
+lidar <- lapply(raw, function(x) {
+  proj <- terra::project(x, new_proj)
+  
+  # Now trim the extra edges. terra package trim function was stalling using
+  # the 1m raster, not sure why that was, so I created my own way to do so 
+  # below.
+  
+  # Need to do col and rowsums omitting NA values. If a whole row is NA when 
+  # this option is applied, the result is 0. For this reason, all valid raster
+  # values need to be changed to values above 0 (i.e.: 1), then it's a simple
+  # matter of finding the rows/columns that don't have sums of 0 - those are 
+  # the minimum and maximum row and column numbers that will be used to index
+  # the minumum and maxiumum x and y coordinates.
+  
+  # This way creates only one tempfile instead of 2, but col and rowsum 
+  # functions need to be carried out in raster package since they are not 
+  # currently available in terra
+  inter <- raster::raster(terra::lapp(proj, function(x) ((x * 0) + 1)))
+  colvals <- raster::colSums(inter, na.rm = TRUE)
+  rowvals <- raster::rowSums(inter, na.rm = TRUE)
+  
+  # We don't care what the sums of the rows are, just that the values > 0 
+  # will indicate what rows/cols have data. The first colsum value is used to find
+  # the xmin coordinate whereas the last colsum value is used to find xmax. This
+  # is reversed for finding y coordinates.
+  proj_ext <- terra::ext(c(
+    xmin = terra::xFromCol(proj, head(which(colvals > 0) - 1, n = 1)),
+    xmax = terra::xFromCol(proj, tail(which(colvals > 0), n = 1)),
+    ymin = terra::yFromRow(proj, tail(which(rowvals > 0) + 1, n = 1)),
+    ymax = terra::yFromRow(proj, head(which(rowvals > 0), n = 1))))
+  
+  # Crop original file to new extent, saved as temp file
+  crop <- terra::crop(proj, proj_ext)})
+
+# Using the list of rasters, find the smallest extent that all of the rasters
+# will fit into
+new_ext <- ext(c(xmin = min(sapply(lidar, xmin)), xmax = max(sapply(lidar, xmax)), 
+                 ymin = min(sapply(lidar, ymin)), ymax = max(sapply(lidar, ymax))))
+
+# Using the above extent, expand the rasters, write them out, and then load them
+# back into R as a single SpatRaster object.
+lidar <- foreach(x = names(lidar), .final = rast) %do% {
+  expand(lidar[[x]], new_ext) %>% 
+    terra::writeRaster(
+      filename = file.path(AOI.dir, "_original_files", x, paste0(x, ".tif")), 
+      overwrite = TRUE)}
 
 ```
 
@@ -136,25 +171,16 @@ for(r in c(1, 4, 5, 10, 25)) {
     new_ext <- rast(ext(lidar), crs = crs(lidar))
     res(new_ext) <- r
     
-    # Note need separate writeraster function to write out multiple files as opposed
-    # to a single multilayered file
-    lidar <- terra::resample(lidar, new_ext) %>% 
-      writeRaster(filename = tempfile(pattern = paste0("spat_", names(.), "_"), fileext = ".tif"),
+    # Note need separate writeraster function to write out multiple files as 
+    # opposed to a single multilayered file
+    lidar <- terra::resample(lidar, new_ext, method = "bilinear") %>% 
+      writeRaster(filename = file.path(dir_out, paste0(names(.), ".tif")), 
                   overwrite = TRUE)
+  } else {
+    lidar <- terra::writeRaster(
+      lidar, overwrite = TRUE,
+      filename = file.path(dir_out, paste0(names(lidar), ".tif")))
   }
-  
-  # Use SAGA to crop image to edges of data (same as terra::trim but much faster,
-  # it also resets the no data values to -99999)
-  t_files <- tempfile(pattern = paste0("spat_saga_", names(lidar), "_"), fileext = ".tif")
-  system2(saga_cmd, paste(
-    "grid_tools 17 -INPUT", paste0(sources(lidar)[, 1], collapse = ";"),
-    "-OUTPUT", paste0(t_files, collapse = ";")
-  ))
-  
-  # Reset the CRS data and write out
-  out <- rast(t_files) %>% magrittr::set_names(names(lidar))
-  crs(out) <- paste0("epsg:", epsg)
-  out <- writeRaster(out, file.path(dir_out, paste0(names(out), ".tif")), overwrite = TRUE)
 }
 
 ```
@@ -170,9 +196,9 @@ All that is left to do now is run the functions!
 # https://www2.gov.bc.ca/assets/gov/data/geographic/topography/250kgrid.pdf
 # https://pub.data.gov.bc.ca/datasets/175624/
 dl_path <- file.path(raw_file_path, "TRIM")
-trim_path <- file.path(covariate_file_path, "25m_TRIM")
+trim_path <- file.path(covariate_file_path, "TRIM")
 
-if(!dir.exists(dl_path) || dir.exists(trim_path)) {
+if(!dir.exists(dl_path) || !dir.exists(trim_path)) {
   dir.create(dl_path, showWarnings = FALSE)
   dir.create(trim_path, showWarnings = FALSE)
   dem_1 <- rast(file.path(covariate_file_path, "1m", "dem.tif"))
@@ -195,18 +221,18 @@ if(!dir.exists(dl_path) || dir.exists(trim_path)) {
   res(dem_1_ext) <- res(trim)
   trim_mask <- resample(dem_1, dem_1_ext)
     
-  trim_bca <- mask(crop(trim, trim_mask), trim_mask, filename = file.path(trim_path, "dem.tif"), overwrite = TRUE)
+  trim_bca <- mask(crop(trim, trim_mask), trim_mask, 
+                   filename = file.path(trim_path, "dem.tif"), overwrite = TRUE)
   
 }
 
-dem_files <- grep("1m", list.files(covariate_file_path, pattern = "dem.tif", 
+dem_files <- grep("1m", list.files(covariate_file_path, pattern = "dem.tif$", 
                                    full.names = TRUE, recursive = TRUE), 
                   value = TRUE, invert = TRUE)
 
 covariates <- foreach(i = dem_files, .final = function(x) 
   setNames(x, basename(dirname(dem_files)))) %do% {
-  dem_derived_layers(i, saga_cmd = saga_cmd)
-  }
+  dem_derived_layers(i, saga_cmd = saga_cmd)}
 
 ```
 
@@ -219,17 +245,20 @@ The program takes as an input a DEM provided as a .asc file in the 4326 projecti
 clim_bc_path <- file.path(file.path(AOI.dir, "0_raw_inputs", "ClimateBC_Layers"))
 dir.create(clim_bc_path, recursive = TRUE, showWarnings = FALSE)
 
-# Flow is a bit weird - problem with the terra package and writing to ascii files,
-# raster package more reliable and probably not losing much time here anyway
-# because raster package is used to read and write files, that's it
+# Flow is a bit weird - first, DEM's are transformed to EPSG 4326 for ClimateBC
+# layers. Any elevation below 0 is changed to NA. Next, the raster package is
+# used to change NA values to -9999, again necessary for generating ClimateBC
+# layers. Finally, the files are written to .asc files. This type of file is not
+# implemented (yet) in the terra package. This is a fairly quick function to run.
 for(i in dem_files) {
   dem_bca <- rast(i)
-  dem_prj <- project(dem_bca, "epsg:4326") %>% 
-    raster::raster() %>% 
-    raster::writeRaster(
-      overwrite = TRUE, format = "ascii", prj = TRUE,
-      filename = file.path(clim_bc_path, paste0("dem_", basename(dirname(i)), ".asc")))
-  
+  dem_prj <- project(dem_bca, "epsg:4326")
+  dem_prj[dem_prj < 0] <- NA
+  dem_prj <- raster::raster(dem_prj)
+  raster::NAvalue(dem_prj) <- -9999
+  raster::writeRaster(
+    dem_prj, overwrite = TRUE, prj = TRUE, NAflag = -9999,
+    filename = file.path(clim_bc_path, paste0("dem_", basename(dirname(i)), ".asc")))
 }
 
 # Create climate layers for normal annual & seasonal 1961-1990, same for 1991-2010, 
@@ -247,7 +276,7 @@ for(i in clim_res) {
   clim_sub <- list.dirs(i, recursive = FALSE)
   for(j in clim_sub) {
     res <- gsub("dem_", "", basename(dirname(j)))
-    dem <- rast(file.path(covariate_file_path, res, "dem.tif"))
+    dem <- rast(file.path(covariate_file_path, res, "dem.tif$"))
     clim_layers <- rast(list.files(j, full.names = TRUE, pattern = ".asc$"))
     
     # Add CRS information and save as tif files
