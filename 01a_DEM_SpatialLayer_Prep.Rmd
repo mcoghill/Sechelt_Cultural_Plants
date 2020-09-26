@@ -8,18 +8,15 @@ output: html_document
 # Introduction
 This document describes the steps required to prepare spatial layers to be used in machine-learning based predictive ecosystem map method. The code used here is largely pawned from PEM project coding, but with adjustments made to suit this project more accurately.
 
-This method is scripted in R, but uses other open source packages, predominently SAGA :  (https://sourceforge.net/projects/saga-gis/). 
+This method is scripted in R, but uses other open source packages, predominently SAGA:  (https://sourceforge.net/projects/saga-gis/). 
 
-##Preparation steps. 
+## Preparation steps
 
 ### Software
 Prior to running this script you will need to download SAGA[https://sourceforge.net/projects/saga-gis/] and know its location. SAGA can be downloaded on an external drive and run independent of pemissions. Additionally, a source script may be called in R to install it to your system.
 
 ### Data 
-To run this script you will need a base digital elevation model (digital terrain model) at 1m resolution. 
-
-### 1) Set up link between Saga and R. 
-This is taken care of with the saga_cmd function
+To run this script you will need a base digital elevation model (digital terrain model) at 1m resolution. In this project, this was provided, though there is no raw LAS files to use, just processed raster grids.
 
 ### Matt's Notes
 The purpose of this document is to derive desired lower resolution DEM's from a 1m DEM, and subsequently create covariate terrain layers for this project. This document uses three coding languages: R, cmd (aka batch), and XML. Command line functions will call individual functions to SAGA, while the XML scripts allow for "chaining" tools together for more efficient processing in SAGA so that SAGA doesn't continuously stop and start. It also prevents the creation of intermediate files. The big benefit of using SAGA is that it automatically uses all cores on the machine you're using. In this manner, SAGA will utilize available RAM on your machine for storing files until the very end when they are written to the disk so in some instances you may be limited in its use depending on the specs of your machine; however, a built in algorithm should be able to adjust how the processing will continue in the event your machine is limited.
@@ -41,11 +38,10 @@ suppressMessages(suppressWarnings({
 
 ```
 
-Run the below function to detect and install SAGA GIS if necessary for your system
+### 1) Set up link between Saga and R. 
+Run the below saga_cmd function to detect and install SAGA GIS if necessary for your system
 
 ```{r download SAGA}
-# NOTE: New function get_saga() will detect your version of SAGA gis and if it's
-# too old (< 7.7.0), it will download and install 7.7.0 (latest lts)
 
 saga_cmd <- get_saga()
 saga_ver <- system2(saga_cmd, "-v", stdout = TRUE)
@@ -53,6 +49,7 @@ saga_ver <- unlist(regmatches(saga_ver, regexec("Version:\\s*(.*?)\\s*\\(", saga
 
 ```
 
+### 2) Define file paths and folders
 In this next chunk, you enter the only input data required for this sheet to function, the rest is (mostly) automated! Simply input the name of the AOI folder, and a projection code.
 
 ```{r R Data Objects}
@@ -68,7 +65,13 @@ dir.create(cov_1m, recursive = TRUE, showWarnings = FALSE)
 
 ```
 
-In the next chunk, we want to specify where the raw files are located. For the Sechelt project, there were two output LiDAR files: a CHM and a DEM, both at resolutions of (almost) 1m. Once the raw LiDAR files have been located, they are transformed to the larger of the two extents using the provided EPSG code for transformation. After grid transformation, the two files should stack properly. There is a test at the bottom of the chunk to see if they will properly stack, and if they don't then a closer look at the files will need to be made in order to determine why they aren't stacking.
+### 3) Transform raw rasters
+In the next chunk, we want to specify where the raw files are located. For the Sechelt project, there were two output LiDAR files: a CHM and a DEM, both at resolutions of (almost) 1m and using a UTM based CRS. Like most projects in BC, I opted to use the BC Albers (EPSG: 3005) CRS. A few steps were required to carry out the desired functionality using the new and powerful terra package. Certain workarounds have been used in order to make certain functions work, though most of the functions required here are fleshed out by the package creator. The terra package is a replacement for the raster package and the benefits are all to do with processing speed and efficiency by harnessing C++ computing. In order to transform the rasters to the BC Albers projection, the following steps needed to be followed:
+
+1. The extents (bounding boxes) of both of the raw DEM and CHM files were different from each other. A new bounding box containing the extents of both files was first created, and then that bounding box was transformed to the BC Albers CRS. 
+2. The raw files were individually transformed to the projection and extent of the BC Albers bounding box. This ensured that they shared the exact same grid.
+3. The individually transformed files were then trimmed to remove outside NA values. There is a built in function for this in terra (trim, used later on); however, at the time of writing this, (September 2020), there was an issue with this function when the 1m grids were being used, so instead a workaround was implemented by finding which rows and columns had data in them, then finding the coordinates of those and trimming to those coordinates
+4. Now that the transformed rasters were individually trimmed, the extents had to once again be combined to get the largest (smallest) bounding box encompassing both of them. The extents of each file were expanded and they were then able to be stacked.
 
 ```{r Specify 1m Raster}
 
@@ -144,21 +147,22 @@ lidar <- foreach(x = names(lidar), .final = rast) %do% {
       filename = file.path(AOI.dir, "_original_files", x, paste0(x, ".tif")), 
       overwrite = TRUE)}
 
+# Cleanup temp files
+suppressWarnings(tmpFiles(old = TRUE, remove = TRUE))
+
 ```
 
-This next chunk is a function which will start the pre-processing of a 1m resolution DEM into your desired DEM resolutions. This is following the examples set out by Lucas Jarron and Nicholas Coops, except this time R will be used to call SAGA GIS functions rather than using ArcGIS or QGIS.
+### 4) Derive lower resolution DEM and CHM files
+This next chunk is a function which will start the pre-processing of a 1m resolution DEM into your desired DEM resolutions. Originally, a complicated method of creating these lower resolution files was devised by Lucas Jarron and Nicholas Coops from UBC; however, I believe that it is unnecessary to do that and you will get just as fine information from a simple resampling method. Regardless, the old method involved the following SAGA GIS tools:
 
-First, focal statistics are computed in a defined area around the focal point (the mean values in a defined area). SAGA calculates these focal statistics based on a radius away from the focal point, thus the resolution of choice is divided by 2 and rounded to the nearest integer. For a radius of 1, it is calculating the mean statistics (elevation) in a 3x3 grid, a radius of 2 will be a 5x5 grid, etc., but the point here is that processing time will increase at coarser resolutions. No weighting is given here since the elevations are given in raw form, so everything is left to the default settings. Source: http://www.saga-gis.org/saga_tool_doc/7.4.0/statistics_grid_1.html
+* Focal statistics (smoothing a DEM over a given size window)
+* Create grid system (creates an empty raster grid for data to be placed into later on)
+* Grid values to points (Creates point features at each of the empty raster cells which data can be extracted to from the smoothed DEM)
+* Add grid values to shapes (gets values from the smoothed DEM)
+* Points to grid (Places values from the points into the empty grid)
+* Crop to data (Removes extra NA values from the edges of the raster)
 
-Next, an empty grid is created using the extent of the smoothed DEM and a cell size (resolution) defined by the choices. The grid only contains values of -99999 which are considered "no data" cells in SAGA. Source: http://www.saga-gis.org/saga_tool_doc/7.4.0/grid_tools_23.html
-
-Next, points are placed in the middle of these grid cells using "Grid values to Points". It takes each cell and assigns a point with the same data as the cell (which will be "no data" on the empty grid). This allows for points to be spatially joined later on at the specified cell resolution. This step can take a while depending on hardware and raster cell size. Source: http://www.saga-gis.org/saga_tool_doc/7.4.0/shapes_grid_3.html
-
-Now that we have points where we want them, they can be attributed using the "Add grid values to shapes" tool. Overlaying the points on the smoothed DEM, the elevations are extracted to the point data. Source: http://www.saga-gis.org/saga_tool_doc/7.4.0/shapes_grid_1.html
-
-A grid was then created from the points layer at the specified resolution. The grid was then cropped to the edges of where data is present in order to speed up processing time as much as possible downstream.
-
-July edit: I've found that there isn't really a lot of difference doing it this long way as there is doing a resample() call. The resampling is a much faster process than the other longer way, so I will prefer to carry out the function call that way.
+Resampling takes into account the neighboring cells, so I don't see why it can't be used to downscale the DEM and CHM here.
 
 ```{r Derive Lower Resolutions}
 
@@ -181,11 +185,17 @@ for(r in c(1, 4, 5, 10, 25)) {
       lidar, overwrite = TRUE,
       filename = file.path(dir_out, paste0(names(lidar), ".tif")))
   }
+  
+  # Cleanup temp files
+  suppressWarnings(tmpFiles(old = TRUE, remove = TRUE))
 }
 
 ```
 
-All that is left to do now is run the functions!
+### 5) Download TRIM and derive terrain attributes
+At one point, the value of TRIM was brought into question - do we even need LiDAR? (yes we do, but this helps drive home a point on comparison methods). We needed 2 TRIM tiles in order to create the DEM from it. Those are downloaded, transformed, and clipped using the shape of the 1m DEM raster.
+
+Finally, a large function (written in the _functions/derive_terrain.R file) is run to create ~19 different covariate layers describing different terrain attributes. This uses SAGA GIS toolchains in order to process everything. The rasters are saved to the same folder as the DEM and CHM.
 
 ```{r Derive terrain attributes}
 
@@ -224,6 +234,9 @@ if(!dir.exists(dl_path) || !dir.exists(trim_path)) {
   trim_bca <- mask(crop(trim, trim_mask), trim_mask, 
                    filename = file.path(trim_path, "dem.tif"), overwrite = TRUE)
   
+  # Cleanup temp files
+  suppressWarnings(tmpFiles(old = TRUE, remove = TRUE))
+  
 }
 
 dem_files <- grep("1m", list.files(covariate_file_path, pattern = "dem.tif$", 
@@ -236,6 +249,7 @@ covariates <- foreach(i = dem_files, .final = function(x)
 
 ```
 
+### 6) ClimateBC layers
 Additionally, we need to produce some raster layers from the ClimateBC program: http://climatebc.ca/
 The program takes as an input a DEM provided as a .asc file in the 4326 projection. Unfortunately, the program has no CLI and I'm not familiar with how to create one from a given program, so as a user you will need to build those layers yourself in the program and then come back here to the code and run the processing to reproject the layers back to your desired EPSG.
 
@@ -259,6 +273,9 @@ for(i in dem_files) {
   raster::writeRaster(
     dem_prj, overwrite = TRUE, prj = TRUE, NAflag = -9999,
     filename = file.path(clim_bc_path, paste0("dem_", basename(dirname(i)), ".asc")))
+  
+  # Cleanup temp files
+  suppressWarnings(tmpFiles(old = TRUE, remove = TRUE))
 }
 
 # Create climate layers for normal annual & seasonal 1961-1990, same for 1991-2010, 
@@ -268,7 +285,6 @@ for(i in dem_files) {
 # ______________________________________________________________________________
 # ______________________________________________________________________________
 
-# Use SAGA to bulk transform grids
 # Folders indicate resolutions, subfolders are the data attribute
 clim_res <- list.dirs(clim_bc_path, full.names = TRUE, recursive = FALSE)
 
@@ -293,398 +309,11 @@ for(i in clim_res) {
       magrittr::set_names(tolower(paste0(basename(j), "_", names(.)))) %>% 
       writeRaster(filename = file.path(covariate_file_path, res, 
                               paste0(names(.), ".tif")), overwrite = TRUE)
+    
+    # Cleanup temp files
+    suppressWarnings(tmpFiles(old = TRUE, remove = TRUE))
   }
 }
 
 ```
-
-Below is some old code that was once useful for various purposes.
-
-```{r Old code}
-# Want to use BC Albers projection, so transform that. Also, the resolution and
-# extent for both the dem and chm are not the same so they will both need to be 
-# reset to have the correct resolution, crs, and extents. Want to reproject the
-# smaller raster to the larger one so that no data is accidentally lost
-# areas <- sapply(raw, terra::area)
-# in_1 <- names(which.max(areas))
-# in_2 <- names(which.min(areas))
-# 
-# tool_list <- list(
-#   header = paste0(
-#     "<?xml version='1.0' encoding='UTF-8'?>
-#           <toolchain saga-version='", saga_ver, "'>
-#           <group>toolchains</group>
-#           <identifier>reproject_original</identifier>
-#           <name>Reproject and Save Original Grids (one step)</name>
-#           <description>
-#             Common DEM derivatives in SAGA GIS
-#           </description>
-#         
-#           <parameters>
-#             <option varname='GRID_SYSTEM' type='grid_system'>
-#               <name>Grid System</name>
-#             </option>
-#             <option varname='TRANS_SYSTEM' type='grid_system'>
-#               <name>Grid System</name>
-#             </option>
-#             <input varname='dem' type='grid' parent='GRID_SYSTEM'>
-#                 <name>DEM</name>
-#             </input>
-#             <input varname='chm' type='grid' parent='TRANS_SYSTEM'>
-#                 <name>CHM</name>
-#             </input>
-#       </parameters>
-#           <tools>", sep = "\n"),
-#   transform_grid_1 = paste0(
-#     "<tool library='pj_proj4' tool='4' name='Coordinate Transformation (Grid)'>
-#         <option id='CRS_PROJ4'>", crs(paste0("+init=epsg:", epsg))@projargs, "</option>
-#         <input id='SOURCE'>", in_1, "</input>
-#         <option id='RESAMPLING'>3</option>
-#         <option id='TARGET_DEFINITION'>0</option>
-#         <option id='TARGET_USER_SIZE'>1</option>
-#         <output id='GRID'>", paste0(in_1, "_out"), "</output>
-#       </tool>"
-#   ), 
-#   transform_grid_2 = paste0(
-#     "<tool library='pj_proj4' tool='4' name='Coordinate Transformation (Grid)'>
-#         <option id='CRS_PROJ4'>", crs(paste0("+init=epsg:", epsg))@projargs, "</option>
-#         <input id='SOURCE'>", in_2, "</input>
-#         <option id='RESAMPLING'>3</option>
-#         <option id='TARGET_DEFINITION'>1</option>
-#         <input id='TARGET_TEMPLATE'>", paste0(in_1, "_out"), "</input>
-#         <output id='GRID'>", paste0(in_2, "_out"), "</output>
-#       </tool>"
-#   ),
-#   export_1 = paste0(
-#     "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
-#         <input id='GRIDS'>dem_out</input>
-#         <option id='FILE'>", file.path(AOI.dir, "_original_files", "dem", "dem.tif"), "</option>
-#       </tool>"
-#   ), 
-#   export_2 = paste0(
-#     "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
-#         <input id='GRIDS'>chm_out</input>
-#         <option id='FILE'>", file.path(AOI.dir, "_original_files", "chm", "chm.tif"), "</option>
-#       </tool>"
-#   ),
-#   footer = paste0(
-#     "</tools>
-#       </toolchain>"
-#   )
-# )
-# call <- paste0(tool_list, sep = "\n", collapse = " ")
-# 
-# # Determine the toolchain directory based on your system
-# xml_dir <- ifelse(
-#   Sys.info()[["sysname"]] == "Windows", 
-#   file.path(dirname(saga_cmd), "tools", "toolchains", "transform_original.xml"), 
-#   file.path(dirname(dirname(saga_cmd)), "share", "saga", 
-#             "toolchains", "transform_original.xml")
-# )
-# 
-# # Write the toolchain xml to a writeable folder
-# write_xml(read_xml(call), xml_dir)
-# 
-# # Create the system command and run it
-# sys_cmd <- paste("toolchains reproject_original", 
-#                  "-dem", file.path(AOI.dir, "_original_files", "dem", "w001001.adf"), 
-#                  "-chm", file.path(AOI.dir, "_original_files", "chm", "w001001.adf"))
-# system2(saga_cmd, sys_cmd)
-# 
-# # Try stacking the outputs
-# lidar <- rast(list.files(file.path(AOI.dir, "_original_files"), 
-#                          pattern = "chm.tif|dem.tif", 
-#                          full.names = TRUE, recursive = TRUE))
-# # Reset the CRS to have the correct parameters and re-save those files
-# crs(lidar) <- paste0("epsg:", epsg)
-# 
-# lidar <- writeRaster(lidar, file.path(cov_1m, paste0(names(lidar), ".tif")), 
-#                      overwrite = TRUE)
-# 
-# 
-# ###############
-# ## Function to generate lower resolutions
-# 
-# lower_resolutions <- function(
-#   grid_1m = NULL, 
-#   out_path = NULL, 
-#   res_choices = NULL,
-#   saga_cmd = NULL
-# ) {
-#   
-#   # Data input checks
-#   if(class(grid_1m) %in% "RasterLayer") {
-#     reference <- grid_1m
-#     grid_1m <- reference@file@name
-#   } else if(is.character(grid_1m) && length(grid_1m) == 1) {
-#     reference <- rast(grid_1m)
-#   } else {
-#     stop(paste(
-#       "\rError: 'grid_1m' must either be a character string to a valid raster 
-#       \rfile, or a valid raster layer brought in by the 'raster' package"
-#     ))
-#   }
-#   
-#   if(is.null(out_path))
-#     out_path <- dirname(dirname(grid_1m))
-#   
-#   if(!is.character(out_path) && length(out_path) != 1)
-#     stop(
-#       "\r'out_path' must be a character string to a folder on your system"
-#     )
-#   
-#   dir.create(out_path, showWarnings = FALSE)
-#   
-#   if(!file.exists(saga_cmd)) 
-#     stop("\rPlease provide a valid path to 'saga_cmd'")
-#   
-#   saga_ver <- system2(saga_cmd, "-v", stdout = TRUE)
-#   saga_ver <- unlist(regmatches(saga_ver, regexec("Version:\\s*(.*?)\\s*\\(", saga_ver)))[2]
-#   
-#   out_grids <- foreach(r = res_choices, .combine = c) %do% {
-#     covariate_out_path <- file.path(out_path, paste0(r, "m"))
-#     dir.create(covariate_out_path, showWarnings = FALSE)
-#     tool_list <- list(
-#       # Different option names for this tool based on SAGA version
-#       focal_stats = paste0(
-#         "<tool library='statistics_grid' tool='1' name='Focal Statistics/Residual Analysis'>
-#            <input id='GRID'>", basename(file_path_sans_ext(grid_1m)), "</input>
-#            <output id='MEAN'>grid_smooth</output>
-#            <option id='BCENTER'>true</option>",
-#         ifelse(
-#           compareVersion(saga_ver, "7.3.0") <= 0, 
-#           paste0("<option id='MODE'>0</option>
-#        	   <option id='RADIUS'>", round(r / 2), "</option>"), 
-#           paste0("<option id='KERNEL_TYPE'>0</option>
-#        	   <option id='KERNEL_RADIUS'>", round(r / 2), "</option>")),
-#         "</tool>"
-#       ),
-#       create_grid = paste0(
-#         "<tool library='grid_tools' tool='23' name='Create Grid System'>
-#            <output id='GRID'>grid_empty</output>
-#            <option id='INIT'>-99999.000000</option>
-#            <option id='M_EXTENT'>3</option>
-#            <option id='ADJUST'>0</option>
-#            <option id='USEOFF'>false</option>
-#     	     <option id='CELLSIZE'>", r, "</option>
-#            <input id='GRIDLIST'>grid_smooth</input>
-#          </tool>"
-#       ), 
-#       grid_to_points = paste0(
-#         "<tool library='shapes_grid' tool='3' name='Grid Values to Points'>
-#            <output id='SHAPES'>points_empty</output>
-#            <option id='NODATA'>false</option>
-#            <option id='TYPE'>0</option>
-#            <input id='GRIDS'>grid_empty</input>
-#          </tool>"
-#       ), 
-#       smooth_values_to_points = paste0(
-#         "<tool library='shapes_grid' tool='1' name='Add Grid Values to Shapes'>
-#           <output id='RESULT'>points_filled</output>
-#            <option id='RESAMPLING'>3</option>
-#            <input id='SHAPES'>points_empty</input>
-#            <input id='GRIDS'>grid_smooth</input>
-#          </tool>"
-#       ),
-#       points_to_grid = paste0(
-#         "<tool library='grid_gridding' tool='0' name='Shapes to Grid'>
-#            <output id='GRID'>grid_downscaled</output>
-#            <option id='FIELD'>Mean Value</option>
-#            <option id='TARGET_DEFINITION'>1</option>
-#            <input id='TARGET_TEMPLATE'>grid_empty</input>
-#            <input id='INPUT'>points_filled</input>
-#          </tool>"
-#       ), 
-#       crop_grid = paste0(
-#         "<tool library='grid_tools' tool='17' name='Crop to Data'>
-#            <output id='OUTPUT'>", toupper(basename(file_path_sans_ext(grid_1m))), "</output>
-#            <input id='INPUT'>grid_downscaled</input>
-#          </tool>"
-#       )
-#     )
-#     
-#     # End list of tools, don't adjust code after here
-#     #############################################################################
-#     
-#     tools <- lapply(tool_list, function(x) {
-#       inputs = gsub(".*>", "", regmatches(
-#         x, gregexpr("(?<=<input).*?(?=</input>)", x, perl = TRUE))[[1]])
-#       outputs = unique(gsub(".*>", "", regmatches(
-#         x, gregexpr("(?<=<output).*?(?=</output>)", x, perl = TRUE))[[1]]))
-#       tc = sum(length(outputs))
-#       
-#       tibble(tool = x, inputs = list(inputs), outputs = list(outputs), tc = tc)
-#     })
-#     
-#     # Dynamically split processing based on the amount of available RAM a PC has.
-#     # The following code will determine the best way to process the rasters
-#     # based on the amount of RAM on a users machine. It does this by summing the
-#     # number of inputs and outputs and comparing them to the maximum number of 
-#     # files your system can hold based on the size of the input DEM.
-#     raster_size <- file.info(grid_1m)$size / 1024 ^ 2 
-#     raster_size_deriv <- raster_size / (r ^ 2)
-#     raster_memory <- (raster_size * 2) + (raster_size_deriv * 3)
-#     memory <- memory.limit() - raster_memory - 1024 # Leave ~1GB of RAM available?
-#     if(memory > (memory.limit() - 1024)) {
-#       n_files <- floor(memory.limit() - 1024 / raster_size)
-#     } else n_files <- Inf
-#     
-#     # Adjust tools list
-#     for(i in 1:length(tools)) {
-#       try({
-#         if(tools[[i]]$tc < n_files) {
-#           while(sum(tools[[i]]$tc, tools[[i + 1]]$tc) < n_files) {
-#             y <- rbind(tools[[i]], tools[[i + 1]])
-#             y[1, "tc"] <- sum(y$tc)
-#             y[1, "tool"] <- paste(y$tool, collapse = "\n")
-#             y[1, "inputs"][[1]] <- list(unlist(y$inputs))
-#             y[1, "outputs"][[1]] <- list(unlist(y$outputs))
-#             y <- y[1, ]
-#             tools[[i]] <- y
-#             tools[[i + 1]] <- NULL
-#           }
-#         }
-#       }, silent = TRUE)
-#     }
-#     
-#     # Fix inputs and outputs columns, add function to call the whole thing in cmd
-#     xml_layout <- lapply(tools, function(x) {
-#       x$inputs <- list(
-#         unique(unlist(x$inputs)[!unlist(x$inputs) %in% unlist(x$outputs)])
-#       )
-#       
-#       x$input_xml <- foreach(i = unlist(x$inputs), .combine = paste) %do% {
-#         if(startsWith(i, "points")) {
-#           paste0("<input varname='", i, "' type='shapes' parent='GRID_SYSTEM'>
-#           <name>", i, "</name>
-#       </input>\n", collapse = " ")
-#         } else {
-#           paste0("<input varname='", i, "' type='grid' parent='GRID_SYSTEM'>
-#           <name>", i, "</name>
-#       </input>\n", collapse = " ")
-#         }
-#       }
-#       
-#       if(n_files == Inf) {
-#         x$outputs <- paste0(
-#           "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
-#               <input id='GRIDS'>grid_downscaled</input>
-#               <option id='FILE'>", file.path(covariate_out_path, "grid_downscaled.tif"), "</option>
-#             </tool>\n", 
-#           "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
-#               <input id='GRIDS'>", toupper(basename(file_path_sans_ext(grid_1m))), "</input>
-#               <option id='FILE'>", file.path(covariate_out_path, basename(grid_1m)), "</option>
-#             </tool>\n",
-#           collapse = " ")
-#       } else {
-#         x$outputs <- foreach(k = unlist(x$outputs), .combine = paste) %do% {
-#           if(startsWith(k, "points")) {
-#             paste0(
-#               "<tool library='io_gdal' tool='4' name='Export Shapes'>
-#               <input id='SHAPES'>", k, "</input>
-#               <option id='FILE'>", file.path(covariate_out_path, paste0(k, ".shp")), "</option>
-#               <option id='FORMAT'>7</option>
-#             </tool>\n", collapse = " ")
-#           } else {
-#             paste0(
-#               "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
-#               <input id='GRIDS'>", k, "</input>
-#               <option id='FILE'>", file.path(covariate_out_path, paste0(k, ".tif")), "</option>
-#             </tool>\n", collapse = " ")
-#           }
-#         }
-#       }
-#       
-#       x$header <- paste0(
-#         "<?xml version='1.0' encoding='UTF-8'?>
-#           <toolchain saga-version='", saga_ver, "'>
-#           <group>toolchains</group>
-#           <identifier>Downscale</identifier>
-#           <name>Derived Layers (one step)</name>
-#           <description>
-#             Common DEM derivatives in SAGA GIS
-#           </description>
-#         
-#           <parameters>
-#             <option varname='GRID_SYSTEM' type='grid_system'>
-#               <name>Grid System</name>
-#             </option>
-#             ", x$input_xml,
-#           "</parameters>
-#           <tools>", sep = "\n")
-#       
-#       x$footer <- paste0(
-#         "</tools>
-#       </toolchain>"
-#       )
-#       
-#       x$call <- paste(x$header, x$tool, x$outputs, x$footer, sep = "\n")
-#       return(x)
-#     })
-#     
-#     # Define text for cmd input
-#     cmd_text <- lapply(xml_layout, function(x) {
-#       foreach(k = unlist(x$inputs), .combine = paste) %do% {
-#         if(startsWith(k, "points")) {
-#           paste0("-", k, " ", file.path(covariate_out_path, paste0(k, ".shp")), collapse = " ")
-#         } else if(startsWith(k, basename(file_path_sans_ext(grid_1m)))) {
-#           paste0("-", k, " ", grid_1m, collapse = " ")
-#         } else {
-#           paste0("-", k, " ", file.path(covariate_out_path, paste0(k, ".tif")), collapse = " ")
-#         }
-#       }
-#     })
-#     
-#     # Determine the toolchain directory based on your system
-#     lower_res_xml <- ifelse(
-#       Sys.info()[["sysname"]] == "Windows", 
-#       file.path(dirname(saga_cmd), "tools", "toolchains", "raster_downscale.xml"), 
-#       file.path(dirname(dirname(saga_cmd)), "share", "saga", 
-#                 "toolchains", "raster_downscale.xml")
-#     )
-#     
-#     # Process SAGA toolchains in the list
-#     for(p in 1:length(xml_layout)) {
-#       write_xml(read_xml(xml_layout[[p]]$call), lower_res_xml)
-#       sys_cmd <- paste("toolchains Downscale", cmd_text[[p]])
-#       system2(saga_cmd, sys_cmd)
-#     }
-#     
-#     # Remove intermediate files
-#     if(file.exists(file.path(covariate_out_path, toupper(basename(grid_1m))))) {
-#       pattern <- "grid_smooth|grid_empty|points_empty|points_filled|grid_downscaled"
-#     } else pattern <- "grid_smooth|grid_empty|points_empty|points_filled"
-#     
-#     unlink(list.files(
-#       covariate_out_path, 
-#       pattern = pattern,
-#       full.names = TRUE)
-#     )
-#     
-#     # Rename output files
-#     output <- list.files(
-#       covariate_out_path, 
-#       pattern = paste(basename(grid_1m), "grid_downscaled.tif", sep = "|"),
-#       full.names = TRUE, ignore.case = TRUE)
-#     
-#     file.rename(output, file.path(dirname(output), tolower(basename(output))))
-#     list.files(covariate_out_path, pattern = basename(grid_1m), full.names = TRUE)
-#   }
-#   return(out_grids)
-# }
-# 
-# # Run function
-# lidar_layers <- list.files(cov_1m, pattern = "dem.tif|chm.tif", full.names = TRUE)
-# 
-# low_res <- foreach(grid = lidar_layers, .combine = c) %do% {
-#   lower_resolutions(
-#     grid_1m = grid, 
-#     out_path = covariate_file_path, 
-#     res_choices = c(4, 25), 
-#     saga_cmd = saga_cmd
-#   )
-# }
-
-```
-
 
