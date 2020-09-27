@@ -2,5 +2,20 @@
 .Rhistory
 .RData
 .Ruserdata
+# Initialize functions folder
 */
 !_functions/
+
+# Initialize folders containing LiDAR files
+!Sechelt_AOI/
+Sechelt_AOI/*
+!Sechelt_AOI/_original_files/
+Sechelt_AOI/_original_files/*
+!Sechelt_AOI/_original_files/README.txt
+
+# Initialize field data folders and files
+!Sechelt_AOI/1_map_inputs/
+Sechelt_AOI/1_map_inputs/*
+!Sechelt_AOI/1_map_inputs/field_data/
+Sechelt_AOI/1_map_inputs/field_data/*
+!Sechelt_AOI/1_map_inputs/field_data/raw
