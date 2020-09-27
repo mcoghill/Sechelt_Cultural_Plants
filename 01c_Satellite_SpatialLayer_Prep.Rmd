@@ -17,17 +17,18 @@ The first thing that will be done is load in the required packages. SAGA CMD is 
 
 ```{r load library, echo = FALSE}
 
-ls <- c("raster", "RStoolbox", "reticulate", "terra", "sf",
-        "googledrive", "tidyverse", "stringi", "rstudioapi", "foreach")
-new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
-if(length(new_packages))
-  install.packages(new_packages)
-if(compareVersion(packageDescription("raster")$Version, "3.3-14") < 0) 
-  devtools::install_github("rspatial/raster")
-if(compareVersion(packageDescription("terra")$Version, "0.8-5") < 0) 
-  install.packages("rspatial/terra")
-lapply(ls[ls != "reticulate"], library, character.only = TRUE)[0]
-rm(ls, new_packages)
+suppressMessages(suppressWarnings({
+  ls <- c("raster", "RStoolbox", "reticulate", "terra", "sf",
+          "googledrive", "tidyverse", "stringi", "rstudioapi", "foreach")
+  new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+  if(length(new_packages))
+    install.packages(new_packages)
+  if(compareVersion(packageDescription("raster")$Version, "3.3-14") < 0) 
+    devtools::install_github("rspatial/raster")
+  if(compareVersion(packageDescription("terra")$Version, "0.8-5") < 0) 
+    install.packages("rspatial/terra")
+  lapply(ls[ls != "reticulate"], library, character.only = TRUE)[0]
+  rm(ls, new_packages)}))
 
 ```
 
@@ -268,8 +269,7 @@ get_sentinel_ee <- function(
           reproject(paste0("EPSG:", out_epsg), NULL, bands$res[j]),
         folder = drive_get(paste0("Sentinel2/", date_id))$name,
         maxPixels = ncell(raster(template_raster)) * 2,
-        fileNamePrefix = bands$new_name[j]
-      )
+        fileNamePrefix = bands$new_name[j])
       
       # Save the bands to google drive and download them
       task_img$start()
@@ -356,8 +356,7 @@ bands_to_indices <- function(
       ~band_no, ~band_name,
       "b01", "ultrablue", "b02", "blue", "b03", "green", "b04", "red", 
       "b05", "redEdge1", "b06", "redEdge2", "b07", "redEdge3", "b08", "nir",
-      "b09", "wv", "b11", "swir2", "b12", "swir3", "b8A", "narrow_nir"
-    )
+      "b09", "wv", "b11", "swir2", "b12", "swir3", "b8A", "narrow_nir")
     
     for(i in 1:nlayers(satellite_stack)) {
       if(any(grepl(names(satellite_stack)[i], band_lookup$band_no))) {
@@ -390,8 +389,7 @@ bands_to_indices <- function(
         magrittr::set_names(f_names) %>% 
         terra::writeRaster(filename = file.path(dirname(i), paste0(f_names, ".tif")),
                            overwrite = TRUE)
-    } %>% magrittr::set_names(basename(dirname(reference_raster)))
-  }))
+    } %>% magrittr::set_names(basename(dirname(reference_raster)))}))
   return(out)
 }
 
@@ -419,8 +417,7 @@ seasons_df <- data.frame(
   season = c("winter", "spring", "summer", "fall", "2019"),
   start = c("2018-12-21", "2019-03-20", "2019-06-21", "2019-09-23", "2019-01-01"),
   end = c("2019-03-19", "2019-06-20", "2019-09-22", "2019-12-21", "2019-12-31"),
-  stringsAsFactors = FALSE
-)
+  stringsAsFactors = FALSE)
 
 # Authorize R to view/edit your Google Drive folders
 term <- rstudioapi::terminalCreate()
@@ -435,8 +432,7 @@ ee_download <- get_sentinel_ee(
   template_raster = dem_hi_res,
   date_ranges = seasons_df,
   drive_folder = "Sentinel2",
-  download_folder = file.path(raw_path, "1_download")
-)
+  download_folder = file.path(raw_path, "1_download"))
 
 season_dirs <- dir(file.path(raw_path, "1_download"), 
                    full.names = TRUE)[dir(file.path(raw_path, "1_download"))
