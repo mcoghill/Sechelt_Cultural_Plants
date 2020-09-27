@@ -27,26 +27,21 @@ suppressMessages(suppressWarnings({
 
 * BEC - [Biogeoclimatic Ecosystems Classification](https://catalogue.data.gov.bc.ca/dataset/bec-map) are used to define and/or select specific "subzones" within a defined study area. 
 
-* Vegetation Resource Inventory (VRI) - This layer includes a variety of vegetation measure, including cutblock age, TEM data and ..... Detailed data standards can be found [here](https://www2.gov.bc.ca/gov/content/industry/forestry/managing-our-forest-resources/forest-inventory/data-management-and-access/vri-data-standards).  
+* TEM - [Terrestrial Ecosystem Mapping](https://catalogue.data.gov.bc.ca/dataset/terrestrial-ecosystem-mapping-tem-detailed-polygons-with-short-attribute-table-spatial-view) data is used later on to rasterize the study area based on deciles.
 
-* Freshwater Atlas -  The atlas is separated into the different types of waterbodies (lakes, rivers, wetlands, streams, man made, etc.), which requires a seperate download per type. Alternatively a single combined layer can be downloaded but is limited to linear data type. A parameter within the function can be set to "polygon" (the default option) or "linear".  
+* VRI [Vegetation Resource Inventory](https://catalogue.data.gov.bc.ca/dataset/vri-2019-forest-vegetation-composite-rank-1-layer-r1-) - This layer includes a variety of vegetation measure, including cutblock age, TEM data, etc. Detailed data standards can be found [here](https://www2.gov.bc.ca/gov/content/industry/forestry/managing-our-forest-resources/forest-inventory/data-management-and-access/vri-data-standards).
 
-* Road network - In previous works, the raw road network was found to be too detailed. The raw road network is filtered to only keep named roads, and then the up to date FSR layer is downloaded and merged with the filtered road network to produce a really good representation of where roads are actually located on the landscape.
+* [Cutblocks](https://catalogue.data.gov.bc.ca/dataset/harvested-areas-of-bc-consolidated-cutblocks-) - This augments the VRI layer to highlight cutblock polygons in the area which may be useful for determining where/where not to sample
 
-* Terrestrial Ecosystem Map (TEM) - If a study area contains a TEM from a previous project, it is downloaded here. A TEM is similar to a PEM, though it is a more expert based approach, whereas a PEM uses machine learning to find the site series.
+* Freshwater Atlas -  The atlas is separated into the different types of waterbodies ([lakes](https://catalogue.data.gov.bc.ca/dataset/freshwater-atlas-lakes), [rivers](https://catalogue.data.gov.bc.ca/dataset/freshwater-atlas-rivers), [wetlands](https://catalogue.data.gov.bc.ca/dataset/freshwater-atlas-wetlands), streams, man made, etc.), which requires a separate download per type. Lakes, rivers, and wetlands have polygon attributes which are downloaded here and merged together at the end.
 
-* Cutblocks - This augments the VRI layer to highlight cutblock polygons in the area which may be useful for determining where/where not to sample
+* Road network - In previous works, the [raw road network](https://catalogue.data.gov.bc.ca/dataset/digital-road-atlas-dra-master-partially-attributed-roads) was found to be too detailed. The raw road network is filtered to only keep named roads, and then the up to date [Forest Service Road (FSR) layer](https://catalogue.data.gov.bc.ca/dataset/forest-tenure-road-segment-lines) is downloaded and merged with the filtered road network to produce a really good representation of where roads are actually located on the landscape.
 
-
-
+* Fire - Not currently used for anything but may provide some information as to where we should not sample since data may be skewed due to fire. Combines both [current](https://catalogue.data.gov.bc.ca/dataset/fire-perimeters-current) and [historical](https://catalogue.data.gov.bc.ca/dataset/fire-perimeters-historical) polygons.
 
 ## Work-flow
 
-This script relies on having a spatial file (AOI.gpkg) defining the study area (area of interest - AOI). This will need to be created from your DEM file.
-
-Where a subset of the study area is being used (ie. by subzone), a character string is used to define the subzone(s) of interest and filter only the areas you specify. The default value (NULL) will include all subzones. 
-
-Finally, it is assumed that since you have an AOI shapefile that it was produced in the initial LiDAR script, implying that some raster files were produced (height metrics and dem). If a subzone filter was applied, you may want to mask your raster to the new AOI shape so that they are excluded from further analysis.
+This script relies on having an sf or sfc object, or list of either of those as inputs (ie: polygons representing the areas of interest). This is created from a DEM file. Afterwards, the function processes the requested downloads of each layer listed above and clips them to the AOI shape.
 
 ```{r Parameters}
 
@@ -81,7 +76,7 @@ for(i in dem_files) {
 
 ```
 
-A single function is used to download BEC zone info, VRI shapes, TEM shapes (if applicable), water bodies, and roads all in one go. Each is clipped to the extent of the study area at each resolution, though this may not be very efficient. 
+A single function is used to download all layers listed above. If multiple AOI's are provided, the layer is downloaded once and then clipped to the respective AOI.
 
 ```{r Function}
 
@@ -397,7 +392,7 @@ get_bc_shapes <- function(in_aoi, out_path, epsg = 3005) {
 
 ```
 
-We can define input AOI's at each resolution and run the function to save all of the downloaded files. If there are only some subzones of interest, the raster files can be updated to that extent here.
+The AOI's are read into R and then converted to sfc objects (not necessary, just simpler for me to think about). The function is then ran to process each file. Improvements may be made where files don't get saved in the function but rather get saved in the markdown file below, as well as perhaps placing the above function into a .R file of its own, and finally applying filters for which layers I would care to download from the ones coded in there.
 
 ```{r Run Function}
 
