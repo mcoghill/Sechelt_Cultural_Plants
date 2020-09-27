@@ -274,14 +274,21 @@ The program takes as an input a DEM provided as a .asc file in the 4326 projecti
 clim_bc_path <- file.path(file.path(AOI.dir, "0_raw_inputs", "ClimateBC_Layers"))
 dir.create(clim_bc_path, recursive = TRUE, showWarnings = FALSE)
 
-# Flow is a bit weird - first, DEM's are transformed to EPSG 4326 for ClimateBC
-# layers. Any elevation below 0 is changed to NA. Next, the raster package is
-# used to change NA values to -9999, again necessary for generating ClimateBC
-# layers. Finally, the files are written to .asc files. This type of file is not
-# implemented (yet) in the terra package. This is a fairly quick function to run.
+# Flow is a bit weird - first, raster package is used to load DEM files. The 
+# extents of those rasters is projected to lat/long, and the minimum resolution
+# value from that is used to define the resolution for the whole pixel (this 
+# is necessary because the projection causes unequl resolution values). Objects
+# are then converted to terra objects for projection to lat/long. Any elevation 
+# below 0 is changed to NA. Next, the raster package is used to change NA values  
+# to -9999, again necessary for generating ClimateBC layers. Finally, the files 
+# are written to .asc files. This type of file is not implemented (yet) in the
+# terra package. This is a fairly quick function to run.
 for(i in dem_files) {
+  dem_bca <- raster::raster(i)
+  dem_prj <- raster::projectExtent(dem_bca, crs("+init=epsg:4326"))
+  res(dem_prj) <- min(res(dem_prj))
   dem_bca <- rast(i)
-  dem_prj <- project(dem_bca, "epsg:4326")
+  dem_prj <- project(dem_bca, rast(dem_prj))
   dem_prj[dem_prj < 0] <- NA
   dem_prj <- raster::raster(dem_prj)
   raster::NAvalue(dem_prj) <- -9999
