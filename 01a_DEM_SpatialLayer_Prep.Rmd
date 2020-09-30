@@ -327,7 +327,7 @@ for(i in clim_res) {
     # max values and rasters that are all equal)
     clim_layers_valid <- as.data.frame(t(minmax(clim_layers))) %>% 
       rownames_to_column("id") %>% 
-      dplyr::filter(rmin <= rmax)
+      dplyr::filter(rmin < rmax)
     
     clim_layers <- subset(clim_layers, clim_layers_valid$id)
     
