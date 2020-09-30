@@ -8,12 +8,12 @@ output: html_document
 # Introduction
 This document describes the steps required to prepare spatial layers to be used in machine-learning based predictive ecosystem map method. The code used here is largely pawned from PEM project coding, but with adjustments made to suit this project more accurately.
 
-This method is scripted in R, but uses other open source packages, predominently SAGA:  (https://sourceforge.net/projects/saga-gis/). 
+This method is scripted in R, but uses other open source packages, predominently [SAGA:](https://sourceforge.net/projects/saga-gis/). 
 
 ## Preparation steps
 
 ### Software
-Prior to running this script you will need to download SAGA[https://sourceforge.net/projects/saga-gis/] and know its location. SAGA can be downloaded on an external drive and run independent of pemissions. Additionally, a source script may be called in R to install it to your system.
+Prior to running this script you will need to download [SAGA](https://sourceforge.net/projects/saga-gis/) and know its location. SAGA can be downloaded on an external drive and run independent of pemissions. Additionally, a source script may be called in R to install it to your system.
 
 ### Data 
 To run this script you will need a base digital elevation model (digital terrain model) at 1m resolution. In this project, this was provided, though there is no raw LAS files to use, just processed raster grids.
@@ -312,22 +312,19 @@ clim_res <- list.dirs(clim_bc_path, full.names = TRUE, recursive = FALSE)
 
 for(i in clim_res) {
   clim_sub <- list.dirs(i, recursive = FALSE)
+  res <- gsub("dem_", "", basename(i))
+  dem <- rast(file.path(covariate_file_path, res, "dem.tif"))
   for(j in clim_sub) {
-    res <- gsub("dem_", "", basename(dirname(j)))
-    dem <- rast(file.path(covariate_file_path, res, "dem.tif$"))
-    clim_layers <- rast(list.files(j, full.names = TRUE, pattern = ".asc$"))
-    
     # Add CRS information and save as tif files
     # terra cannot reproject when CRS is in memory, it has to be in storage. The
     # clever way is to save them to the same spot as .tif files, but could also
     # be written as temp files elsewhere
-    crs(clim_layers) <- "epsg:4326"
-    clim_layers <- writeRaster(clim_layers, file.path(j, paste0(names(clim_layers), ".tif")),
-                               overwrite = TRUE)
+    clim_layers <- rast(list.files(j, full.names = TRUE, pattern = ".asc$"), 
+                        crs = "epsg:4326") %>% 
+      writeRaster(tempfile(pattern = "spat_", fileext = ".tif"))
     
     # Do the reprojection now
-    p <- project(clim_layers, dem) %>% 
-      mask(dem) %>% 
+    p <- project(clim_layers, dem, mask = TRUE) %>% 
       magrittr::set_names(tolower(paste0(basename(j), "_", names(.)))) %>% 
       writeRaster(filename = file.path(covariate_file_path, res, 
                               paste0(names(.), ".tif")), overwrite = TRUE)
