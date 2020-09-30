@@ -323,6 +323,14 @@ for(i in clim_res) {
                         crs = "epsg:4326") %>% 
       writeRaster(tempfile(pattern = "spat_", fileext = ".tif"))
     
+    # Remove layers from processing that are invalid (min values greater than 
+    # max values and rasters that are all equal)
+    clim_layers_valid <- as.data.frame(t(minmax(clim_layers))) %>% 
+      rownames_to_column("id") %>% 
+      dplyr::filter(rmin <= rmax)
+    
+    clim_layers <- subset(clim_layers, clim_layers_valid$id)
+    
     # Do the reprojection now
     p <- project(clim_layers, dem, mask = TRUE) %>% 
       magrittr::set_names(tolower(paste0(basename(j), "_", names(.)))) %>% 
