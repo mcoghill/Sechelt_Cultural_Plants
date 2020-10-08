@@ -1,0 +1,100 @@
+---
+title: "05_Model_Agreement_Enhancement"
+author: "Matt"
+date: "9/27/2020"
+output: html_document
+---
+
+This file is very similar in style to the 03 file, just using models that were run in the 04 scripts (i.e.: updated models). First, load the pakcages.
+
+```{r}
+
+suppressMessages(suppressWarnings({
+  ls <- c("tidyverse", "terra")
+  new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+  if(length(new.packages))
+    install.packages(new.packages)
+  lapply(ls, library, character.only = TRUE)[0]
+  rm(ls, new.packages)}))
+
+```
+
+Then, set up the directories.
+
+```{r Directory setup}
+
+AOI <- "Sechelt"
+AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
+map_res <- 4
+
+model_dir <- file.path(AOI_dir, "4_map_predictions_enhanced")
+covariate_folder <- file.path(AOI_dir, "1_map_inputs", "covariates")
+res_folder <- paste0(map_res, "m")
+dsmart_dirs <- file.path(
+  AOI_dir, "1_map_inputs", paste0("2020_dsmart_", c("site_ser", "struct_stg")))
+
+covariates <- rast(c(
+  list.files(file.path(covariate_folder, res_folder), 
+             pattern = ".tif$", full.names = TRUE),
+  list.files(c(file.path(
+    dsmart_dirs[endsWith(dsmart_dirs, "site_ser")], "simple"), 
+    file.path(dsmart_dirs, "output", "probabilities")), 
+    pattern = ".tif$", full.names = TRUE),
+  list.files(dsmart_dirs, pattern = ".tif$", full.names = TRUE)))
+
+```
+
+The below script processes the models to reclassify the models to have cell values of either 0 (no plant presence) or 1 (plant is present) based on the scripted cutoff values. For each plant and for each cutoff value, models are reclassified and then summed together to find where the models agree that plants are present.
+
+```{r Pres Abs model agreement}
+
+pred_folder <- file.path(model_dir, "pres_abs_predictions")
+out_folder <- file.path(
+  AOI_dir, "5_model_agreement_enhanced", "pres_abs_agreement")
+dir.create(out_folder, showWarnings = FALSE, recursive = TRUE)
+prob_cutoff <- c(0.5, 0.75) %>% magrittr::set_names(c("0.5", "0.75"))
+
+out <- sapply(c("Corn can", "Rubu spe"), function(i) {
+  
+  # Gather all of the model outputs
+  model_stack <- rast(
+    sapply(dir(pred_folder, pattern = i, full.names = TRUE), list.files, 
+           pattern = "_TRUE.tif$", full.names = TRUE))
+  
+  mod_modified <- sapply(prob_cutoff, function(j) {
+    
+    # Classify cell values
+    rcl <- classify(model_stack, matrix(c(0, j, 0, j, 1, 1), ncol = 3, byrow = TRUE))
+    
+    # Create summed raster
+    agreement <- app(
+      rcl, fun = "sum", na.rm = TRUE,
+      filename = file.path(out_folder, paste0(
+        i, "_pres_abs_gt_", 100 * j, "_model_agreement.tif")), 
+      overwrite = TRUE, wopt = list(datatype = "INT2S"))
+    
+    agreement_freq <- as.data.frame(freq(agreement, bylayer = FALSE)) %>%
+      magrittr::set_colnames(c("zone", "count"))
+    
+    # Zonal statistics
+    z_stats <- c(sapply(c("mean", "sd", "min", "max"), function(x) 
+      zonal(covariates, agreement, fun = x, na.rm = TRUE), 
+      simplify = FALSE, USE.NAMES = TRUE), 
+      freq = list(agreement_freq))
+    
+    # Cleanup
+    suppressWarnings(terra::tmpFiles(old = TRUE, remove = TRUE))
+    
+    return(z_stats)
+  }, simplify = FALSE, USE.NAMES = TRUE)
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+# Write csv's of results
+lapply(names(out), function(x) {
+  lapply(names(out[[x]]), function(y) {
+    lapply(names(out[[x]][[y]]), function(z) {
+      write.csv(out[[x]][[y]][[z]], file.path(out_folder, paste0(
+        x, "_", z, "_pres_abs_gt_", as.numeric(y) * 100, ".csv")), 
+        row.names = FALSE)})})})
+
+```
