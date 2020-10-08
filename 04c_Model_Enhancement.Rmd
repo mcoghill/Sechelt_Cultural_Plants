@@ -147,6 +147,10 @@ mask_layers <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
                data_cells = data.frame(freq(new))$count)
   } %>% arrange(desc(data_cells))
 
+covariates <- subset(covariates, dplyr::pull(
+  dplyr::filter(mask_layers, data_cells >= quantile(data_cells, prob = 0.05)), 
+  var = layer))
+
 # mask_layers <- data.frame(layer = "chm", data_cells = Inf)
 
 # Attributed point data - limit to only CORNCAN and RUBUSPE
