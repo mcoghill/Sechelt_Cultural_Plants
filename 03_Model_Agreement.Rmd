@@ -5,18 +5,21 @@ date: "7/14/2020"
 output: html_document
 ---
 
+The purpose of this file is to pull together all of the models run in the previous script and merge them together in order to find the areas where models are agreeing that a plant is present in a given raster cell. This is a fairly simple idea that was founded by Michael Ryan in our discussions. First, load the required packages
+
 ```{r}
 
-ls <- c("tidyverse", "terra", "foreach", "raster")
-new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
-if(length(new.packages))
-  install.packages(new.packages)
-lapply(ls, library, character.only = TRUE)[0]
-rm(ls, new.packages)
+suppressMessages(suppressWarnings({
+  ls <- c("tidyverse", "terra", "foreach", "raster")
+  new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+  if(length(new.packages))
+    install.packages(new.packages)
+  lapply(ls, library, character.only = TRUE)[0]
+  rm(ls, new.packages)}))
 
 ```
 
-
+Next, load the direcotries that will be used for this script.
 
 ```{r Directory setup}
 
@@ -25,16 +28,28 @@ AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 map_res <- 4
 
 model_dir <- file.path(AOI_dir, "2_map_predictions")
-covariate_folder <- file.path(AOI_dir, "1_map_inputs", "covariates")
-res_folder <- paste0(map_res, "m")
-dsmart_folder <- file.path(AOI_dir, "1_map_inputs", "dsmart")
+covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
+res_dir <- paste0(map_res, "m")
+dsmart_dirs <- file.path(
+  AOI_dir, "1_map_inputs", paste0("dsmart_", c("site_ser", "struct_stg")))
 
-covariates <- c(
-  list.files(file.path(covariate_folder, res_folder), full.names = TRUE, pattern = ".tif$"),
-  list.files(file.path(dsmart_folder, "simple"), pattern = ".tif$", full.names = TRUE),
-  list.files(file.path(dsmart_folder, "output", "probabilities"), pattern = ".tif", full.names = TRUE),
-  file.path(dsmart_folder, "output", "realisations", "realisation_1.tif")
-)
+covariates <- rast(c(
+  list.files(file.path(covariate_dir, res_dir), 
+             pattern = ".tif$", full.names = TRUE),
+  list.files(file.path(dsmart_dir, "simple"), 
+             pattern = ".tif$", full.names = TRUE),
+  list.files(file.path(dsmart_dir, "output", "probabilities"), 
+             pattern = ".tif", full.names = TRUE),
+  file.path(dsmart_dir, "output", "realisations", "realisation_1.tif")))
+
+covariates <- rast(c(
+  list.files(file.path(covariate_dir, res_dir), 
+             pattern = ".tif$", full.names = TRUE),
+  list.files(c(file.path(
+    dsmart_dirs[endsWith(dsmart_dirs, "site_ser")], "simple"), 
+    file.path(dsmart_dirs, "output", "probabilities")), 
+    pattern = ".tif$", full.names = TRUE),
+  list.files(dsmart_dirs, pattern = ".tif$", full.names = TRUE)))
 
 ```
 
@@ -42,54 +57,51 @@ Simple method proposed by Mike: Count the number of maps that predicted a plant 
 
 ```{r Pres Abs model agreement}
 
-pred_folder <- file.path(model_dir, "pres_abs_predictions")
-out_folder <- file.path(model_dir, "pres_abs_agreement")
-dir.create(out_folder, showWarnings = FALSE)
-i <- "CORNCAN"
-j <- 0.5
-for(i in c("CORNCAN", "RUBUSPE")) {
+prob_in_dir <- file.path(model_dir, "pres_abs_predictions")
+prob_out_dir <- file.path(AOI_dir, "3_model_agreement", "pres_abs_agreement")
+dir.create(prob_out_dir, showWarnings = FALSE, recursive = TRUE)
+prob_cutoff <- c(0.5, 0.75) %>% magrittr::set_names(c("0.5", "0.75"))
+
+out <- sapply(c("CORNCAN", "RUBUSPE"), function(i) {
   model_stack <- rast(
-    foreach(x = dir(pred_folder, pattern = i, full.names = TRUE), .combine = c) %do% {
-      list.files(x, pattern = "_TRUE.tif$", 
-                 full.names = TRUE)
-    })
+    sapply(dir(prob_in_dir, pattern = i, full.names = TRUE), list.files, 
+           pattern = "_TRUE.tif$", full.names = TRUE))
   
-  for(j in c(0.5, 0.75)) {
+  mod_modified <- sapply(prob_cutoff, function(j) {
     # Classify cell values
-    rcl <- classify(model_stack, matrix(c(0, j, 0, j, 1, 1), ncol = 3, byrow = TRUE))
+    rcl <- classify(model_stack, matrix(
+      c(0, j, 0, j, 1, 1), ncol = 3, byrow = TRUE))
     
     # Create summed raster
     agreement <- app(
-      rcl, fun = "sum", 
-      filename = file.path(out_folder, paste0(i, "_pres_abs_gt_", 100 * j, "_model_agreement.tif")), 
+      rcl, fun = "sum", na.rm = TRUE,
+      filename = file.path(prob_out_dir, paste0(
+        i, "_pres_abs_gt_", 100 * j, "_model_agreement.tif")), 
       overwrite = TRUE, wopt = list(datatype = "INT2S"))
     
     agreement_freq <- as.data.frame(freq(agreement, bylayer = FALSE)) %>%
       magrittr::set_colnames(c("zone", "count"))
     
     # Zonal statistics
-    # z_stats <- lapply(covariates, function(x) {
-    #   foreach(k = c("mean", "sd", "min", "max", "sum"), .final = function(y) {
-    #     Reduce(function(...) merge(..., by = "zone"), y)
-    #   }) %do% {
-    #     zonal(rast(x), agreement, k, na.rm = TRUE) %>%
-    #       magrittr::set_colnames(c("zone", k))
-    #   } %>%
-    #     merge(agreement_freq, by = "zone")
-    # }) %>% magrittr::set_names(basename(tools::file_path_sans_ext(covariates)))
-    
-    # Terra package top level notation, since zonal function is broken for 
-    # large rasters. This works fine though
-    z_stats <- foreach(k = covariates, .final = function(y) {
-      Reduce(function(...) merge(..., by = "zone"), y)
-    }) %do% {
-      terra:::.getSpatDF(rast(k)@ptr$zonal(agreement@ptr, "mean", na.rm = TRUE))
-    } %>% merge(agreement_freq, by = "zone")
+    z_stats <- c(sapply(c("mean", "sd", "min", "max"), function(x) 
+      zonal(covariates, agreement, fun = x, na.rm = TRUE), 
+      simplify = FALSE, USE.NAMES = TRUE), 
+      freq = list(agreement_freq))
     
     # Cleanup
-    tmpFiles(remove = TRUE)
-  }
-}
+    suppressWarnings(terra::tmpFiles(old = TRUE, remove = TRUE))
+    
+    return(z_stats)
+  }, simplify = FALSE, USE.NAMES = TRUE)
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+# Write csv's of results
+lapply(names(out), function(x) {
+  lapply(names(out[[x]]), function(y) {
+    lapply(names(out[[x]][[y]]), function(z) {
+      write.csv(out[[x]][[y]][[z]], file.path(prob_out_dir, paste0(
+        x, "_", z, "_pres_abs_gt_", as.numeric(y) * 100, ".csv")), 
+        row.names = FALSE)})})})
 
 ```
 
@@ -97,24 +109,28 @@ I thought of trying to do a similar technique with cover. Because of really smal
 
 ```{r Cover model agreement}
 
-pred_folder <- file.path(model_dir, "cover_predictions")
-out_folder <- file.path(model_dir, "cover_agreement")
-dir.create(out_folder, showWarnings = FALSE)
+cov_in_dir <- file.path(model_dir, "cover_predictions")
+cov_out_dir <- file.path(AOI_dir, "3_model_agreement", "cover_agreement")
+dir.create(cov_out_dir, showWarnings = FALSE, recursive = TRUE)
+cov_cutoff <- c(1, 5)
 
 for(i in c("CORNCAN", "RUBUSPE")) {
   model_stack <- rast(
-    foreach(x = dir(pred_folder, pattern = i, full.names = TRUE), .combine = c) %do% {
-      list.files(x, pattern = "_cover.tif$", 
-                 full.names = TRUE)
-    })
+    sapply(dir(cov_in_dir, pattern = i, full.names = TRUE), list.files, 
+           pattern = "_cover.tif$", full.names = TRUE))
   
-  for(j in c(1, 5)) {
-    rcl <- classify(model_stack, matrix(c(0, j, 0, j, 100, 1), ncol = 3, byrow = TRUE))
-    agreement <- as.factor(sum(rcl))
-    writeRaster(agreement, 
-                file.path(out_folder, paste0(i, "_cover_gt_", j, "_model_agreement.tif")), 
-                overwrite = TRUE, wopt = list(datatype = "INT2S"))
-    tmpFiles(remove = TRUE)
+  for(j in cov_cutoff) {
+    rcl <- classify(model_stack, matrix(
+      c(0, j, 0, j, 100, 1), ncol = 3, byrow = TRUE))
+    
+    agreement <- app(
+      rcl, fun = "sum", na.rm = TRUE,
+      filename = file.path(cov_out_dir, paste0(
+        i, "_cover_gt_", j, "_model_agreement.tif")), 
+      overwrite = TRUE, wopt = list(datatype = "INT2S"))
+    
+    # Cleanup
+    suppressWarnings(terra::tmpFiles(old = TRUE, remove = TRUE))
   }
 }
 
@@ -124,61 +140,74 @@ The outputs of the above calculations are "number of maps that agree that plant 
 
 ```{r}
 
-pres_folder <- file.path(model_dir, "pres_abs_agreement")
-cover_folder <- file.path(model_dir, "cover_agreement")
-cover_vals <- c(1, 5)
-pres_probs <- c(50, 75)
+full_out_dir <- file.path(AOI_dir, "3_model_agreement", "full_agreement")
+dir.create(full_out_dir, showWarnings = FALSE, recursive = TRUE)
+
 for(i in c("CORNCAN", "RUBUSPE")) {
-  for(j in cover_vals) {
-    for(k in pres_probs) {
-      model_stack <- rast(c(list.files(pres_folder, pattern = paste0(i, ".*.", k), full.names = TRUE), 
-                            list.files(cover_folder, pattern = paste0(i, ".*.", j), full.names = TRUE))) %>% 
+  for(j in cov_cutoff) {
+    for(k in prob_cutoff * 100) {
+      model_stack <- rast(c(
+        list.files(prob_out_dir, pattern = paste0(i, ".*.", k),
+                   full.names = TRUE), 
+        list.files(cov_out_dir, pattern = paste0(i, ".*.", j), 
+                   full.names = TRUE))) %>% 
         magrittr::set_names(c("pres_abs", "cover"))
       
-      # Only want to keep high cell values, indicating that many models agree at a 
-      # given raster pixel
+      # Only want to keep high cell values, indicating that many models agree
+      # at a given raster pixel
       model_mask <- foreach(l = 1:nlyr(model_stack), .final = rast) %do% {
         n_layers <- max(minmax(model_stack[[l]]))
-        classify(model_stack[[l]], matrix(c(0, floor(n_layers / 2), 0, 
-                                            floor(n_layers / 2), Inf, 1), ncol = 3, byrow = TRUE))
+        classify(model_stack[[l]], matrix(
+          c(0, floor(n_layers / 2), 0, floor(n_layers / 2), Inf, 1), 
+          ncol = 3, byrow = TRUE))
       } %>% 
         sum() %>% 
         classify(matrix(c(0, 2, 0, 2, Inf, 1), ncol = 3, byrow = TRUE))
       
-      # Add both pres_abs and cover rasters, mask out areas defined from the masking
-      # function above, and finally only keep cell values that are minimum of the
-      # mean of the number of agreeing models...
-      model_sum <- sum(model_stack) %>% 
+      # Add both pres_abs and cover rasters, mask out areas defined from the 
+      # masking function above, and finally only keep cell values that are
+      # minimum of the mean of the number of agreeing models...
+      model_sum <- sum(model_stack, na.rm = TRUE) %>% 
         mask(model_mask, maskvalue = 0, updatevalue = 0) %>% 
-        classify(matrix(c(0, floor(mean(minmax(model_stack)["rmax", ])), 0), 
-                        ncol = 3, byrow = TRUE),
-                 filename = file.path(model_dir, paste0(i, "_cover_gt_", j, "_pres_abs_gt_", k, "_agreement.tif")), 
-                 overwrite = TRUE, wopt = list(datatype = "INT2S"))
+        classify(
+          matrix(
+            c(0, floor(mean(minmax(model_stack)["rmax", ])), 0), 
+            ncol = 3, byrow = TRUE),
+          filename = file.path(
+            full_out_dir, paste0(i, "_cover_gt_", j, "_pres_abs_gt_",
+                              k, "_agreement.tif")), 
+          overwrite = TRUE, wopt = list(datatype = "INT2S"))
     }
   }
   
-  # Produce a map of likely locations to find a given plant based on all other maps produced
-  out_maps <- rast(list.files(model_dir, pattern = paste0(i, ".*..tif$"), full.names = TRUE))
-  likely_locations <- classify(out_maps, matrix(c(0, 1, 0, 1, Inf, 1), ncol = 3, byrow = TRUE)) %>% 
+  # Produce a map of likely locations to find a given plant based on all other
+  # maps produced
+  out_maps <- rast(list.files(full_out_dir,
+    pattern = paste0(i, "_cover_.*..tif$"), full.names = TRUE))
+  likely_locations <- classify(out_maps, matrix(
+    c(0, 1, 0, 1, Inf, 1), ncol = 3, byrow = TRUE)) %>% 
     sum() %>% 
     classify(matrix(c(0, floor(nlyr(out_maps) / 2), 0), ncol = 3, byrow = TRUE), 
-             filename = file.path(model_dir, paste0(i, "_likely_locations.tif")), 
-                 overwrite = TRUE, wopt = list(datatype = "INT2S"))
-      
-  tmpFiles(remove = TRUE)
+             filename = file.path(full_out_dir, paste0(i, "_likely_locations.tif")), 
+             overwrite = TRUE, wopt = list(datatype = "INT2S"))
   
+  # Cleanup
+  suppressWarnings(terra::tmpFiles(old = TRUE, remove = TRUE))
 }
 
 # Attempt to find areas that all plants overlap based on the previous maps.
-likely_files <- list.files(model_dir, pattern = "_likely_locations.tif", full.names = TRUE)
+likely_files <- list.files(
+  full_out_dir, pattern = "_likely_locations.tif", full.names = TRUE)
 efficiency <- rast(likely_files) %>% 
   classify(matrix(c(0, 1, 0, 1, Inf, 1), ncol = 3, byrow = TRUE)) %>% 
   sum() %>% 
-  classify(matrix(c(0, length(likely_files), 0, length(likely_files), Inf, 1), ncol = 3, byrow = TRUE), 
-           filename = file.path(model_dir, "efficient_locations.tif"), 
-                 overwrite = TRUE, wopt = list(datatype = "INT2S"))
-      
-tmpFiles(remove = TRUE)
+  classify(matrix(c(0, length(likely_files), 0, length(likely_files), Inf, 1),
+                  ncol = 3, byrow = TRUE), 
+           filename = file.path(full_out_dir, "efficient_locations.tif"), 
+           overwrite = TRUE, wopt = list(datatype = "INT2S"))
+
+# Cleanup
+suppressWarnings(terra::tmpFiles(old = TRUE, remove = TRUE))
 
 ```
 
