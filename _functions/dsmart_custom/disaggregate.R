@@ -388,7 +388,7 @@ disaggregate <- function(
     model_dir <- file.path(
       outputdir, "output", "models", 
       paste0(stub, "model_", formatC(j, width = nchar(reals), format = "d", flag = "0")))
-    cat(out, file = paste0(model_dir, ".txt"), sep = "\n", append = TRUE)
+    cat(out, file = paste0(model_dir, ".txt"), sep = "\n", append = FALSE)
     
     # Save model to rdata file
     save(model, file = paste0(model_dir, ".RData"))
