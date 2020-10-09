@@ -29,14 +29,15 @@ Since 2019, I've edited the original field data Excel spreadhseet. Instead of ha
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 4
+map_res <- 25
+res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
-shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
+shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
 field_data_dir <- file.path(AOI_dir, "1_map_inputs", "field_data")
-covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
-dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
+covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates", res_dir)
+dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2020", res_dir)
 
-aoi_sf <- st_read(file.path(shapes_dir, paste0(map_res, "m"), "aoi.gpkg"), quiet = TRUE) %>% 
+aoi_sf <- st_read(file.path(shapes_dir, "aoi.gpkg"), quiet = TRUE) %>% 
   st_geometry() %>% st_make_valid() %>% st_set_crs(3005)
 
 ```
@@ -131,9 +132,9 @@ The next chunk will load in processed points from the 02a script, i.e.: unattrib
 
 ```{r}
 
-pto <- file.path(field_data_dir, "processed")
+old_pto <- file.path(field_data_dir, "processed_2019")
 old_points <- lapply(c("RUBUSPE", "CORNCAN", "VERAVIR", "LEDUGRO"), function(x) {
-  st_read(file.path(pto, "pres_abs_no_atts.gpkg"), layer = x, quiet = TRUE)
+  st_read(file.path(old_pto, "pres_abs_no_atts.gpkg"), layer = x, quiet = TRUE)
 }) %>% magrittr::set_names(c("Rubu spe", "Corn can", "Vera vir", "Ledu gro"))
 
 # Using an underscore character as a filter will filter out the 2019 points 
@@ -147,8 +148,7 @@ points_comb <- c(
              dplyr::filter(grepl("_", point_id))
          }, simplify = FALSE, USE.NAMES = TRUE), 
   plant_data[!names(plant_data) %in% names(old_points)], 
-  old_points[!names(old_points) %in% names(plant_data)]
-)
+  old_points[!names(old_points) %in% names(plant_data)])
   
 ```
 
@@ -156,12 +156,21 @@ Now that the points are brought together from all data sources, the extraction f
 
 ```{r}
 
-pto <- file.path(field_data_dir, "processed")
+pto <- file.path(field_data_dir, "processed_2020", res_dir)
 dir.create(pto, recursive = TRUE, showWarnings = FALSE)
 
 # Create the raster stack (terra package) which will be used for data extraction
-covars <- terra::rast(list.files(file.path(covariate_dir, paste0(map_res, "m")), 
-                                   full.names = TRUE))
+covariates <- terra::rast(list.files(covariate_dir, full.names = TRUE))
+
+# Preliminary check of covariate data to eliminate any outlying rasters containing
+# less data than normal
+cov_check <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
+  new <- subset(covariates, i) * 0
+  data.frame(layer = names(new), 
+             data_cells = data.frame(freq(new))$count)
+} %>% dplyr::filter(data_cells >= 0.95 * median(.$data_cells))
+if(nrow(cov_check) != nlyr(covariates)) 
+  covariates <- subset(covariates, cov_check$layer)
 
 pres_abs_2020 <- sapply(names(points_comb), function(x) {
   
@@ -170,9 +179,9 @@ pres_abs_2020 <- sapply(names(points_comb), function(x) {
            delete_layer = TRUE, quiet = TRUE)
   
   # Attribute the points and write those separately
-  out_att <- cbind(points_comb[[x]], terra::extract(covars, st_coordinates(points_comb[[x]]))) %>% 
+  out_att <- cbind(points_comb[[x]], terra::extract(covariates, st_coordinates(points_comb[[x]]))) %>% 
     Filter(function(y) !all(is.na(y)), .) %>% 
-    dplyr::select(Pres, names(covars)) %>% 
+    dplyr::select(Pres, names(covariates)) %>% 
     drop_na()
   st_write(out_att, file.path(pto, "2020_pres_abs.gpkg"), layer = x, 
            delete_layer = TRUE, quiet = TRUE)
@@ -185,9 +194,7 @@ Lastly, we have incorporated using structural stage into the modelling process. 
 
 ```{r}
 
-pto <- file.path(field_data_dir, "processed")
-
-site_ser_old <- st_read(file.path(pto, "site_ser_pts.gpkg"), quiet = TRUE)
+site_ser_old <- st_read(file.path(old_pto, "site_ser_pts.gpkg"), quiet = TRUE)
 
 site_ser_pts <- dplyr::select(bgc_2020, `BGC Subzone / Variant`, `Forested Site Series`,
                               `Nonforested Class`, Long, Lat) %>% 
@@ -202,7 +209,7 @@ site_ser_pts <- dplyr::select(bgc_2020, `BGC Subzone / Variant`, `Forested Site 
   st_set_agr("constant") %>% 
   st_intersection(aoi_sf)
 
-struct_stg_old <- st_read(file.path(pto, "struct_stg_pts.gpkg"), quiet = TRUE) %>% 
+struct_stg_old <- st_read(file.path(old_pto, "struct_stg_pts.gpkg"), quiet = TRUE) %>% 
   dplyr::select(StructuralStage)
 
 struct_stg_pts <- dplyr::select(bgc_2020, `Structural Stage`, Long, Lat) %>% 
@@ -218,9 +225,7 @@ struct_stg_pts <- dplyr::select(bgc_2020, `Structural Stage`, Long, Lat) %>%
   st_intersection(aoi_sf)
 
 sapply(c("site_ser_pts", "struct_stg_pts"), function(x) st_write(
-  eval(parse(text = x)), file.path(pto, paste0("2020_", x, ".gpkg")), 
+  eval(parse(text = x)), file.path(dirname(pto), paste0("2020_", x, ".gpkg")), 
   delete_layer = TRUE, quiet = TRUE))[0]
 
 ```
-
-

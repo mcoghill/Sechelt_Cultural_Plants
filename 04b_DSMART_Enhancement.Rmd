@@ -31,17 +31,20 @@ source("./_functions/dsmart_custom/dsmart.R")
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 4
+map_res <- 25
+res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
-shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
-covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
-pto <- file.path(AOI_dir, "1_map_inputs", "field_data", "processed")
+shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
+covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates", res_dir)
+old_pto <- file.path(AOI_dir, "1_map_inputs", "field_data", "processed_2019")
+pto <- file.path(AOI_dir, "1_map_inputs", "field_data", "processed_2020")
 
 include_bgc <- FALSE
 use_caret <- TRUE
 run <- "site_ser" # option of "struct_stg" or "site_ser"
-dsmart_dir <- file.path(AOI_dir, "1_map_inputs", paste0("dsmart_", run))
-out_dir <- file.path(AOI_dir, "1_map_inputs", paste0("2020_dsmart_", run))
+old_dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2019", res_dir, run)
+dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2020", res_dir, run)
+dir.create(dsmart_dir, showWarnings = FALSE, recursive = TRUE)
 
 ```
 
@@ -50,14 +53,13 @@ out_dir <- file.path(AOI_dir, "1_map_inputs", paste0("2020_dsmart_", run))
 ```{r Load 2020 data}
 
 # Load covariates
-res_dir <- paste0(map_res, "m")
 terrain_covariates <- grep(pattern = "normal|sentinel2", list.files(
-  file.path(covariate_dir, res_dir), full.names = TRUE, pattern = ".tif$"), invert = TRUE, 
+  covariate_dir, full.names = TRUE, pattern = ".tif$"), invert = TRUE, 
   value = TRUE)
-sentinel_covariates <- list.files(file.path(covariate_dir, res_dir), 
-                                  pattern = "^sentinel2.*.2019.tif$", full.names = TRUE)
-climate_covariates <- list.files(file.path(covariate_dir, res_dir), 
-                                 pattern = "^normal_1981_2010y", full.names = TRUE)
+sentinel_covariates <- list.files(
+  covariate_dir, pattern = "^sentinel2.*.2019.tif$", full.names = TRUE)
+climate_covariates <- list.files(
+  covariate_dir, pattern = "^normal_1981_2010y", full.names = TRUE)
 covariates <- terra::rast(c(terrain_covariates, sentinel_covariates, climate_covariates))
 
 # Preliminary check of covariate data to eliminate any outlying rasters containing
@@ -70,42 +72,48 @@ cov_check <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
 if(nrow(cov_check) != nlyr(covariates)) 
   covariates <- subset(covariates, cov_check$layer)
 
-# Load the polygons and associated observations
-polygons <- terra::vect(file.path(dsmart_dir, "inputs", paste0(
+# Load the polygons and associated observations. The polygons are unchanged from 2019
+polygons <- terra::vect(file.path(old_dsmart_dir, "inputs", paste0(
   "dsmart_", run, "_polys.gpkg")))
 
 if(include_bgc) {
-  bgc <- st_read(file.path(shapes_dir, res_dir, "bec.gpkg"), quiet = TRUE) %>% 
-    mutate(MAP_LABEL = as.factor(MAP_LABEL), bgc = as.numeric(as.factor(MAP_LABEL))) 
-  tem_geom <- st_geometry(bgc)
-  
-  # Fix geometries that aren't polygon/multipolygon
-  for(i in 1:length(tem_geom)) {
-    if(!st_geometry_type(tem_geom[[i]]) %in% c("POLYGON", "MULTIPOLYGON")) 
-      tem_geom[[i]] <- st_collection_extract(tem_geom[[i]], "POLYGON") %>% 
-        st_multipolygon()
+  bgc_rast <- file.path(old_dsmart_dir, "inputs", "bgc.tif")
+  if(!file.exists(bgc_rast)) {
+    bgc <- st_read(file.path(shapes_dir, "bec.gpkg"), quiet = TRUE) %>% 
+      mutate(MAP_LABEL = as.factor(MAP_LABEL), bgc = as.numeric(as.factor(MAP_LABEL))) 
+    tem_geom <- st_geometry(bgc)
+    
+    # Fix geometries that aren't polygon/multipolygon
+    for(i in 1:length(tem_geom)) {
+      if(!st_geometry_type(tem_geom[[i]]) %in% c("POLYGON", "MULTIPOLYGON")) 
+        tem_geom[[i]] <- st_collection_extract(tem_geom[[i]], "POLYGON") %>% 
+          st_multipolygon()
+    }
+    st_geometry(bgc) <- st_cast(tem_geom, "MULTIPOLYGON")
+    
+    level_table <- unique.data.frame(data.frame(
+      label = as.character(bgc$MAP_LABEL), 
+      value = as.numeric(bgc$MAP_LABEL)))
+    
+    bgc_rast <- as.factor(terra::rasterize(vect(bgc), covariates[[1]], field = "bgc"))
+    levels(bgc_rast) <- level_table
+    
+    # File needs to be written to disk and then reloaded back into R for proper 
+    # feature assignments
+    bgc_rast <- writeRaster(bgc_rast, file.path(
+      old_dsmart_dir, "inputs", "bgc.tif"), 
+      overwrite = TRUE, wopt = list(datatype = "INT2S"))
+  } else {
+    bgc_rast <- rast(bgc_rast)
   }
-  st_geometry(bgc) <- st_cast(tem_geom, "MULTIPOLYGON")
   
-  level_table <- unique.data.frame(data.frame(
-    label = as.character(bgc$MAP_LABEL), 
-    value = as.numeric(bgc$MAP_LABEL)))
-  
-  bgc_rast <- as.factor(terra::rasterize(vect(bgc), covariates[[1]], field = "bgc"))
-  levels(bgc_rast) <- level_table
-  
-  # File needs to be written to disk and then reloaded back into R for proper 
-  # feature assignments
-  bgc_rast <- writeRaster(bgc_rast, file.path(paste0(dsmart_dir, "_", run), "inputs", "bgc.tif"), 
-                          overwrite = TRUE, wopt = list(datatype = "INT2S"))
   covariates <- c(covariates, bgc_rast)
   factors <- "bgc"
-  
 } else {
   factors <- NULL
 }
 
-composition <- read.csv(file.path(dsmart_dir, "inputs", paste0(
+composition <- read.csv(file.path(old_dsmart_dir, "inputs", paste0(
   "dsmart_", run, "_composition.csv"))) %>% 
     dplyr::select(-Subzone)
 
@@ -122,13 +130,14 @@ observations <- st_read(file.path(pto, paste0("2020_", run, "_pts.gpkg")), quiet
 ```{r Simple TEM rasterization}
 
 if(run == "site_ser") {
-  dir.create(file.path(out_dir, "simple"), showWarnings = FALSE)
+  dir.create(file.path(dsmart_dir, "simple"), showWarnings = FALSE, recursive = TRUE)
   
   # Get the TEM polygons from the original DSMART input data folder
-  tem <- terra::vect(file.path(dsmart_dir, "inputs", paste0("dsmart_", run, "_polys.gpkg")))
+  tem <- terra::vect(file.path(old_dsmart_dir, "inputs", 
+                               paste0("dsmart_", run, "_polys.gpkg")))
   tem$MapUnit1_num <- as.numeric(as.factor(tem$MapUnit1))
   tem_rast <- terra::rasterize(tem, covariates[[1]], field = "MapUnit1_num", 
-                               filename = file.path(out_dir, "simple", "site_series_simple.tif"), 
+                               filename = file.path(dsmart_dir, "simple", "site_series_simple.tif"), 
                                overwrite = TRUE)
   
   # Generate probabilities based on composition
@@ -153,7 +162,7 @@ if(run == "site_ser") {
     tem_remake[tem_remake$MapUnit == i] %>% 
       magrittr::set_names(c(names(.)[names(.) != "proportion"], paste0("probability_", i))) %>% 
       rasterize(covariates[[1]], field = paste0("probability_", i), overwrite = TRUE, 
-                filename = file.path(out_dir, "simple", paste0("probability_", i, ".tif")))
+                filename = file.path(dsmart_dir, "simple", paste0("probability_", i, ".tif")))
   }
 }
 
@@ -190,8 +199,6 @@ if(use_caret) {
   method.model <- NULL
   args.model <- NULL
 }
-outputdir <- file.path(dirname(dsmart_dir), paste0("2020_", basename(dsmart_dir)))
-dir.create(outputdir, recursive = TRUE, showWarnings = FALSE)
 
 dsm <- dsmart(
   covariates = covariates, 
@@ -204,7 +211,7 @@ dsm <- dsmart(
   method.allocate = "weighted",
   method.model = method.model,
   args.model = args.model,
-  outputdir = outputdir, 
+  outputdir = dsmart_dir, 
   factors = factors,
   type = "prob", 
   nprob = 1
@@ -212,9 +219,10 @@ dsm <- dsmart(
 
 # Save the file to a better location
 out <- rast(list.files(dsm$summarise$locations$mostprobable, 
-                       pattern = "mostprob_01_class", full.names = TRUE)) %>% 
+                       pattern = "mostprob_01_class|mostprob_1_class", 
+                       full.names = TRUE)) %>% 
   magrittr::set_names(paste0(run, "_dsmart")) %>% 
-  writeRaster(file.path(outputdir, paste0(run, "_dsmart.tif")), 
+  writeRaster(file.path(dsmart_dir, paste0(run, "_dsmart.tif")), 
               overwrite = TRUE, wopt = list(datatype = "INT2S"))
 
 ```

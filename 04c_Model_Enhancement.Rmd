@@ -27,14 +27,20 @@ source("./_functions/predict_landscape_mlr3.R")
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 4
+map_res <- 25
+res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
-input_dir <- file.path("./Sechelt_AOI/1_map_inputs/field_data/processed")
-covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
-dsmart_site_ser_dir <- file.path(AOI_dir, "1_map_inputs", "2020_dsmart_site_ser")
-dsmart_struct_stg_dir <- file.path(AOI_dir, "1_map_inputs", "2020_dsmart_struct_stg")
-output_dir <- file.path(AOI_dir, "4_map_predictions_enhanced")
+input_dir <- file.path(
+  "./Sechelt_AOI/1_map_inputs/field_data/processed_2020", res_dir)
+covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates", res_dir)
+shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
+dsmart_site_ser_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2020", 
+                                 res_dir, "site_ser")
+dsmart_struct_stg_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2020", 
+                                   res_dir, "struct_stg")
+output_dir <- file.path(AOI_dir, "4_map_predictions_enhanced", res_dir)
 tile_dir <- file.path(output_dir, "tiles")
+
 dir.create(tile_dir, showWarnings = FALSE, recursive = TRUE)
 dir.create(file.path(output_dir, "pres_abs_predictions"), showWarnings = FALSE)
 dir.create(file.path(output_dir, "cover_predictions"), showWarnings = FALSE)
@@ -46,7 +52,6 @@ dir.create(file.path(output_dir, "cover_predictions"), showWarnings = FALSE)
 ```{r Load data}
 
 # List of processing options...
-res_dir <- paste0(map_res, "m")
 temporal <- c("annual") # either or both of annual and seasonal
 ss <- c("simple", "dsmart", NA) # any of simple, dsmart, and/or NA
 probabilities <- c(TRUE, FALSE) # Use probabilites or classification
@@ -64,7 +69,7 @@ perms <- expand.grid(
 
 # Raster covariates
 terrain_covariates <- grep(pattern = "normal|sentinel2", list.files(
-  file.path(covariate_dir, res_dir), full.names = TRUE, pattern = ".tif$"), 
+  covariate_dir, full.names = TRUE, pattern = ".tif$"), 
   invert = TRUE, value = TRUE)
 
 if("annual" %in% temporal && "seasonal" %in% temporal) {
@@ -78,13 +83,13 @@ if("annual" %in% temporal && "seasonal" %in% temporal) {
   c_pattern <- "normal.*.(_at.tif|_sm.tif|_sp.tif|_wt.tif)"
 }
 
-sentinel_covariates <- grep(file.path(covariate_dir, res_dir, s_pattern), 
-                            list.files(file.path(covariate_dir, res_dir), full.names = TRUE), 
+sentinel_covariates <- grep(file.path(covariate_dir, s_pattern), 
+                            list.files(covariate_dir, full.names = TRUE), 
                             value = TRUE, perl = TRUE)
 
 climate_covariates <- if(any(climate_vars)) {
-  grep(file.path(covariate_dir, res_dir, c_pattern),
-       list.files(file.path(covariate_dir, res_dir), full.names = TRUE), 
+  grep(file.path(covariate_dir, c_pattern),
+       list.files(covariate_dir, full.names = TRUE), 
        value = TRUE, perl = TRUE)
 } else NULL
 
@@ -236,8 +241,10 @@ var_list <- foreach(i = 1:nrow(perms), .combine = c) %do% {
 # Create the list of input datasets
 pres_abs <- foreach(i = names(var_list)) %do% {
   lapply(pres_abs_points, function(x) {
-    x %>% dplyr::select(all_of(c("Pres", var_list[[i]], "X", "Y"))) %>% 
-      drop_na()
+    x %>% dplyr::select(any_of(c("Pres", var_list[[i]], "x", "y", "X", "Y"))) %>% 
+      drop_na() %>% 
+      dplyr::rename_with(toupper, c("X", "x", "Y", "y")
+                         [c("X", "x", "Y", "y") %in% names(.)])
   }) %>% magrittr::set_names(paste0(names(.), i))
 } %>% unlist(recursive = FALSE)
 
@@ -298,6 +305,11 @@ for(i in 1:length(pres_abs)) {
       pres_models$learners[[x]]$model$tuning_instance$archive$data()$
         importance.filter.frac))
     
+    train_data <- do.call(rbind, lapply(model_data, "[[", "train_data")) %>% 
+      magrittr::set_rownames(NULL)
+    test_data <- do.call(rbind, lapply(model_data, "[[", "test_data")) %>% 
+      magrittr::set_rownames(NULL)
+    
     imp <- data.frame(importance = pres_models$learners[[x]]$learner$model$
                         importance$scores) %>% 
       rownames_to_column("layer") %>% 
@@ -312,10 +324,12 @@ for(i in 1:length(pres_abs)) {
               row.names = FALSE)
     cat(out, file = file.path(dir_out, paste0(x, "_pres_abs_model.txt")), sep = "\n")
     save(best_model, file = file.path(dir_out, paste0(x, "_pres_abs_model.RData")))
-    write.csv(model_data$test_data, file = file.path(dir_out, paste0(x, "_pres_abs_model_resampling_test_data.csv")), 
-              row.names = FALSE)
-    write.csv(model_data$train_data, file = file.path(dir_out, paste0(x, "_pres_abs_model_resampling_train_data.csv")), 
-              row.names = FALSE)
+    write.csv(test_data, file = file.path(
+      dir_out, paste0(x, "_pres_abs_model_resampling_test_data.csv")), 
+      row.names = FALSE)
+    write.csv(train_data, file = file.path(
+      dir_out, paste0(x, "_pres_abs_model_resampling_train_data.csv")), 
+      row.names = FALSE)
     write.csv(confusion, file = file.path(dir_out, paste0(x, "_pres_abs_confusion.csv")), 
               row.names = FALSE)
     write.csv(imp, file.path(dir_out, paste0(x, "_pres_abs_var_importance.csv")), 
