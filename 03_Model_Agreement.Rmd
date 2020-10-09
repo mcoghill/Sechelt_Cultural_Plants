@@ -5,12 +5,12 @@ date: "7/14/2020"
 output: html_document
 ---
 
-The purpose of this file is to pull together all of the models run in the previous script and merge them together in order to find the areas where models are agreeing that a plant is present in a given raster cell. This is a fairly simple idea that was founded by Michael Ryan in our discussions. First, load the required packages
+The purpose of this file is to pull together all of the models run in the previous script and merge them together in order to find the areas where models are agreeing that a plant is present in a given raster cell. This is a fairly simple idea that was founded by Michael Ryan in our discussions. First, load the required packages.
 
 ```{r}
 
 suppressMessages(suppressWarnings({
-  ls <- c("tidyverse", "terra", "foreach", "raster")
+  ls <- c("tidyverse", "terra", "foreach")
   new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
   if(length(new.packages))
     install.packages(new.packages)
@@ -19,32 +19,23 @@ suppressMessages(suppressWarnings({
 
 ```
 
-Next, load the direcotries that will be used for this script.
+Next, load the directories that will be used for this script.
 
 ```{r Directory setup}
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 4
+map_res <- 25
+res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
-model_dir <- file.path(AOI_dir, "2_map_predictions")
-covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
-res_dir <- paste0(map_res, "m")
+model_dir <- file.path(AOI_dir, "2_map_predictions", res_dir)
+covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates", res_dir)
+
 dsmart_dirs <- file.path(
-  AOI_dir, "1_map_inputs", paste0("dsmart_", c("site_ser", "struct_stg")))
+  AOI_dir, "1_map_inputs", "dsmart_2019", res_dir, c("site_ser", "struct_stg"))
 
 covariates <- rast(c(
-  list.files(file.path(covariate_dir, res_dir), 
-             pattern = ".tif$", full.names = TRUE),
-  list.files(file.path(dsmart_dir, "simple"), 
-             pattern = ".tif$", full.names = TRUE),
-  list.files(file.path(dsmart_dir, "output", "probabilities"), 
-             pattern = ".tif", full.names = TRUE),
-  file.path(dsmart_dir, "output", "realisations", "realisation_1.tif")))
-
-covariates <- rast(c(
-  list.files(file.path(covariate_dir, res_dir), 
-             pattern = ".tif$", full.names = TRUE),
+  list.files(covariate_dir, pattern = ".tif$", full.names = TRUE),
   list.files(c(file.path(
     dsmart_dirs[endsWith(dsmart_dirs, "site_ser")], "simple"), 
     file.path(dsmart_dirs, "output", "probabilities")), 
@@ -58,7 +49,7 @@ Simple method proposed by Mike: Count the number of maps that predicted a plant 
 ```{r Pres Abs model agreement}
 
 prob_in_dir <- file.path(model_dir, "pres_abs_predictions")
-prob_out_dir <- file.path(AOI_dir, "3_model_agreement", "pres_abs_agreement")
+prob_out_dir <- file.path(AOI_dir, "3_model_agreement", res_dir, "pres_abs_agreement")
 dir.create(prob_out_dir, showWarnings = FALSE, recursive = TRUE)
 prob_cutoff <- c(0.5, 0.75) %>% magrittr::set_names(c("0.5", "0.75"))
 
@@ -110,7 +101,7 @@ I thought of trying to do a similar technique with cover. Because of really smal
 ```{r Cover model agreement}
 
 cov_in_dir <- file.path(model_dir, "cover_predictions")
-cov_out_dir <- file.path(AOI_dir, "3_model_agreement", "cover_agreement")
+cov_out_dir <- file.path(AOI_dir, "3_model_agreement", res_dir, "cover_agreement")
 dir.create(cov_out_dir, showWarnings = FALSE, recursive = TRUE)
 cov_cutoff <- c(1, 5)
 
@@ -140,7 +131,7 @@ The outputs of the above calculations are "number of maps that agree that plant 
 
 ```{r}
 
-full_out_dir <- file.path(AOI_dir, "3_model_agreement", "full_agreement")
+full_out_dir <- file.path(AOI_dir, "3_model_agreement", res_dir, "full_agreement")
 dir.create(full_out_dir, showWarnings = FALSE, recursive = TRUE)
 
 for(i in c("CORNCAN", "RUBUSPE")) {

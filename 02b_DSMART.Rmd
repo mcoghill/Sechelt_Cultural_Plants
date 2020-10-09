@@ -25,10 +25,10 @@ suppressMessages(suppressWarnings({
   if(compareVersion(as.character(packageVersion("terra")), "0.7-4") < 0)
     install.packages("terra")
   lapply(ls, library, character.only = TRUE)[0]
-  rm(ls, new.packages)
-  
-  # Load custom DSMART files
-  source("./_functions/dsmart_custom/dsmart.R")}))
+  rm(ls, new.packages)}))
+
+# Load custom DSMART files
+source("./_functions/dsmart_custom/dsmart.R")
 
 ```
 
@@ -38,16 +38,16 @@ Next, file paths are defined.
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 4
-res_dir <- paste0(map_res, "m")
+map_res <- 25
+res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
-shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
-covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
+shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
+covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates", res_dir)
 
 include_bgc <- FALSE
 use_caret <- TRUE
 run <- "site_ser" # option of "struct_stg" or "site_ser"
-dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart", res_dir, paste0("dsmart_", run))
+dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2019", res_dir, run)
 
 ```
 
@@ -57,12 +57,12 @@ Next, important data is loaded. There are a lot of covariate layers created from
 
 # Load covariates
 terrain_covariates <- grep(pattern = "normal|sentinel2", list.files(
-  file.path(covariate_dir, res_dir), full.names = TRUE, pattern = ".tif$"), invert = TRUE, 
+  covariate_dir, full.names = TRUE, pattern = ".tif$"), invert = TRUE, 
   value = TRUE)
-sentinel_covariates <- list.files(file.path(covariate_dir, res_dir), 
-                                  pattern = "^sentinel2.*.2019.tif$", full.names = TRUE)
-climate_covariates <- list.files(file.path(covariate_dir, res_dir), 
-                                 pattern = "^normal_1981_2010y", full.names = TRUE)
+sentinel_covariates <- list.files(
+  covariate_dir, pattern = "^sentinel2.*.2019.tif$", full.names = TRUE)
+climate_covariates <- list.files(
+  covariate_dir, pattern = "^normal_1981_2010y", full.names = TRUE)
 covariates <- terra::rast(c(terrain_covariates, sentinel_covariates, climate_covariates))
 
 # Preliminary check of covariate data to eliminate any outlying rasters containing
@@ -80,7 +80,7 @@ polygons <- terra::vect(file.path(dsmart_dir, "inputs", paste0(
   "dsmart_", run, "_polys.gpkg")))
 
 if(include_bgc) {
-  bgc <- st_read(file.path(shapes_dir, res_dir, "bec.gpkg"), quiet = TRUE) %>% 
+  bgc <- st_read(file.path(shapes_dir, "bec.gpkg"), quiet = TRUE) %>% 
     mutate(MAP_LABEL = as.factor(MAP_LABEL), bgc = as.numeric(as.factor(MAP_LABEL))) 
   tem_geom <- st_geometry(bgc)
   
@@ -194,15 +194,6 @@ if(use_caret) {
   method.model <- NULL
   args.model <- NULL
 }
-outputdir <- file.path(AOI_dir, "1_map_inputs", paste0("dsmart_", run))
-dir.create(outputdir, recursive = TRUE, showWarnings = FALSE)
-
-# Save the file to a better location
-out <- rast(list.files(dsm$summarise$locations$mostprobable, 
-                       pattern = "mostprob_01_class", full.names = TRUE)) %>% 
-  magrittr::set_names(paste0(run, "_dsmart")) %>% 
-  writeRaster(file.path(outputdir, paste0(run, "_dsmart.tif")), 
-              overwrite = TRUE, wopt = list(datatype = "INT2S"))
 
 ```
 
@@ -226,7 +217,7 @@ The files used in future modelling include the most probable classification laye
 
 ```{r DSMART run}
 
-dsm <- dsmart(
+dsm <- try(dsmart(
   covariates = covariates, 
   polygons = polygons, 
   composition = composition,
@@ -237,11 +228,18 @@ dsm <- dsmart(
   method.allocate = "weighted",
   method.model = method.model,
   args.model = args.model,
-  outputdir = outputdir, 
+  outputdir = dsmart_dir, 
   factors = factors,
   type = "prob", 
-  nprob = 1
-)
+  nprob = 1))
+
+# Save the file to a better location
+out <- rast(list.files(dsm$summarise$locations$mostprobable, 
+                       pattern = "mostprob_01_class|mostprob_1_class", 
+                       full.names = TRUE)) %>% 
+  magrittr::set_names(paste0(run, "_dsmart")) %>% 
+  writeRaster(filename = file.path(dsmart_dir, paste0(run, "_dsmart.tif")), 
+              overwrite = TRUE, wopt = list(datatype = "INT2S"))
 
 ```
 

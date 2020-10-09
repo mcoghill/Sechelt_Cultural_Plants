@@ -22,13 +22,13 @@ Using the RMarkdown format, I'll walk through the scripting process used to crea
 ```{r Load Packages}
 
 suppressMessages(suppressWarnings({
-  ls <- c("plyr", "tidyverse", "readxl", "svSocket", "RODBC", "sf", "terra")
+  ls <- c("plyr", "tidyverse", "readxl", "svSocket", "RODBC", "sf", "terra", 
+          "foreach")
   new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
   if(length(new.packages))
     install.packages(new.packages)
   sapply(ls, library, character.only = TRUE, quietly = TRUE)[0]
-  rm(ls, new.packages)
-}))
+  rm(ls, new.packages)}))
 
 ```
 
@@ -40,14 +40,14 @@ Additionally, we need to set the directory for where the 32-bit version of R is 
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 4
+map_res <- 25
+res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 poi <- c("RUBUSPE", "CORNCAN", "VERAVIR", "LEDUGRO") # plants of interest
 
-shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
+shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
 field_data_dir <- file.path(AOI_dir, "1_map_inputs", "field_data")
-covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
-dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
-out_dir <- file.path(AOI_dir, "2_map_predictions")
+covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates", res_dir)
+dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2019", res_dir)
 
 ```
 
@@ -393,9 +393,9 @@ It's pretty much a melted data frame from the polygon data, though I've adjusted
 
 ```{r DSMART TEM processing}
 
-tem_sf <- st_read(file.path(shapes_dir, paste0(map_res, "m"), "tem.gpkg"), quiet = TRUE) %>% 
+tem_sf <- st_read(file.path(shapes_dir, "tem.gpkg"), quiet = TRUE) %>% 
   select_if(function(x) !all(is.na(x)))
-aoi_sf <- st_read(file.path(shapes_dir, paste0(map_res, "m"), "aoi.gpkg"), quiet = TRUE) %>% 
+aoi_sf <- st_read(file.path(shapes_dir, "aoi.gpkg"), quiet = TRUE) %>% 
   st_geometry() %>% st_make_valid()
 
 # TEM polygon processing as a DSMART input
@@ -516,7 +516,7 @@ dsmart_strata <- group_by(dsmart_site_ser_polys, Subzone) %>%
   st_cast("MULTIPOLYGON")
 
 # Write DSMART outputs
-dso <- file.path(paste0(dsmart_dir, "_site_ser"), "inputs")
+dso <- file.path(dsmart_dir, "site_ser", "inputs")
 dir.create(dso, recursive = TRUE, showWarnings = FALSE)
 
 sapply(c("dsmart_site_ser_polys", "dsmart_strata"), function(x) st_write(
@@ -545,18 +545,28 @@ The three data sources (TEM excel spreadsheet, TEM mdb, and 2019 point data) are
 
 ```{r Pres/Abs and Cover Merge}
 
-pto <- file.path(field_data_dir, "processed")
+pto <- file.path(field_data_dir, "processed", res_dir)
 dir.create(pto, recursive = TRUE, showWarnings = FALSE)
 
 # Create the raster stack (terra package) which will be used for data extraction
-covars <- terra::rast(list.files(file.path(covariate_dir, paste0(map_res, "m")), 
-                                   full.names = TRUE))
+covariates <- terra::rast(list.files(covariate_dir, full.names = TRUE))
+
+# Preliminary check of covariate data to eliminate any outlying rasters containing
+# less data than normal
+cov_check <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
+  new <- subset(covariates, i) * 0
+  data.frame(layer = names(new), 
+             data_cells = data.frame(freq(new))$count)
+} %>% dplyr::filter(data_cells >= 0.95 * median(.$data_cells))
+if(nrow(cov_check) != nlyr(covariates)) 
+  covariates <- subset(covariates, cov_check$layer)
 
 # Combine them all
 pres_abs <- sapply(poi, function(x) {
   
   # Create unattributed points and write those
-  out <- dplyr::bind_rows(sechelt_pres_cov[[x]], tem_xls_pres[[x]], tem_mdb_pres_cov[[x]]) %>% 
+  out <- dplyr::bind_rows(sechelt_pres_cov[[x]], tem_xls_pres[[x]], 
+                          tem_mdb_pres_cov[[x]]) %>% 
     dplyr::select(point_id, Pres) %>% 
     st_set_agr("constant") %>% 
     st_transform(crs = st_crs(aoi_sf)) %>% 
@@ -565,9 +575,9 @@ pres_abs <- sapply(poi, function(x) {
            delete_layer = TRUE, quiet = TRUE)
   
   # Attribute the points and write those separately
-  out_att <- cbind(out, terra::extract(covars, st_coordinates(out))) %>% 
+  out_att <- cbind(out, terra::extract(covariates, st_coordinates(out))) %>% 
     Filter(function(y) !all(is.na(y)), .) %>% 
-    dplyr::select(Pres, names(covars)) %>% 
+    dplyr::select(Pres, names(covariates)) %>% 
     drop_na()
   st_write(out_att, file.path(pto, "pres_abs.gpkg"), layer = x, 
            delete_layer = TRUE, quiet = TRUE)
@@ -583,9 +593,9 @@ cover <- sapply(poi, function(x) {
   st_write(out, file.path(pto, "cover_no_atts.gpkg"), layer = x, 
            delete_layer = TRUE, quiet = TRUE)
   
-  out_att <- cbind(out, terra::extract(covars, st_coordinates(out))) %>% 
+  out_att <- cbind(out, terra::extract(covariates, st_coordinates(out))) %>% 
     Filter(function(y) !all(is.na(y)), .) %>% 
-    dplyr::select(Cover, names(covars)) %>% 
+    dplyr::select(Cover, names(covariates)) %>% 
     drop_na()
   st_write(out_att, file.path(pto, "cover.gpkg"), layer = x, 
            delete_layer = TRUE, quiet = TRUE)
@@ -603,14 +613,14 @@ The land cover classifications use the BCLCS codes in 5 different layers to deta
 ```{r Structural stage prep}
 
 # Read in VRI data
-vri <- st_read(file.path(shapes_dir, paste0(map_res, "m"), "vri_full.gpkg"), quiet = TRUE)
+vri <- st_read(file.path(shapes_dir, "vri_full.gpkg"), quiet = TRUE)
 vri_bgc <- dplyr::select(vri, BEC_ZONE_CODE, BEC_SUBZONE, BEC_VARIANT) %>% 
   dplyr::mutate(bgc = ifelse(!is.na(BEC_VARIANT), 
                              paste0(BEC_ZONE_CODE, BEC_SUBZONE, BEC_VARIANT), 
                              paste0(BEC_ZONE_CODE, BEC_SUBZONE))) %>% 
   group_by(bgc) %>% dplyr::summarise(.groups = "drop")
 
-st_write(vri_bgc, file.path(shapes_dir, paste0(map_res, "m"), "bgc_vri.gpkg"), 
+st_write(vri_bgc, file.path(shapes_dir, "bgc_vri.gpkg"), 
          delete_layer = TRUE, quiet = TRUE)
 
 # Use VRI to interpret structural stage
@@ -810,7 +820,7 @@ dsmart_struct_stg_observations <- dplyr::select(sechelt_bec_full, `Structural St
   dplyr::mutate(StructuralStage = ifelse(StructuralStage %in% c(2, 3), "3a", StructuralStage)) %>% 
   bind_rows(dplyr::select(tem_mdb_struct_stg, StructuralStage),
             dplyr::select(tem_xls_bec, StructuralStage)) %>% 
-  drop_na() %>% 
+  dplyr::filter(complete.cases(StructuralStage)) %>% 
   mutate(StructuralStage = trimws(StructuralStage)) %>% 
   st_set_agr("constant") %>% 
   st_transform(crs = st_crs(aoi_sf)) %>% 
@@ -824,13 +834,13 @@ dsmart_struct_stg_observations <- dplyr::select(sechelt_bec_full, `Structural St
 struct_stg <- dsmart_struct_stg_observations %>% 
   sf::st_as_sf(coords = c("X", "Y")) %>% 
   sf::st_set_crs(sf::st_crs(dsmart_struct_stg_polys)) %>% 
-  cbind(terra::extract(covars, st_coordinates(.))) %>% 
+  cbind(terra::extract(covariates, st_coordinates(.))) %>% 
   Filter(function(y) !all(is.na(y)), .) %>% 
-  dplyr::select(StructuralStage, names(covars)) %>% 
+  dplyr::select(StructuralStage, names(covariates)) %>% 
   drop_na()
 
 # Write data outputs
-dso <- file.path(paste0(dsmart_dir, "_struct_stg"), "inputs")
+dso <- file.path(dsmart_dir, "struct_stg", "inputs")
 dir.create(dso, recursive = TRUE, showWarnings = FALSE)
 
 st_write(dsmart_struct_stg_polys, file.path(dso, paste0("dsmart_struct_stg_polys.gpkg")), 
@@ -847,38 +857,38 @@ After an initial DSMART run on the structural stage, I was not very satisfied wi
 
 ```{r Simple structural stage}
 
-dsmart_struct_stg_polys <- dsmart_struct_stg_polys %>% 
-  dplyr::mutate(across(starts_with("ss"), as.character)) %>% 
-  dplyr::mutate(across(starts_with("ss"), function(x) {
-    ifelse(
-    x %in% c("X1a", "X1b", "X1c"), "X1", ifelse(
-      x %in% c("X2a", "X2b", "X2c", "X2d"), "X2", ifelse(
-        x %in% c("X3a", "X3b"), "X3", x)))}))
-
-dsmart_struct_stg_composition <- dsmart_struct_stg_composition %>% 
-  dplyr::mutate(ss = as.character(ss)) %>% 
-  dplyr::mutate(ss = ifelse(
-    ss %in% c("X1a", "X1b", "X1c"), "X1", ifelse(
-      ss %in% c("X2a", "X2b", "X2c", "X2d"), "X2", ifelse(
-        ss %in% c("X3a", "X3b"), "X3", ss)))) %>% 
-  dplyr::mutate(ss = as.factor(ss))
-
-dsmart_struct_stg_observations <- dsmart_struct_stg_observations %>% 
-  dplyr::mutate(StructuralStage = as.character(StructuralStage)) %>% 
-  dplyr::mutate(StructuralStage = ifelse(
-    StructuralStage %in% c("X1a", "X1b", "X1c"), "X1", ifelse(
-      StructuralStage %in% c("X2a", "X2b", "X2c", "X2d"), "X2", ifelse(
-        StructuralStage %in% c("X3a", "X3b"), "X3", StructuralStage)))) %>% 
-  dplyr::mutate(StructuralStage = as.factor(StructuralStage))
-
-# Write data outputs
-dso <- file.path(paste0(dsmart_dir, "_struct_stg_simple"), "inputs")
-dir.create(dso, recursive = TRUE, showWarnings = FALSE)
-
-st_write(dsmart_struct_stg_polys, file.path(dso, paste0("dsmart_struct_stg_simple_polys.gpkg")), 
-  delete_layer = TRUE, quiet = TRUE)
-sapply(c("dsmart_struct_stg_simple_composition", "dsmart_struct_stg_simple_observations"), function(x) write.csv(
-  eval(parse(text = x)), file.path(dso, paste0(x, ".csv")), row.names = FALSE))[0]
+# dsmart_struct_stg_polys <- dsmart_struct_stg_polys %>% 
+#   dplyr::mutate(across(starts_with("ss"), as.character)) %>% 
+#   dplyr::mutate(across(starts_with("ss"), function(x) {
+#     ifelse(
+#     x %in% c("X1a", "X1b", "X1c"), "X1", ifelse(
+#       x %in% c("X2a", "X2b", "X2c", "X2d"), "X2", ifelse(
+#         x %in% c("X3a", "X3b"), "X3", x)))}))
+# 
+# dsmart_struct_stg_composition <- dsmart_struct_stg_composition %>% 
+#   dplyr::mutate(ss = as.character(ss)) %>% 
+#   dplyr::mutate(ss = ifelse(
+#     ss %in% c("X1a", "X1b", "X1c"), "X1", ifelse(
+#       ss %in% c("X2a", "X2b", "X2c", "X2d"), "X2", ifelse(
+#         ss %in% c("X3a", "X3b"), "X3", ss)))) %>% 
+#   dplyr::mutate(ss = as.factor(ss))
+# 
+# dsmart_struct_stg_observations <- dsmart_struct_stg_observations %>% 
+#   dplyr::mutate(StructuralStage = as.character(StructuralStage)) %>% 
+#   dplyr::mutate(StructuralStage = ifelse(
+#     StructuralStage %in% c("X1a", "X1b", "X1c"), "X1", ifelse(
+#       StructuralStage %in% c("X2a", "X2b", "X2c", "X2d"), "X2", ifelse(
+#         StructuralStage %in% c("X3a", "X3b"), "X3", StructuralStage)))) %>% 
+#   dplyr::mutate(StructuralStage = as.factor(StructuralStage))
+# 
+# # Write data outputs
+# dso <- file.path(dsmart_dir, "struct_stg_simple", "inputs")
+# dir.create(dso, recursive = TRUE, showWarnings = FALSE)
+# 
+# st_write(dsmart_struct_stg_polys, file.path(dso, paste0("dsmart_struct_stg_simple_polys.gpkg")), 
+#   delete_layer = TRUE, quiet = TRUE)
+# sapply(c("dsmart_struct_stg_simple_composition", "dsmart_struct_stg_simple_observations"), function(x) write.csv(
+#   eval(parse(text = x)), file.path(dso, paste0(x, ".csv")), row.names = FALSE))[0]
 
 ```
 
