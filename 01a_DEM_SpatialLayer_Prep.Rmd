@@ -55,12 +55,12 @@ In this next chunk, you enter the only input data required for this sheet to fun
 ```{r R Data Objects}
 
 AOI <- "Sechelt"
-AOI.dir <- file.path(".", paste0(AOI, "_AOI"))
+AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 epsg <- 3005
 
-raw_file_path <- file.path(AOI.dir, "_original_files")
-covariate_file_path <- file.path(AOI.dir, "1_map_inputs", "covariates")
-cov_1m <- file.path(covariate_file_path, "1m")
+raw_dir <- file.path(AOI_dir, "_original_files")
+covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
+cov_1m <- file.path(covariate_dir, "1m")
 dir.create(cov_1m, recursive = TRUE, showWarnings = FALSE)
 
 ```
@@ -76,8 +76,8 @@ In the next chunk, we want to specify where the raw files are located. For the S
 ```{r Specify 1m Raster}
 
 # Load files
-raw_files <- c(file.path(raw_file_path, "dem", "w001001.adf"),
-               file.path(raw_file_path, "chm", "w001001.adf"))
+raw_files <- c(file.path(raw_dir, "dem", "w001001.adf"),
+               file.path(raw_dir, "chm", "w001001.adf"))
 
 # I want to use the terra package for this since it has the ability to be 
 # functionized over any number of input layers so long as their CRS's are all
@@ -144,7 +144,7 @@ new_ext <- ext(c(xmin = min(sapply(lidar, xmin)), xmax = max(sapply(lidar, xmax)
 lidar <- foreach(x = names(lidar), .final = rast) %do% {
   expand(lidar[[x]], new_ext) %>% 
     terra::writeRaster(
-      filename = file.path(AOI.dir, "_original_files", x, paste0(x, ".tif")), 
+      filename = file.path(AOI_dir, "_original_files", x, paste0(x, ".tif")), 
       overwrite = TRUE)}
 
 # Cleanup temp files
@@ -167,9 +167,9 @@ Resampling takes into account the neighboring cells, so I don't see why it can't
 ```{r Derive Lower Resolutions}
 
 for(r in c(1, 4, 5, 10, 25)) {
-  dir_out <- file.path(covariate_file_path, paste0(r, "m"))
+  dir_out <- file.path(covariate_dir, paste0(r, "m"))
   dir.create(dir_out, showWarnings = FALSE)
-  lidar <- rast(list.files(raw_file_path, pattern = ".tif$", 
+  lidar <- rast(list.files(raw_dir, pattern = ".tif$", 
                            full.names = TRUE, recursive = TRUE))
   if(r != 1) {
     new_ext <- rast(ext(lidar), crs = crs(lidar))
@@ -205,13 +205,13 @@ Finally, a large function (written in the _functions/derive_terrain.R file) is r
 # Download TRIM using these links: 
 # https://www2.gov.bc.ca/assets/gov/data/geographic/topography/250kgrid.pdf
 # https://pub.data.gov.bc.ca/datasets/175624/
-dl_path <- file.path(raw_file_path, "TRIM")
-trim_path <- file.path(covariate_file_path, "TRIM")
+dl_dir <- file.path(raw_dir, "TRIM")
+trim_dir <- file.path(covariate_dir, "TRIM")
 
-if(!dir.exists(dl_path) || !dir.exists(trim_path)) {
-  dir.create(dl_path, showWarnings = FALSE)
-  dir.create(trim_path, showWarnings = FALSE)
-  dem_1 <- raster::raster(file.path(covariate_file_path, "1m", "dem.tif"))
+if(!dir.exists(dl_dir) || !dir.exists(trim_dir)) {
+  dir.create(dl_dir, showWarnings = FALSE)
+  dir.create(trim_dir, showWarnings = FALSE)
+  dem_1 <- raster::raster(file.path(covariate_dir, "1m", "dem.tif"))
   
   # URL's to download tiles for Sechelt
   urls <- c("https://pub.data.gov.bc.ca/datasets/175624/92f/092f09_e.dem.zip", 
@@ -220,10 +220,10 @@ if(!dir.exists(dl_path) || !dir.exists(trim_path)) {
   # Merge the files and convert to a raster object
   trim <- foreach(i = urls, .final = function(x) 
       do.call(merge, c(x))) %do% { 
-    download.file(url = i, destfile = file.path(dl_path, basename(i)))
-    z <- unzip(file.path(dl_path, basename(i)), overwrite = TRUE, 
-               exdir = file.path(dl_path))
-    unlink(file.path(dl_path, basename(i)))
+    download.file(url = i, destfile = file.path(dl_dir, basename(i)))
+    z <- unzip(file.path(dl_dir, basename(i)), overwrite = TRUE, 
+               exdir = file.path(dl_dir))
+    unlink(file.path(dl_dir, basename(i)))
     return(rast(z))
   } %>% magrittr::set_names("dem")
   
@@ -239,7 +239,7 @@ if(!dir.exists(dl_path) || !dir.exists(trim_path)) {
   
   # Resample 1m DEM to resolution of TRIM. This will become the cropping extent
   # and masking layer used later
-  dem_1 <- rast(file.path(covariate_file_path, "1m", "dem.tif"))
+  dem_1 <- rast(file.path(covariate_dir, "1m", "dem.tif"))
   dem_1_ext <- rast(ext(dem_1), crs = crs(dem_1))
   res(dem_1_ext) <- res(trim_proj)
   trim_mask <- resample(dem_1, dem_1_ext)
@@ -247,14 +247,14 @@ if(!dir.exists(dl_path) || !dir.exists(trim_path)) {
   # Crop and mask layer, save it to the TRIM folder
   trim_bca <- mask(
     project(trim, trim_mask, mask = TRUE), trim_mask, 
-    filename = file.path(trim_path, "dem.tif"), overwrite = TRUE)
+    filename = file.path(trim_dir, "dem.tif"), overwrite = TRUE)
   
   # Cleanup temp files
   suppressWarnings(tmpFiles(old = TRUE, remove = TRUE))
   
 }
 
-dem_files <- grep("1m", list.files(covariate_file_path, pattern = "dem.tif$", 
+dem_files <- grep("1m", list.files(covariate_dir, pattern = "dem.tif$", 
                                    full.names = TRUE, recursive = TRUE), 
                   value = TRUE, invert = TRUE)
 
@@ -271,8 +271,8 @@ The program takes as an input a DEM provided as a .asc file in the 4326 projecti
 ```{r ClimateBC rasters}
 
 # Create DEM files for use with ClimateBC program:
-clim_bc_path <- file.path(file.path(AOI.dir, "0_raw_inputs", "ClimateBC_Layers"))
-dir.create(clim_bc_path, recursive = TRUE, showWarnings = FALSE)
+clim_bc_dir <- file.path(file.path(AOI_dir, "0_raw_inputs", "ClimateBC_Layers"))
+dir.create(clim_bc_dir, recursive = TRUE, showWarnings = FALSE)
 
 # Flow is a bit weird - first, raster package is used to load DEM files. The 
 # extents of those rasters is projected to lat/long, and the minimum resolution
@@ -294,7 +294,7 @@ for(i in dem_files) {
   raster::NAvalue(dem_prj) <- -9999
   raster::writeRaster(
     dem_prj, overwrite = TRUE, prj = TRUE, NAflag = -9999,
-    filename = file.path(clim_bc_path, paste0("dem_", basename(dirname(i)), ".asc")))
+    filename = file.path(clim_bc_dir, paste0("dem_", basename(dirname(i)), ".asc")))
   
   # Cleanup temp files
   suppressWarnings(tmpFiles(old = TRUE, remove = TRUE))
@@ -308,12 +308,12 @@ for(i in dem_files) {
 # ______________________________________________________________________________
 
 # Folders indicate resolutions, subfolders are the data attribute
-clim_res <- list.dirs(clim_bc_path, full.names = TRUE, recursive = FALSE)
+clim_res <- list.dirs(clim_bc_dir, full.names = TRUE, recursive = FALSE)
 
 for(i in clim_res) {
   clim_sub <- list.dirs(i, recursive = FALSE)
   res <- gsub("dem_", "", basename(i))
-  dem <- rast(file.path(covariate_file_path, res, "dem.tif"))
+  dem <- rast(file.path(covariate_dir, res, "dem.tif"))
   for(j in clim_sub) {
     # Add CRS information and save as tif files
     # terra cannot reproject when CRS is in memory, it has to be in storage. The
@@ -334,7 +334,7 @@ for(i in clim_res) {
     # Do the reprojection now
     p <- project(clim_layers, dem, mask = TRUE) %>% 
       magrittr::set_names(tolower(paste0(basename(j), "_", names(.)))) %>% 
-      writeRaster(filename = file.path(covariate_file_path, res, 
+      writeRaster(filename = file.path(covariate_dir, res, 
                               paste0(names(.), ".tif")), overwrite = TRUE)
     
     # Cleanup temp files
@@ -343,4 +343,3 @@ for(i in clim_res) {
 }
 
 ```
-

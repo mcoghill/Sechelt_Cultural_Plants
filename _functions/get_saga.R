@@ -9,17 +9,17 @@ get_saga <- function() {
     message("Searching your system for a valid installation of SAGA GIS")
     
     # Don't search these folders to save time
-    windows_folders <- paste(c("\\$Recycle.Bin", "Documents and Settings", "Recovery", 
-                               "System Volume Information", "Intel", "OneDriveTemp", 
-                               "PerfLogs", "ProgramData", "Users", "Windows", 
-                               "Program Files", "Program Files (x86)"), 
-                             collapse = "|")
+    windows_dirs <- paste(c("\\$Recycle.Bin", "Documents and Settings", "Recovery", 
+                            "System Volume Information", "Intel", "OneDriveTemp", 
+                            "PerfLogs", "ProgramData", "Users", "Windows", 
+                            "Program Files", "Program Files (x86)"), 
+                          collapse = "|")
     
-    remaining_folders <- grep(windows_folders, 
-                              list.dirs(sys_drive, full.names = FALSE, recursive = FALSE),
-                              value = TRUE, invert = TRUE)
+    remaining_dirs <- grep(windows_dirs, 
+                           list.dirs(sys_drive, full.names = FALSE, recursive = FALSE),
+                           value = TRUE, invert = TRUE)
     
-    saga_dirs <- dir(file.path(sys_drive, remaining_folders), 
+    saga_dirs <- dir(file.path(sys_drive, remaining_dirs), 
                      pattern = "saga", ignore.case = TRUE, full.names = TRUE)
     
     saga_dir <- list.files(saga_dirs, pattern = "saga_cmd.exe", full.names = TRUE, recursive = TRUE)

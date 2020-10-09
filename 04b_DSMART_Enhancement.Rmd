@@ -7,17 +7,18 @@ output: html_document
 
 ```{r Load Packages}
 
-ls <- c("tidyverse", "terra", "sf", "raster", "foreach", "caret", "ranger", 
-        "GSIF", "gdalUtils", "MLmetrics")
-new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
-if(length(new.packages))
-  install.packages(new.packages)
-
-# Make sure terra package is up to date! This may take a moment
-if(compareVersion(as.character(packageVersion("terra")), "0.7-4") < 0)
-  install.packages("terra")
-lapply(ls, library, character.only = TRUE)[0]
-rm(ls, new.packages)
+suppressMessages(suppressWarnings({
+  ls <- c("tidyverse", "terra", "sf", "raster", "foreach", "caret", "ranger", 
+          "GSIF", "gdalUtils", "MLmetrics")
+  new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+  if(length(new.packages))
+    install.packages(new.packages)
+  
+  # Make sure terra package is up to date! This may take a moment
+  if(compareVersion(as.character(packageVersion("terra")), "0.7-4") < 0)
+    install.packages("terra")
+  lapply(ls, library, character.only = TRUE)[0]
+  rm(ls, new.packages)}))
 
 # Load custom DSMART files
 source("./_functions/dsmart_custom/dsmart.R")
@@ -32,7 +33,7 @@ AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 map_res <- 4
 
-shapes_path <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
+shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
 pto <- file.path(AOI_dir, "1_map_inputs", "field_data", "processed")
 
@@ -49,13 +50,13 @@ out_dir <- file.path(AOI_dir, "1_map_inputs", paste0("2020_dsmart_", run))
 ```{r Load 2020 data}
 
 # Load covariates
-res_folder <- paste0(map_res, "m")
+res_dir <- paste0(map_res, "m")
 terrain_covariates <- grep(pattern = "normal|sentinel2", list.files(
-  file.path(covariate_dir, res_folder), full.names = TRUE, pattern = ".tif$"), invert = TRUE, 
+  file.path(covariate_dir, res_dir), full.names = TRUE, pattern = ".tif$"), invert = TRUE, 
   value = TRUE)
-sentinel_covariates <- list.files(file.path(covariate_dir, res_folder), 
+sentinel_covariates <- list.files(file.path(covariate_dir, res_dir), 
                                   pattern = "^sentinel2.*.2019.tif$", full.names = TRUE)
-climate_covariates <- list.files(file.path(covariate_dir, res_folder), 
+climate_covariates <- list.files(file.path(covariate_dir, res_dir), 
                                  pattern = "^normal_1981_2010y", full.names = TRUE)
 covariates <- terra::rast(c(terrain_covariates, sentinel_covariates, climate_covariates))
 
@@ -74,7 +75,7 @@ polygons <- terra::vect(file.path(dsmart_dir, "inputs", paste0(
   "dsmart_", run, "_polys.gpkg")))
 
 if(include_bgc) {
-  bgc <- st_read(file.path(shapes_path, res_folder, "bec.gpkg"), quiet = TRUE) %>% 
+  bgc <- st_read(file.path(shapes_dir, res_dir, "bec.gpkg"), quiet = TRUE) %>% 
     mutate(MAP_LABEL = as.factor(MAP_LABEL), bgc = as.numeric(as.factor(MAP_LABEL))) 
   tem_geom <- st_geometry(bgc)
   

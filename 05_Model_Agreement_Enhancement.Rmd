@@ -28,13 +28,13 @@ AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 map_res <- 4
 
 model_dir <- file.path(AOI_dir, "4_map_predictions_enhanced")
-covariate_folder <- file.path(AOI_dir, "1_map_inputs", "covariates")
-res_folder <- paste0(map_res, "m")
+covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
+res_dir <- paste0(map_res, "m")
 dsmart_dirs <- file.path(
   AOI_dir, "1_map_inputs", paste0("2020_dsmart_", c("site_ser", "struct_stg")))
 
 covariates <- rast(c(
-  list.files(file.path(covariate_folder, res_folder), 
+  list.files(file.path(covariate_dir, res_dir), 
              pattern = ".tif$", full.names = TRUE),
   list.files(c(file.path(
     dsmart_dirs[endsWith(dsmart_dirs, "site_ser")], "simple"), 
@@ -48,17 +48,17 @@ The below script processes the models to reclassify the models to have cell valu
 
 ```{r Pres Abs model agreement}
 
-pred_folder <- file.path(model_dir, "pres_abs_predictions")
-out_folder <- file.path(
+pred_dir <- file.path(model_dir, "pres_abs_predictions")
+out_dir <- file.path(
   AOI_dir, "5_model_agreement_enhanced", "pres_abs_agreement")
-dir.create(out_folder, showWarnings = FALSE, recursive = TRUE)
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 prob_cutoff <- c(0.5, 0.75) %>% magrittr::set_names(c("0.5", "0.75"))
 
 out <- sapply(c("Corn can", "Rubu spe"), function(i) {
   
   # Gather all of the model outputs
   model_stack <- rast(
-    sapply(dir(pred_folder, pattern = i, full.names = TRUE), list.files, 
+    sapply(dir(pred_dir, pattern = i, full.names = TRUE), list.files, 
            pattern = "_TRUE.tif$", full.names = TRUE))
   
   mod_modified <- sapply(prob_cutoff, function(j) {
@@ -69,7 +69,7 @@ out <- sapply(c("Corn can", "Rubu spe"), function(i) {
     # Create summed raster
     agreement <- app(
       rcl, fun = "sum", na.rm = TRUE,
-      filename = file.path(out_folder, paste0(
+      filename = file.path(out_dir, paste0(
         i, "_pres_abs_gt_", 100 * j, "_model_agreement.tif")), 
       overwrite = TRUE, wopt = list(datatype = "INT2S"))
     
@@ -93,7 +93,7 @@ out <- sapply(c("Corn can", "Rubu spe"), function(i) {
 lapply(names(out), function(x) {
   lapply(names(out[[x]]), function(y) {
     lapply(names(out[[x]][[y]]), function(z) {
-      write.csv(out[[x]][[y]][[z]], file.path(out_folder, paste0(
+      write.csv(out[[x]][[y]][[z]], file.path(out_dir, paste0(
         x, "_", z, "_pres_abs_gt_", as.numeric(y) * 100, ".csv")), 
         row.names = FALSE)})})})
 

@@ -7,13 +7,14 @@ output: html_document
 
 ```{r Load Packages}
 
-ls <- c("tidyverse", "tools", "terra", "sf", "ranger", "mlr3verse", "parallel", 
-        "parallelMap", "randomForest", "ModelMap", "foreach", "gdalUtils")
-new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
-if(length(new.packages))
-  install.packages(new.packages)
-lapply(ls, library, character.only = TRUE)[0]
-rm(ls, new.packages)
+suppressMessages(suppressWarnings({
+  ls <- c("tidyverse", "tools", "terra", "sf", "ranger", "mlr3verse", "parallel", 
+          "parallelMap", "randomForest", "ModelMap", "foreach", "gdalUtils")
+  new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+  if(length(new.packages))
+    install.packages(new.packages)
+  lapply(ls, library, character.only = TRUE)[0]
+  rm(ls, new.packages)}))
 
 source("./_functions/model_gen_mlr3.R")
 source("./_functions/predict_landscape_mlr3.R")
@@ -45,7 +46,7 @@ dir.create(file.path(output_dir, "cover_predictions"), showWarnings = FALSE)
 ```{r Load data}
 
 # List of processing options...
-res_folder <- paste0(map_res, "m")
+res_dir <- paste0(map_res, "m")
 temporal <- c("annual") # either or both of annual and seasonal
 ss <- c("simple", "dsmart", NA) # any of simple, dsmart, and/or NA
 probabilities <- c(TRUE, FALSE) # Use probabilites or classification
@@ -63,7 +64,7 @@ perms <- expand.grid(
 
 # Raster covariates
 terrain_covariates <- grep(pattern = "normal|sentinel2", list.files(
-  file.path(covariate_dir, res_folder), full.names = TRUE, pattern = ".tif$"), 
+  file.path(covariate_dir, res_dir), full.names = TRUE, pattern = ".tif$"), 
   invert = TRUE, value = TRUE)
 
 if("annual" %in% temporal && "seasonal" %in% temporal) {
@@ -77,13 +78,13 @@ if("annual" %in% temporal && "seasonal" %in% temporal) {
   c_pattern <- "normal.*.(_at.tif|_sm.tif|_sp.tif|_wt.tif)"
 }
 
-sentinel_covariates <- grep(file.path(covariate_dir, res_folder, s_pattern), 
-                            list.files(file.path(covariate_dir, res_folder), full.names = TRUE), 
+sentinel_covariates <- grep(file.path(covariate_dir, res_dir, s_pattern), 
+                            list.files(file.path(covariate_dir, res_dir), full.names = TRUE), 
                             value = TRUE, perl = TRUE)
 
 climate_covariates <- if(any(climate_vars)) {
-  grep(file.path(covariate_dir, res_folder, c_pattern),
-       list.files(file.path(covariate_dir, res_folder), full.names = TRUE), 
+  grep(file.path(covariate_dir, res_dir, c_pattern),
+       list.files(file.path(covariate_dir, res_dir), full.names = TRUE), 
        value = TRUE, perl = TRUE)
 } else NULL
 

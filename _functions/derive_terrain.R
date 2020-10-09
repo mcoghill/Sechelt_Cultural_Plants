@@ -117,7 +117,7 @@
 
 dem_derived_layers <- function(
   dem_input, # Input DEM either as file path or raster/rast layer
-  out_path,  # output file path, will default to dem_input directory
+  out_dir,  # output file path, will default to dem_input directory
   saga_cmd # path to saga_cmd
 ) {
   # Note: All SAGA tools and associated documentation can be found here:
@@ -142,17 +142,17 @@ dem_derived_layers <- function(
     ))
   }
   
-  if(missing(out_path)) out_path <- base::dirname(dem_input)[1]
-  if(!base::is.character(out_path)) stop("out_path is not a valid directory")
-  if(base::length(out_path) != 1) warning("Multiple strings passed to out_path, only the first one will be used")
-  out_path <- out_path[1]
-  base::dir.create(out_path, showWarnings = FALSE, recursive = TRUE)
+  if(missing(out_dir)) out_dir <- base::dirname(dem_input)[1]
+  if(!base::is.character(out_dir)) stop("out_dir is not a valid directory")
+  if(base::length(out_dir) != 1) warning("Multiple strings passed to out_dir, only the first one will be used")
+  out_dir <- out_dir[1]
+  base::dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
   
   if(!base::file.exists(saga_cmd)) stop("Please provide a valid path to 'saga_cmd'")
   
   # Define inputs used in some of the SAGA tools below
   reference_res <- base::max(terra::res(reference))
-  base::dir.create(out_path, recursive = TRUE, showWarnings = FALSE)
+  base::dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   
   ## Sunrise/sunset time calculation for solar radiation tool:
   base::suppressWarnings(base::suppressMessages({
@@ -572,8 +572,8 @@ dem_derived_layers <- function(
     foreach(k = unlist(x$inputs), .combine = paste) %do% {
       if(k != "dem") {
         k_out_id <- unlist(sapply(xml_layout, function(x) which(x$outputs[[1]] == k)))
-        k_path <- xml_layout[[names(k_out_id)]]$out_files[[1]][k_out_id]
-        paste0("-", k, " ", k_path)
+        k_dir <- xml_layout[[names(k_out_id)]]$out_files[[1]][k_out_id]
+        paste0("-", k, " ", k_dir)
       } else {
         paste0("-dem ", dem_input)
       }
@@ -612,7 +612,7 @@ dem_derived_layers <- function(
   out <- terra::rast(out_list$out_files) %>% magrittr::set_names(out_list$out_names)
   crs(out) <- terra::crs(reference)
   out <- terra::writeRaster(out, overwrite = TRUE, 
-                            filename = file.path(out_path, paste0(names(out), ".tif")))
+                            filename = file.path(out_dir, paste0(names(out), ".tif")))
   
   return(out)
 }

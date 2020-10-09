@@ -52,9 +52,9 @@ The following chunk should only need to be ran once. This is where I anticipate 
 
 python_setup <- function(x) {
   if("reticulate" %in% (.packages())) detach("package:reticulate", unload = TRUE)
-  session_py_path <- file.path(reticulate::miniconda_path(), "envs", x)
+  session_py_dir <- file.path(reticulate::miniconda_path(), "envs", x)
   Sys.setenv(RETICULATE_PYTHON_ENV = x)
-  Sys.setenv(RETICULATE_PYTHON = session_py_path)
+  Sys.setenv(RETICULATE_PYTHON = session_py_dir)
   
   library(reticulate)
   # Install miniconda if it isn't already installed
@@ -104,8 +104,8 @@ python_setup <- function(x) {
   if(auth) {
     term_id <- terminalCreate()
     if(Sys.info()[["sysname"]] %in% c("Linux", "Darwin")) {
-      cmd_path <- file.path(session_py_path, "bin")
-      terminalSend(term_id, paste0(cmd_path, "/earthengine authenticate\r"))
+      cmd_dir <- file.path(session_py_dir, "bin")
+      terminalSend(term_id, paste0(cmd_dir, "/earthengine authenticate\r"))
       
     } else if(Sys.info()[["sysname"]] == "Windows") {
     terminalSend(term_id, "earthengine authenticate\r")
@@ -143,7 +143,7 @@ dem_list <- grep("1m", list.files(file.path(AOI_dir, "1_map_inputs", "covariates
                   value = TRUE, invert = TRUE)
 
 # Define path for file processing (doesn't have to exist)
-raw_path <- file.path(AOI_dir, "0_raw_inputs", "satellite_layers")
+raw_dir <- file.path(AOI_dir, "0_raw_inputs", "satellite_layers")
 
 ```
 
@@ -157,7 +157,7 @@ Next, provide the AOI shape as either an sf or sfc object. Note: It's a good ide
 
 You need to create a dataframe with three columns: The first is an ID column, which will be used for creating subfolders in your downloads folder later. The second column is a start date column, and the third is an end date column. The example given here separates the dates by season; however, you can use as many or as little as you wish.
 
-Finally the function is ran. You should specify a drive_folder for where outputs will be stored to on Google Drive as well as a download folder for when files are downloaded locally. The function takes sentinel 2 images from a specified date range (ex: winter), performs a cloud masking function to remove clouds from an image stack, and then calculates the median across that date range. The final image is clipped to your AOI, reprojected in BC Albers, and then saved to your google drive folder. Lastly, the image is downloaded locally to your machine where you specify.
+Finally the function is ran. You should specify a drive_dir for where outputs will be stored to on Google Drive as well as a download folder for when files are downloaded locally. The function takes sentinel 2 images from a specified date range (ex: winter), performs a cloud masking function to remove clouds from an image stack, and then calculates the median across that date range. The final image is clipped to your AOI, reprojected in BC Albers, and then saved to your google drive folder. Lastly, the image is downloaded locally to your machine where you specify.
 
 ```{r Satellite Download}
 # This is a new function, allowing users to process Sentinel 2 bands in an area 
@@ -169,8 +169,8 @@ get_sentinel_ee <- function(
   out_epsg = NULL,
   template_raster = NULL, 
   date_ranges = NULL, 
-  drive_folder = NULL, 
-  download_folder = NULL) 
+  drive_dir = NULL, 
+  download_dir = NULL) 
   {
   # Perform checks of function inputs
   if(!any(class(aoi) %in% c("sf", "sfc", "sfg")) || is.null(aoi)) {
@@ -206,11 +206,11 @@ get_sentinel_ee <- function(
     )
   }
   
-  if(is.null(drive_folder)) {
-    drive_folder <- "Sentinel2"
+  if(is.null(drive_dir)) {
+    drive_dir <- "Sentinel2"
   }
   
-  if(is.null(download_folder) || !class(download_folder) %in% "character") {
+  if(is.null(download_dir) || !class(download_dir) %in% "character") {
     stop(
       "\rYou must supply an output directory for the files to be downloaded to"
     )
@@ -229,7 +229,7 @@ get_sentinel_ee <- function(
   }
   
   # Create the parent folder for the seasonal exports in your Google Drive folder
-  try(drive_mkdir(drive_folder, path = "~", overwrite = FALSE), silent = TRUE)
+  try(drive_mkdir(drive_dir, path = "~", overwrite = FALSE), silent = TRUE)
   
   # Create a dataframe of Sentinel 2 band names and their associated resolutions
   bands <- data.frame(
@@ -248,7 +248,7 @@ get_sentinel_ee <- function(
     drive_mkdir(date_id, path = "Sentinel2", overwrite = TRUE)
     
     # Create the folder for the seasonal downloads in your local folder
-    out_dir <- file.path(download_folder, date_id)
+    out_dir <- file.path(download_dir, date_id)
     dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
     
     # Perform filtering operations in GEE
@@ -279,12 +279,12 @@ get_sentinel_ee <- function(
       }
       print(sprintf("State: %s", task_img$status()$state))
       img <- drive_download(
-        file = file.path(drive_folder, date_id, paste0(bands$new_name[j], ".tif")), 
+        file = file.path(drive_dir, date_id, paste0(bands$new_name[j], ".tif")), 
         path = file.path(out_dir, paste0(bands$new_name[j], ".tif")), 
         overwrite = TRUE)
     }
   }
-  return(list.files(download_folder, pattern = ".tif$", full.names = TRUE, 
+  return(list.files(download_dir, pattern = ".tif$", full.names = TRUE, 
                     recursive = TRUE))
 }
 
@@ -431,11 +431,11 @@ ee_download <- get_sentinel_ee(
   out_epsg = AOI_epsg,
   template_raster = dem_hi_res,
   date_ranges = seasons_df,
-  drive_folder = "Sentinel2",
-  download_folder = file.path(raw_path, "1_download"))
+  drive_dir = "Sentinel2",
+  download_dir = file.path(raw_dir, "1_download"))
 
-season_dirs <- dir(file.path(raw_path, "1_download"), 
-                   full.names = TRUE)[dir(file.path(raw_path, "1_download"))
+season_dirs <- dir(file.path(raw_dir, "1_download"), 
+                   full.names = TRUE)[dir(file.path(raw_dir, "1_download"))
                                       %in% seasons_df$season]
 
 # Run the bands_to_indices function to produce satellite indices for each 

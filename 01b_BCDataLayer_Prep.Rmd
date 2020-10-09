@@ -80,7 +80,7 @@ A single function is used to download all layers listed above. If multiple AOI's
 
 ```{r Function}
 
-get_bc_shapes <- function(in_aoi, out_path, epsg = 3005) {
+get_bc_shapes <- function(in_aoi, out_dir, epsg = 3005) {
   
   #### Input checks
   ## Restrict in_aoi to being an sf, sfc, or list of sf or sfc objects (polygons only)
@@ -89,8 +89,8 @@ get_bc_shapes <- function(in_aoi, out_path, epsg = 3005) {
   ## more than one row. Right now, this works when it is only a single row
   ## We only really want a single sfc polygon out, so maybe an st_combine call?
   if(missing(in_aoi)) stop("'in_aoi' is missing with no default")
-  if(missing(out_path)) stop("'out_path' is missing with no default")
-  if(length(out_path) > 1) stop("Only one file path allowed")
+  if(missing(out_dir)) stop("'out_dir' is missing with no default")
+  if(length(out_dir) > 1) stop("Only one file path allowed")
   if(!is.numeric(epsg)) stop("'epsg' is invalid, requires a numerical EPSG code")
   
   # Use list processing throughout. If not initially a list, make into one
@@ -127,12 +127,12 @@ get_bc_shapes <- function(in_aoi, out_path, epsg = 3005) {
     } else stop("Not all listed sf features are of POLYGON or MULTIPOLYGON class")
   } else stop("Some list elements are not valid sf or sfc obects.")
   
-  # Set out_path variable
+  # Set out_dir variable
   if(length(study_area) > 1 || names(study_area)[1] != rand_name) {
-    out_path <- as.list(file.path(out_path, names(in_aoi))) %>% 
+    out_dir <- as.list(file.path(out_dir, names(in_aoi))) %>% 
       magrittr::set_names(names(study_area))
-  } else out_path <- as.list(out_path) %>% magrittr::set_names(names(study_area))
-  sapply(out_path, dir.create, showWarnings = FALSE, recursive = TRUE)
+  } else out_dir <- as.list(out_dir) %>% magrittr::set_names(names(study_area))
+  sapply(out_dir, dir.create, showWarnings = FALSE, recursive = TRUE)
   
   # Create function to remove incorrect geometries from shapes due to clipping
   st_force_poly <- function(sf) {
@@ -197,7 +197,7 @@ get_bc_shapes <- function(in_aoi, out_path, epsg = 3005) {
     tem <- sapply(names(study_area), function(x) {
       if(nrow(tem) > 0) {
         tem <- sf::st_intersection(tem, study_area[[x]]) %>% st_force_poly()
-        sf::st_write(tem, file.path(out_path[[x]], "tem.gpkg"),
+        sf::st_write(tem, file.path(out_dir[[x]], "tem.gpkg"),
                      delete_dsn = TRUE, quiet = TRUE)
       } else tem <- tem
       return(tem)}, simplify = FALSE, USE.NAMES = TRUE)
@@ -221,7 +221,7 @@ get_bc_shapes <- function(in_aoi, out_path, epsg = 3005) {
             dplyr::rename(MAP_LABEL = BIOGEOCLIMATIC_LBL) %>% st_force_poly()
         } else bec_sf[[x]] <- dplyr::rename(bec_fix, MAP_LABEL = BIOGEOCLIMATIC_LBL)
       }
-      sf::st_write(bec_sf[[x]], file.path(out_path[[x]], "bec.gpkg"), 
+      sf::st_write(bec_sf[[x]], file.path(out_dir[[x]], "bec.gpkg"), 
                    delete_dsn = TRUE, quiet = TRUE)
     })
     
@@ -238,10 +238,10 @@ get_bc_shapes <- function(in_aoi, out_path, epsg = 3005) {
     vri <- sapply(names(study_area), function(x) {
       if(nrow(vri) > 0) {
         vri <- sf::st_intersection(vri, study_area[[x]]) %>% st_force_poly()
-        sf::st_write(vri, file.path(out_path[[x]], "vri_full.gpkg"), 
+        sf::st_write(vri, file.path(out_dir[[x]], "vri_full.gpkg"), 
                      delete_dsn = TRUE, quiet = TRUE)
         sf::st_write(dplyr::select(vri, "BCLCS_LEVEL_2"), 
-                     file.path(out_path[[x]], "vri_trees.gpkg"), # Treed sites
+                     file.path(out_dir[[x]], "vri_trees.gpkg"), # Treed sites
                      delete_dsn = TRUE, quiet = TRUE)
       } else vri <- vri
       return(vri)}, simplify = FALSE, USE.NAMES = TRUE)
@@ -263,7 +263,7 @@ get_bc_shapes <- function(in_aoi, out_path, epsg = 3005) {
           mutate(DISTURBANCE_START_DATE = as.Date(DISTURBANCE_START_DATE),
              DISTURBANCE_END_DATE = as.Date(DISTURBANCE_END_DATE)) %>% 
           dplyr::filter(as.numeric(format(Sys.time(), "%Y")) - HARVEST_YEAR <= 20)
-        sf::st_write(cutblocks, file.path(out_path[[x]], "young_cutblocks.gpkg"), 
+        sf::st_write(cutblocks, file.path(out_dir[[x]], "young_cutblocks.gpkg"), 
                      delete_dsn = TRUE, quiet = TRUE)
       } else cutblocks <- cutblocks
       return(cutblocks)}, simplify = FALSE, USE.NAMES = TRUE)
@@ -296,7 +296,7 @@ get_bc_shapes <- function(in_aoi, out_path, epsg = 3005) {
       if(nrow(waterbodies) > 0) {
         waterbodies <- sf::st_intersection(waterbodies, study_area[[x]]) %>% 
           st_force_poly()
-        sf::st_write(waterbodies, file.path(out_path[[x]], "water.gpkg"), 
+        sf::st_write(waterbodies, file.path(out_dir[[x]], "water.gpkg"), 
              delete_dsn = TRUE, quiet = TRUE)
       } else waterbodies <- waterbodies
       return(waterbodies)}, simplify = FALSE, USE.NAMES = TRUE)
@@ -339,7 +339,7 @@ get_bc_shapes <- function(in_aoi, out_path, epsg = 3005) {
       if(nrow(roads) > 0) {
         roads <- sf::st_intersection(roads, study_area[[x]])  %>% 
           sf::st_cast("MULTILINESTRING")
-        sf::st_write(roads, file.path(out_path[[x]], "road_network.gpkg"), 
+        sf::st_write(roads, file.path(out_dir[[x]], "road_network.gpkg"), 
                      delete_dsn = TRUE, quiet = TRUE)
       } else roads <- roads
       return(roads)}, simplify = FALSE, USE.NAMES = TRUE)
@@ -372,7 +372,7 @@ get_bc_shapes <- function(in_aoi, out_path, epsg = 3005) {
                         FIRE_SIZE_HECTARES, LOAD_DATE) %>% 
           dplyr::filter(as.numeric(format(Sys.time(), "%Y")) - FIRE_YEAR <= 20) %>% 
           st_force_poly()
-        sf::st_write(fires, file.path(out_path[[x]], "fires.gpkg"), 
+        sf::st_write(fires, file.path(out_dir[[x]], "fires.gpkg"), 
                      delete_dsn = TRUE, quiet = TRUE)
       } else fires <- fires
       return(fires)}, simplify = FALSE, USE.NAMES = TRUE)
@@ -403,7 +403,7 @@ aoi_shapes <- lapply(
   lapply(st_geometry)
 
 # Run the function in a loop for multiple input AOI's (function will default
-# out_path designation to the folder of in_aoi if in_aoi is a file path)
-bc_shapes <- get_bc_shapes(aoi_shapes, out_path = shp_dir)
+# out_dir designation to the folder of in_aoi if in_aoi is a file path)
+bc_shapes <- get_bc_shapes(aoi_shapes, out_dir = shp_dir)
 
 ```

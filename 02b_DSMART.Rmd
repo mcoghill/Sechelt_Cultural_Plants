@@ -39,14 +39,15 @@ Next, file paths are defined.
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 map_res <- 4
+res_dir <- paste0(map_res, "m")
 
-shapes_path <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
+shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
 
 include_bgc <- FALSE
 use_caret <- TRUE
 run <- "site_ser" # option of "struct_stg" or "site_ser"
-dsmart_dir <- file.path(AOI_dir, "1_map_inputs", paste0("dsmart_", run))
+dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart", res_dir, paste0("dsmart_", run))
 
 ```
 
@@ -55,13 +56,12 @@ Next, important data is loaded. There are a lot of covariate layers created from
 ```{r Load data}
 
 # Load covariates
-res_folder <- paste0(map_res, "m")
 terrain_covariates <- grep(pattern = "normal|sentinel2", list.files(
-  file.path(covariate_dir, res_folder), full.names = TRUE, pattern = ".tif$"), invert = TRUE, 
+  file.path(covariate_dir, res_dir), full.names = TRUE, pattern = ".tif$"), invert = TRUE, 
   value = TRUE)
-sentinel_covariates <- list.files(file.path(covariate_dir, res_folder), 
+sentinel_covariates <- list.files(file.path(covariate_dir, res_dir), 
                                   pattern = "^sentinel2.*.2019.tif$", full.names = TRUE)
-climate_covariates <- list.files(file.path(covariate_dir, res_folder), 
+climate_covariates <- list.files(file.path(covariate_dir, res_dir), 
                                  pattern = "^normal_1981_2010y", full.names = TRUE)
 covariates <- terra::rast(c(terrain_covariates, sentinel_covariates, climate_covariates))
 
@@ -80,7 +80,7 @@ polygons <- terra::vect(file.path(dsmart_dir, "inputs", paste0(
   "dsmart_", run, "_polys.gpkg")))
 
 if(include_bgc) {
-  bgc <- st_read(file.path(shapes_path, res_folder, "bec.gpkg"), quiet = TRUE) %>% 
+  bgc <- st_read(file.path(shapes_dir, res_dir, "bec.gpkg"), quiet = TRUE) %>% 
     mutate(MAP_LABEL = as.factor(MAP_LABEL), bgc = as.numeric(as.factor(MAP_LABEL))) 
   tem_geom <- st_geometry(bgc)
   
@@ -165,7 +165,7 @@ The following section sets up some additional parameters for the DSAMRT algorith
 
 There was a point in time that I tried to do the modelling via the mlr3 package since it has spatial capabilities; however, this proved to be a very difficult challenge and did not incur any speed benefit in terms of processing since the ranger package (used for the core modelling aspects) is written in C++ as it is. For those reasons, I did not implement the mlr3 modelling techniques into the DSMART algorithm.
 
-```{r Editing the dsmart functions}
+```{r DSMART parameters}
 
 # Note: for randomForest model method, you only need to have the mtry defined in 
 # the tuneGrid part. Also note that if class probabilities are requested, the 
@@ -197,23 +197,6 @@ if(use_caret) {
 outputdir <- file.path(AOI_dir, "1_map_inputs", paste0("dsmart_", run))
 dir.create(outputdir, recursive = TRUE, showWarnings = FALSE)
 
-dsm <- dsmart(
-  covariates = covariates, 
-  polygons = polygons, 
-  composition = composition,
-  rate = 5, # How many samples to draw per polygon
-  reals = 5, # How many models to produce from the modeling run? Gets overridden by number of repeats if caret package is used with repeated cross validation
-  observations = observations, 
-  method.sample = "by_polygon", 
-  method.allocate = "weighted",
-  method.model = method.model,
-  args.model = args.model,
-  outputdir = outputdir, 
-  factors = factors,
-  type = "prob", 
-  nprob = 1
-)
-
 # Save the file to a better location
 out <- rast(list.files(dsm$summarise$locations$mostprobable, 
                        pattern = "mostprob_01_class", full.names = TRUE)) %>% 
@@ -240,3 +223,26 @@ Unless there are thousands of observations, the number of observations will not 
 4. With the class probabilities produced, raw classifications are subsequently produced. Because certain areas may have overlap with what site series/structural stage it is, you can get a most probable layer, a second most probable layer, etc. At least 2 most probable layers are created (more may be specified, but in our case we just want the best one), and then a confusion layer (where classes disagree in an area) and Shannon index (where there are diverse classes) are created from calculations on the most probable layers. The final files include the most probable classification, a layer describing the probability of the most probable classification being correct, a confusion layer, and Shannon index layer. 
 
 The files used in future modelling include the most probable classification layer, and the probability layers produced as well.
+
+```{r DSMART run}
+
+dsm <- dsmart(
+  covariates = covariates, 
+  polygons = polygons, 
+  composition = composition,
+  rate = 5, # How many samples to draw per polygon
+  reals = 5, # How many models to produce from the modeling run? Gets overridden by number of repeats if caret package is used with repeated cross validation
+  observations = observations, 
+  method.sample = "by_polygon", 
+  method.allocate = "weighted",
+  method.model = method.model,
+  args.model = args.model,
+  outputdir = outputdir, 
+  factors = factors,
+  type = "prob", 
+  nprob = 1
+)
+
+```
+
+Sometimes when the function above is run, it will throw some sort of error. The error is meaningless and in the end he dsm object is still returned. 

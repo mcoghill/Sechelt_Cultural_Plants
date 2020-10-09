@@ -43,11 +43,11 @@ AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 map_res <- 4
 poi <- c("RUBUSPE", "CORNCAN", "VERAVIR", "LEDUGRO") # plants of interest
 
-shapes_path <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
+shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
 field_data_dir <- file.path(AOI_dir, "1_map_inputs", "field_data")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
 dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
-out_path <- file.path(AOI_dir, "2_map_predictions")
+out_dir <- file.path(AOI_dir, "2_map_predictions")
 
 ```
 
@@ -55,13 +55,13 @@ The next thing that is typical is to place any repeated functions at the top so 
 
 ```{r Functions}
 
-access_query_32 <- function(db_path = NULL) {
+access_query_32 <- function(db_dir = NULL) {
   # variables to make values uniform
   # Shouldn't need to change socket port number, but if so just change variable
   # here and the rest should run fine.
   sock_port <- 8642L
   
-  if(file.exists(db_path)) {
+  if(file.exists(db_dir)) {
     # start socket server to transfer data to 32 bit session
     svSocket::startSocketServer(port = sock_port, server.name = "access_query_32", local = TRUE)
     
@@ -72,7 +72,7 @@ access_query_32 <- function(db_path = NULL) {
       new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
       if(length(new.packages)) install.packages(new.packages, repos = "https://cloud.r-project.org")
       lapply(ls, library, character.only = TRUE)[0]
-      a32_con <- RODBC::odbcConnectAccess(.(db_path))
+      a32_con <- RODBC::odbcConnectAccess(.(db_dir))
       tbl_list <- RODBC::sqlTables(a32_con) %>% 
         dplyr::filter(TABLE_TYPE != "SYSTEM TABLE")
       for(j in tbl_list$TABLE_NAME) {
@@ -109,7 +109,7 @@ access_query_32 <- function(db_path = NULL) {
     # stop socket server
     svSocket::stopSocketServer(port = sock_port)
   } else {
-    warning("database not found: ", db_path)
+    warning("database not found: ", db_dir)
   }
   return(tbl_out)
 }
@@ -292,7 +292,7 @@ tem_xls <- sapply(poi, function(x) {
 
 # Process the .mdb file in a 32 bit R session, function passes variables 
 # to this R session in a single list entry
-tem_mdb <- access_query_32(db_path = file.path(field_data_dir, "raw", "tem_data.mdb")) %>% 
+tem_mdb <- access_query_32(db_dir = file.path(field_data_dir, "raw", "tem_data.mdb")) %>% 
   lapply(function(x) {
   if(class(x) == "data.frame") {
     if(nrow(x) == 0) {
@@ -393,9 +393,9 @@ It's pretty much a melted data frame from the polygon data, though I've adjusted
 
 ```{r DSMART TEM processing}
 
-tem_sf <- st_read(file.path(shapes_path, paste0(map_res, "m"), "tem.gpkg"), quiet = TRUE) %>% 
+tem_sf <- st_read(file.path(shapes_dir, paste0(map_res, "m"), "tem.gpkg"), quiet = TRUE) %>% 
   select_if(function(x) !all(is.na(x)))
-aoi_sf <- st_read(file.path(shapes_path, paste0(map_res, "m"), "aoi.gpkg"), quiet = TRUE) %>% 
+aoi_sf <- st_read(file.path(shapes_dir, paste0(map_res, "m"), "aoi.gpkg"), quiet = TRUE) %>% 
   st_geometry() %>% st_make_valid()
 
 # TEM polygon processing as a DSMART input
@@ -603,14 +603,14 @@ The land cover classifications use the BCLCS codes in 5 different layers to deta
 ```{r Structural stage prep}
 
 # Read in VRI data
-vri <- st_read(file.path(shapes_path, paste0(map_res, "m"), "vri_full.gpkg"), quiet = TRUE)
+vri <- st_read(file.path(shapes_dir, paste0(map_res, "m"), "vri_full.gpkg"), quiet = TRUE)
 vri_bgc <- dplyr::select(vri, BEC_ZONE_CODE, BEC_SUBZONE, BEC_VARIANT) %>% 
   dplyr::mutate(bgc = ifelse(!is.na(BEC_VARIANT), 
                              paste0(BEC_ZONE_CODE, BEC_SUBZONE, BEC_VARIANT), 
                              paste0(BEC_ZONE_CODE, BEC_SUBZONE))) %>% 
   group_by(bgc) %>% dplyr::summarise(.groups = "drop")
 
-st_write(vri_bgc, file.path(shapes_path, paste0(map_res, "m"), "bgc_vri.gpkg"), 
+st_write(vri_bgc, file.path(shapes_dir, paste0(map_res, "m"), "bgc_vri.gpkg"), 
          delete_layer = TRUE, quiet = TRUE)
 
 # Use VRI to interpret structural stage

@@ -17,8 +17,7 @@ suppressMessages(suppressWarnings({
   if(length(new.packages))
     install.packages(new.packages)
   sapply(ls, library, character.only = TRUE, quietly = TRUE)[0]
-  rm(ls, new.packages)
-}))
+  rm(ls, new.packages)}))
 
 ```
 
@@ -32,13 +31,12 @@ AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 map_res <- 4
 
-shapes_path <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
+shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
 field_data_dir <- file.path(AOI_dir, "1_map_inputs", "field_data")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
 dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart")
-out_path <- file.path(AOI_dir, "2_map_predictions")
 
-aoi_sf <- st_read(file.path(shapes_path, paste0(map_res, "m"), "aoi.gpkg"), quiet = TRUE) %>% 
+aoi_sf <- st_read(file.path(shapes_dir, paste0(map_res, "m"), "aoi.gpkg"), quiet = TRUE) %>% 
   st_geometry() %>% st_make_valid() %>% st_set_crs(3005)
 
 ```

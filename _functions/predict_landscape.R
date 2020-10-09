@@ -160,10 +160,10 @@ predict_landscape <- function(
       # Save tile (each pred item saved)
       out_files <- foreach(j = 1:length(keep), .combine = c) %do% {
         dir.create(file.path(outDir, keep[j]), showWarnings = FALSE)
-        write_path <- file.path(outDir, keep[j], paste0(keep[j], "_", i, ".tif"))
-        if(file.exists(write_path)) unlink(write_path)
-        out <- stars::st_rasterize(r_out[j], template = r[1], file = write_path)
-        return(write_path)
+        write_dir <- file.path(outDir, keep[j], paste0(keep[j], "_", i, ".tif"))
+        if(file.exists(write_dir)) unlink(write_dir)
+        out <- stars::st_rasterize(r_out[j], template = r[1], file = write_dir)
+        return(write_dir)
       }
     }
     

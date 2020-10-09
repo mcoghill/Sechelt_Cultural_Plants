@@ -385,15 +385,15 @@ disaggregate <- function(
     }
     
     # Save model to text file
-    model_path <- file.path(
+    model_dir <- file.path(
       outputdir, "output", "models", 
       paste0(stub, "model_", formatC(j, width = nchar(reals), format = "d", flag = "0")))
-    cat(out, file = paste0(model_path, ".txt"), sep = "\n", append = TRUE)
+    cat(out, file = paste0(model_dir, ".txt"), sep = "\n", append = TRUE)
     
     # Save model to rdata file
-    save(model, file = paste0(model_path, ".RData"))
+    save(model, file = paste0(model_dir, ".RData"))
     output$locations$models <- c(
-      output$locations$models, paste0(model_path, ".RData")
+      output$locations$models, paste0(model_dir, ".RData")
     )
     
     # Model prediction using tiling method
