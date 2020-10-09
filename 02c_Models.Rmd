@@ -38,7 +38,8 @@ AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 map_res <- 25
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
-input_dir <- file.path("./Sechelt_AOI/1_map_inputs/field_data/processed")
+input_dir <- file.path(
+  "./Sechelt_AOI/1_map_inputs/field_data/processed_2019", res_dir)
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates", res_dir)
 shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
 dsmart_site_ser_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2019", 
@@ -297,7 +298,7 @@ dir.create(dir_out, showWarnings = FALSE, recursive = TRUE)
 lapply(names(pres_abs), function(x) {
   y <- st_as_sf(pres_abs[[x]], coords = c("X", "Y"), crs = crs(covariates))
   st_write(y, file.path(dir_out, paste0("pres_abs_input_data.gpkg")), 
-           layer = x, delete_layer = TRUE)
+           layer = x, delete_layer = TRUE, quiet = TRUE)
 })[0]
 
 # To save a bit of memory and in order to see results as they are generated, 
