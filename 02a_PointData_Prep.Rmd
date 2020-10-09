@@ -527,10 +527,12 @@ sapply(c("dsmart_site_ser_composition", "dsmart_site_ser_observations"), functio
   eval(parse(text = x)), file.path(dso, paste0(x, ".csv")), row.names = FALSE))[0]
 
 # Write output as processed points in separate folder
+proc_dir <- file.path(field_data_dir, "processed_2019")
+dir.create(proc_dir, showWarnings = FALSE)
 dsmart_site_ser_observations %>% 
   st_as_sf(coords = c("X", "Y")) %>% 
   st_set_crs(st_crs(tem_sf)) %>% 
-  st_write(file.path(field_data_dir, "processed", "site_ser_pts.gpkg"), quiet = TRUE, 
+  st_write(file.path(proc_dir, "site_ser_pts.gpkg"), quiet = TRUE, 
            delete_layer = TRUE)
 
 ```
@@ -545,7 +547,7 @@ The three data sources (TEM excel spreadsheet, TEM mdb, and 2019 point data) are
 
 ```{r Pres/Abs and Cover Merge}
 
-pto <- file.path(field_data_dir, "processed", res_dir)
+pto <- file.path(field_data_dir, "processed_2019", res_dir)
 dir.create(pto, recursive = TRUE, showWarnings = FALSE)
 
 # Create the raster stack (terra package) which will be used for data extraction
