@@ -19,3 +19,6 @@ Sechelt_AOI/1_map_inputs/*
 !Sechelt_AOI/1_map_inputs/field_data/
 Sechelt_AOI/1_map_inputs/field_data/*
 !Sechelt_AOI/1_map_inputs/field_data/raw
+
+# Ignore MS temporary files
+~*
