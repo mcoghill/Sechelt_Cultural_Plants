@@ -82,8 +82,8 @@ raw_files <- c(file.path(raw_dir, "dem", "w001001.adf"),
 # I want to use the terra package for this since it has the ability to be 
 # functionized over any number of input layers so long as their CRS's are all
 # the same. Normally, I would have stacked these in a single "rast" function, 
-# however, the extents do not match between the files, hence the list placement of
-# each file
+# however, the extents do not match between the files, hence the list placement
+# of each file
 raw <- lapply(raw_files, function(x) {
   rast(x) %>% magrittr::set_names(basename(dirname(x)))}) %>% 
   magrittr::set_names(basename(dirname(raw_files)))
@@ -122,9 +122,9 @@ lidar <- lapply(raw, function(x) {
   rowvals <- raster::rowSums(inter, na.rm = TRUE)
   
   # We don't care what the sums of the rows are, just that the values > 0 
-  # will indicate what rows/cols have data. The first colsum value is used to find
-  # the xmin coordinate whereas the last colsum value is used to find xmax. This
-  # is reversed for finding y coordinates.
+  # will indicate what rows/cols have data. The first colsum value is used to 
+  # find the xmin coordinate whereas the last colsum value is used to find xmax.
+  # This is reversed for finding y coordinates.
   proj_ext <- terra::ext(c(
     xmin = terra::xFromCol(proj, head(which(colvals > 0) - 1, n = 1)),
     xmax = terra::xFromCol(proj, tail(which(colvals > 0), n = 1)),
@@ -136,8 +136,9 @@ lidar <- lapply(raw, function(x) {
 
 # Using the list of rasters, find the smallest extent that all of the rasters
 # will fit into
-new_ext <- ext(c(xmin = min(sapply(lidar, xmin)), xmax = max(sapply(lidar, xmax)), 
-                 ymin = min(sapply(lidar, ymin)), ymax = max(sapply(lidar, ymax))))
+new_ext <- ext(
+  c(xmin = min(sapply(lidar, xmin)), xmax = max(sapply(lidar, xmax)), 
+    ymin = min(sapply(lidar, ymin)), ymax = max(sapply(lidar, ymax))))
 
 # Using the above extent, expand the rasters, write them out, and then load them
 # back into R as a single SpatRaster object.
@@ -294,15 +295,16 @@ for(i in dem_files) {
   raster::NAvalue(dem_prj) <- -9999
   raster::writeRaster(
     dem_prj, overwrite = TRUE, prj = TRUE, NAflag = -9999,
-    filename = file.path(clim_bc_dir, paste0("dem_", basename(dirname(i)), ".asc")))
+    filename = file.path(
+      clim_bc_dir, paste0("dem_", basename(dirname(i)), ".asc")))
   
   # Cleanup temp files
   suppressWarnings(tmpFiles(old = TRUE, remove = TRUE))
 }
 
-# Create climate layers for normal annual & seasonal 1961-1990, same for 1991-2010, 
-# for each resolution using the ClimateBC program. When that finishes, come back 
-# here for renaming and saving the variables to their final location.
+# Create climate layers for normal annual & seasonal 1961-1990, same for
+# 1991-2010, for each resolution using the ClimateBC program. When that finishes, 
+# come back here for renaming and saving the variables to their final location.
 # ______________________________________________________________________________
 # ______________________________________________________________________________
 # ______________________________________________________________________________
