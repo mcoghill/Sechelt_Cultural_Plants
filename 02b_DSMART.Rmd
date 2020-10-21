@@ -63,10 +63,11 @@ sentinel_covariates <- list.files(
   covariate_dir, pattern = "^sentinel2.*.2019.tif$", full.names = TRUE)
 climate_covariates <- list.files(
   covariate_dir, pattern = "^normal_1981_2010y", full.names = TRUE)
-covariates <- terra::rast(c(terrain_covariates, sentinel_covariates, climate_covariates))
+covariates <- terra::rast(
+  c(terrain_covariates, sentinel_covariates, climate_covariates))
 
-# Preliminary check of covariate data to eliminate any outlying rasters containing
-# less data than normal
+# Preliminary check of covariate data to eliminate any outlying rasters
+# containing less data than normal
 cov_check <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
   new <- subset(covariates, i) * 0
   data.frame(layer = names(new), 
@@ -81,7 +82,8 @@ polygons <- terra::vect(file.path(dsmart_dir, "inputs", paste0(
 
 if(include_bgc) {
   bgc <- st_read(file.path(shapes_dir, "bec.gpkg"), quiet = TRUE) %>% 
-    mutate(MAP_LABEL = as.factor(MAP_LABEL), bgc = as.numeric(as.factor(MAP_LABEL))) 
+    mutate(MAP_LABEL = as.factor(MAP_LABEL), 
+           bgc = as.numeric(as.factor(MAP_LABEL))) 
   tem_geom <- st_geometry(bgc)
   
   # Fix geometries that aren't polygon/multipolygon

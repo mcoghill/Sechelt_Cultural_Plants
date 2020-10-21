@@ -5,17 +5,11 @@ script author: "Matt Coghill"
 output: html_document
 ---
 
-# Format sentinel dataset
-
-Once the data has been downloaded, the layers are clipped to a template raster (as selected), resampled to match the extent and resolution and renamed to enable spectral indicies to be calculated. 
-
-
-
 This document is going to be used to pull in relevant satellite layers for analysis. This is heavily adapted from the Hackathon in Prince George (https://github.com/bcgov-datasci-labs/BCForestNonForestPEM/blob/master/01_Load_Sentinel.R) and from conversations I had with Tom Hengl regarding satellite imagery. I have provided functions for downloading cloud free medians of satellite bands as they span across a given time frame (ex: spring). This requires an interface to Google Earth Engine.
 
-The first thing that will be done is load in the required packages. SAGA CMD is required here for spatial processing as well, so it is important that it is loaded here too.
+The first thing that will be done is load in the required packages.
 
-```{r load library, echo = FALSE}
+```{r Load packages, echo = FALSE}
 
 suppressMessages(suppressWarnings({
   ls <- c("raster", "RStoolbox", "reticulate", "terra", "sf",
@@ -136,11 +130,14 @@ AOI_res <- c(4, 25)
 
 # Define existing files and paths
 map_res <- c(paste0(AOI_res, "m"), "25m_TRIM")
-AOI_shapefile <- file.path(AOI_dir, "0_raw_inputs", "base_layers", map_res, "aoi.gpkg")
-dem_hi_res <- file.path(AOI_dir, "1_map_inputs", "covariates", paste0(min(AOI_res), "m"), "dem.tif")
-dem_list <- grep("1m", list.files(file.path(AOI_dir, "1_map_inputs", "covariates"), 
-                                   pattern = "dem.tif", full.names = TRUE, recursive = TRUE), 
-                  value = TRUE, invert = TRUE)
+AOI_shapefile <- file.path(
+  AOI_dir, "0_raw_inputs", "base_layers", map_res, "aoi.gpkg")
+dem_hi_res <- file.path(
+  AOI_dir, "1_map_inputs", "covariates", paste0(min(AOI_res), "m"), "dem.tif")
+dem_list <- grep("1m", list.files(
+  file.path(AOI_dir, "1_map_inputs", "covariates"), 
+  pattern = "dem.tif", full.names = TRUE, recursive = TRUE), 
+  value = TRUE, invert = TRUE)
 
 # Define path for file processing (doesn't have to exist)
 raw_dir <- file.path(AOI_dir, "0_raw_inputs", "satellite_layers")
@@ -157,7 +154,7 @@ Next, provide the AOI shape as either an sf or sfc object. Note: It's a good ide
 
 You need to create a dataframe with three columns: The first is an ID column, which will be used for creating subfolders in your downloads folder later. The second column is a start date column, and the third is an end date column. The example given here separates the dates by season; however, you can use as many or as little as you wish.
 
-Finally the function is ran. You should specify a drive_dir for where outputs will be stored to on Google Drive as well as a download folder for when files are downloaded locally. The function takes sentinel 2 images from a specified date range (ex: winter), performs a cloud masking function to remove clouds from an image stack, and then calculates the median across that date range. The final image is clipped to your AOI, reprojected in BC Albers, and then saved to your google drive folder. Lastly, the image is downloaded locally to your machine where you specify.
+Finally the function is ran. You should specify a drive_dir for where outputs will be stored to on Google Drive as well as a download folder for when files are downloaded locally. The function takes sentinel 2 images from a specified date range (ex: winter), performs a cloud masking function to remove clouds from an image stack, and then calculates the median across that date range. The final image is clipped to your AOI, reprojected in BC Albers, and then saved to your Google drive folder. Lastly, the image is downloaded locally to your machine where you specify.
 
 ```{r Satellite Download}
 # This is a new function, allowing users to process Sentinel 2 bands in an area 
@@ -292,7 +289,7 @@ get_sentinel_ee <- function(
 
 # Generate satellite derivatives 
 
-Running the get_sentinel_ee function should ouptput rasters with the desired CRS, so no reprojection of the satellite bands is necessary here.
+Running the get_sentinel_ee function should output rasters with the desired CRS, so no reprojection of the satellite bands is necessary here.
 
 The function bands_to_indices will take bands located in a given folder (satellite_files), pan sharpen the lower resolution bands, reproject and clip them to a given raster (reference_raster), and outputs a raster stack of indices which can be optionally saved to the main covariates folder. The option remove_index can be used if you don't want a particular index in your results (ex: EVI2 seems to generate large areas of no data).
 
@@ -305,6 +302,7 @@ https://www.usgs.gov/land-resources/nli/landsat/landsat-surface-reflectance-deri
 You might notice that not all of the indices from the ArcGIS and USGS websites are included in this package. As mentioned, the RStoolbox is not meant to represent the "be all and end all" of defining which indices to use. Some may not be appropriate to use here, however the package makes it really easy to generate those indices quite quickly.
 
 ```{r Convert raster bands to satellite indices}
+
 # This function will take downloaded satellite images, transorm them, and output 
 # multiple satellite image indices as a raster stack.
 bands_to_indices <- function(
@@ -328,8 +326,8 @@ bands_to_indices <- function(
   
   ## Pan sharpening testing: sentinel 2 doesn't have a pan sharpening band, but
   # it might be possible to use band 8 or the mean of bands 2, 3, 4, and 8:
-  #https://www.mdpi.com/2072-4292/8/4/354/htm#B34-remotesensing-08-00354
-  #https://www.researchgate.net/publication/323933204_Sentinel-2_Pan_Sharpening_-_Comparative_Analysis
+  # https://www.mdpi.com/2072-4292/8/4/354/htm#B34-remotesensing-08-00354
+  # https://www.researchgate.net/publication/323933204_Sentinel-2_Pan_Sharpening_-_Comparative_Analysis
   suppressMessages(suppressWarnings({
     res_10 <- rast(satellite_files[sapply(satellite_files, function(x) 
       res(rast(x))[1], simplify = TRUE) %>% 
@@ -351,7 +349,8 @@ bands_to_indices <- function(
       res_10, panSharpen(res_20, pan = pan, method = "pca", norm = FALSE)
     ) %>% magrittr::set_names(gsub("_pan$", "", names(.)))
     
-    # Change band names to be more descriptive and match names in RStoolbox package
+    # Change band names to be more descriptive and match names in the
+    # RStoolbox package
     band_lookup <- tribble(
       ~band_no, ~band_name,
       "b01", "ultrablue", "b02", "blue", "b03", "green", "b04", "red", 
@@ -382,13 +381,15 @@ bands_to_indices <- function(
     
     out <- foreach(i = reference_raster) %do% {
       ref <- terra::rast(i)
-      cat(paste("\nResampling to", res(ref)[1], "m^2, masking, and writing outputs"))
+      cat(paste(
+        "\nResampling to", res(ref)[1], "m^2, masking, and writing outputs"))
       sat_terra <- rast(satellite_indices) %>% 
         terra::resample(ref)
       sat_mask <- terra::mask(sat_terra, ref) %>% 
         magrittr::set_names(f_names) %>% 
-        terra::writeRaster(filename = file.path(dirname(i), paste0(f_names, ".tif")),
-                           overwrite = TRUE)
+        terra::writeRaster(
+          filename = file.path(dirname(i), paste0(f_names, ".tif")),
+          overwrite = TRUE)
     } %>% magrittr::set_names(basename(dirname(reference_raster)))}))
   return(out)
 }
@@ -397,8 +398,9 @@ bands_to_indices <- function(
 
 Finally, we just need to run the functions.
 
-```{r run functions}
-# Initialize the google earth engine
+```{r Run functions}
+
+# Initialize the Google earth engine
 ee <- import("ee")
 ee$Initialize()
 
@@ -478,7 +480,8 @@ for(i in dem_list) {
     
     st_write(
       water_sf, delete_dsn = TRUE, quiet = TRUE, 
-      dsn = file.path(AOI_dir, "0_raw_inputs", "base_layers", basename(dirname(i)), "water_mndwi.gpkg")
+      dsn = file.path(AOI_dir, "0_raw_inputs", "base_layers", 
+                      basename(dirname(i)), "water_mndwi.gpkg")
       )
   }
 }

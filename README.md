@@ -19,28 +19,39 @@ Once the bands are downloaded, they get converted to satellite indices using the
 
 **Note: This script hasn't been run in a while and errors may occur because of that. 
 
-## 02: Point Data Preparation and Modelling
+## 02: Point Data Preparation and Modelling - 2019
 ### [02a_PointData_Prep](https://github.com/mcoghill/Sechelt_Cultural_Plants/blob/master/02a_PointData_Prep.Rmd)
 At this stage, we want to gather all of the available points that we can use for modelling purposes. In 2019, random points within the Sechelt Spipiyus swiya were generated and data was collected at 84 total points. The types of data collected included site specific ecological data (site series, structural stage, canopy cover, dominant plants, etc.), as well as presence/absence and cover data for each of the plant species of interest. This wasn't exactly a lot of data in order to predict across the entire study area, but luckily a [TEM project](http://a100.gov.bc.ca/pub/acat/public/viewReport.do?reportId=35895) was carried out in 2008 and there are publicly accessible points with additional observations of plant presence/absence and cover, as well as site series information and structural stage recordings as well. Unfortunately, the TEM polygons do not carry any structural stage attributes on them. Instead, that data is gathered by inferring from VRI datasets
 
 The outputs of this script are as follows: 
 1. Unattributed points for site series calls ("observations", used in the next script)
-2. TEM polygons with only compositional data attached to it ("polygons", used in the next script)
-3. Compositional site series data for each TEM polygon ID ("composition", used in the next script)
+2. TEM polygons with only composition data attached to it ("polygons", used in the next script)
+3. Site series composition data for each TEM polygon ID ("composition", used in the next script)
 4. Unattributed points for structural stage calls ("observations", used in the next script)
-5. VRI polygons with only compositional data attached to it ("polygons", used in the next script)
-6. Compositional structural stage data for each VRI polygon ID ("composition", used in the next script)
+5. VRI polygons with only composition data attached to it ("polygons", used in the next script)
+6. Structural stage composition data for each VRI polygon ID ("composition", used in the next script)
 7. Attributed points for plant presence/absence as well as cover for each plant species of interest (used two scripts ahead)
 
 Numbers 1-3 and 4-6 above are discrete sets of data used in the DSMART modelling algorithm to produce rasters of site series and structural stage, which can then be used in presence/absence and cover modelling. Number 7 creates points that will be used in the presence/absence and cover modelling only.
 
 ### [02b_DSMART](https://github.com/mcoghill/Sechelt_Cultural_Plants/blob/master/02b_DSMART.Rmd)
-Disaggregating and harmonising soil map units through resampled classification trees (DSMART): this is an algorithm that takes spatial polygons with classified compositional data and rasterizes them through a modelling process. The original method uses the ```raster``` package, which has been superceded by the ```terra``` package; however, this is not incorporated in the [```rdsmart```](https://bitbucket.org/brendo1001/dsmart/src/master/) package. Instead, I have gone through and rewritten the code to conform to the ```terra``` package standards ([custom DSMART code](https://github.com/mcoghill/Sechelt_Cultural_Plants/tree/master/_functions/dsmart_custom)). The output includes a classified raster as well as probability rasters for each classification, both of which can be used in presence/absence modelling.
+Disaggregating and harmonising soil map units through resampled classification trees (DSMART): this is an algorithm that takes spatial polygons with classified composition data and rasterizes them through a modelling process. The original method uses the ```raster``` package, which has been superseded by the ```terra``` package; however, this is not incorporated in the [```rdsmart``` package](https://bitbucket.org/brendo1001/dsmart/src/master/). Instead, I have gone through and rewritten the code to conform to the ```terra``` package standards ([custom DSMART code](https://github.com/mcoghill/Sechelt_Cultural_Plants/tree/master/_functions/dsmart_custom)). The output includes a classified raster as well as probability rasters for each classification, both of which can be used in presence/absence modelling.
 
 ### [02c_Models](https://github.com/mcoghill/Sechelt_Cultural_Plants/blob/master/02c_Models.Rmd)
 Since there were many large rasters being used in the modelling process, I needed a process that would be efficient. I turned to the [```mlr3```](https://github.com/mlr-org/mlr3) package in order to do this, since it can also perform a spatial cross validation modelling process which is more accurate than standard cross validation techniques.
 
-We had a set of objectives with the modelling process as well: Does the TEM add any value to the predictive mapping? Should TEM be incorporated as a classified raster or as probabilities? Do climate variables matter? In order to answer all of these questions, various models needed to be created.
+We had a set of objectives with the modelling process as well: Does the TEM add any value to the predictive mapping? Should TEM be incorporated as a classified raster or as probabilities? Do climate variables matter? In order to answer all of these questions, various models needed to be created using different subsets of the input data. Each model that was run included a 10-fold spatial cross validation repeated 5 times, and each model was also tuned using different subsets of the input data based on the variable importance scores. To clarify, here is an example of a particular models input data:
+
+* Uses a BEC layer
+* Uses climate data
+* Uses DSMART modelled site series and structural stage layers
+* The site series and structural stage layers are provided as probability layers
+
+The above example is 1 of 28 different data combinations that were used for the modelling presence/absence or cover. For each data combination, the following modelling strategies were applied:
+
+1. Generate variable importance scores from each input variable
+2. Subset the entire input dataset using the top x% of variables based on their importance scores, where x is between 10 and 100 for models with <=100 variables, or between the 10 and all of the variables for models with > 100 variables.
+3. For each model subset, run a 10-fold cross validation repeated 5 times. At the end of each cross validated model, it will generate a model score and at the end of all models being ran, the best of all models is the one used to generate a map of presence/absence or cover. Model information is saved in a folder describing each model as well and a spreadsheet of model scores is generated at the end as well separated for each species of interest.
 
 ### [03_Model_Agreement](https://github.com/mcoghill/Sechelt_Cultural_Plants/blob/master/03_Model_Agreement.Rmd)
 After generating the ~28 different models for each plant species, we found that the models produced fairly similar looking results. The next step was to then combine them to see where models agreed that plants were present. Since the model outputs a raster with values between 0 and 1 representing the probability of occurrence at a given pixel, a cutoff value was applied to say that a pixel was either present or absent of a given plant. Two cutoffs were used: 0.5 and 0.75 (i.e.: if a pixel value was 0.8, the plant was present; if the value was 0.2, the plant was absent). This was done for each predicted map, and then the maps were summed in order to produce an overall "agreement" map, whose values represented "number of maps that agreed a plant was present at a 0.5/0.75 cutoff value". It's an odd metric but worked quite well.

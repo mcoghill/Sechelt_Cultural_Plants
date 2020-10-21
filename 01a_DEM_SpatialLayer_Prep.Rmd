@@ -8,12 +8,12 @@ output: html_document
 # Introduction
 This document describes the steps required to prepare spatial layers to be used in machine-learning based predictive ecosystem map method. The code used here is largely pawned from PEM project coding, but with adjustments made to suit this project more accurately.
 
-This method is scripted in R, but uses other open source packages, predominently [SAGA:](https://sourceforge.net/projects/saga-gis/). 
+This method is scripted in R, but uses other open source packages, predominantly [SAGA:](https://sourceforge.net/projects/saga-gis/). 
 
 ## Preparation steps
 
 ### Software
-Prior to running this script you will need to download [SAGA](https://sourceforge.net/projects/saga-gis/) and know its location. SAGA can be downloaded on an external drive and run independent of pemissions. Additionally, a source script may be called in R to install it to your system.
+Prior to running this script you will need to download [SAGA](https://sourceforge.net/projects/saga-gis/) and know its location. SAGA can be downloaded on an external drive and run independent of permissions. Additionally, a source script may be called in R to install it to your system.
 
 ### Data 
 To run this script you will need a base digital elevation model (digital terrain model) at 1m resolution. In this project, this was provided, though there is no raw LAS files to use, just processed raster grids.
@@ -39,7 +39,7 @@ suppressMessages(suppressWarnings({
 ```
 
 ### 1) Set up link between Saga and R. 
-Run the below saga_cmd function to detect and install SAGA GIS if necessary for your system
+Run the below saga_cmd function to detect and install SAGA GIS if necessary for your system.
 
 ```{r download SAGA}
 
@@ -52,7 +52,7 @@ saga_ver <- unlist(regmatches(saga_ver, regexec("Version:\\s*(.*?)\\s*\\(", saga
 ### 2) Define file paths and folders
 In this next chunk, you enter the only input data required for this sheet to function, the rest is (mostly) automated! Simply input the name of the AOI folder, and a projection code.
 
-```{r R Data Objects}
+```{r Set directories}
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
@@ -163,7 +163,7 @@ This next chunk is a function which will start the pre-processing of a 1m resolu
 * Points to grid (Places values from the points into the empty grid)
 * Crop to data (Removes extra NA values from the edges of the raster)
 
-Resampling takes into account the neighboring cells, so I don't see why it can't be used to downscale the DEM and CHM here.
+Resampling takes into account the neighbouring cells, so I don't see why it can't be used to downscale the DEM and CHM here.
 
 ```{r Derive Lower Resolutions}
 

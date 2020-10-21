@@ -56,14 +56,19 @@ In order to get accurate polygon edges for each raster resolution, they need to 
 
 ```{r Raster to polygon}
 
+# Load DEM files
 dem_files <- list.files(cov_dir, pattern = "dem.tif$", 
                         full.names = TRUE, recursive = TRUE)
 
 for(i in dem_files) {
+  # Create directory for saving DEM shapes
   shp_subdir <- file.path(shp_dir, basename(dirname(i)))
   dir.create(shp_subdir, recursive = TRUE, showWarnings = FALSE)
   
+  # Load DEM and change all values to be the same
   dem <- rast(i) * 0
+  
+  # Convert DEM raster to polygon and save as .gpkg by converting to sfc object
   dem_shp <- as.polygons(dem, trunc = TRUE, dissolve = TRUE, values = TRUE, 
                          extent = FALSE, crs = crs(dem)) %>% 
     as("Spatial") %>% 
@@ -83,15 +88,16 @@ A single function is used to download all layers listed above. If multiple AOI's
 get_bc_shapes <- function(in_aoi, out_dir, epsg = 3005) {
   
   #### Input checks
-  ## Restrict in_aoi to being an sf, sfc, or list of sf or sfc objects (polygons only)
-  ## sfg objects not allowed since they have no CRS information
-  ## STILL NEED CASE WHEN THERE ARE MULTIPLE OBJECTS, ex: an sf dataframe with 
-  ## more than one row. Right now, this works when it is only a single row
-  ## We only really want a single sfc polygon out, so maybe an st_combine call?
+  ## Restrict in_aoi to being an sf, sfc, or list of sf or sfc objects 
+  ## (i.e.: polygons only). sfg objects not allowed since they have no CRS
+  ## information. STILL NEED CASE WHEN THERE ARE MULTIPLE OBJECTS, ex: an sf
+  ## dataframe with more than one row. Right now, this works when it is only a
+  ## single row. We only really want a single sfc polygon out, so maybe an
+  ## st_combine call?
   if(missing(in_aoi)) stop("'in_aoi' is missing with no default")
   if(missing(out_dir)) stop("'out_dir' is missing with no default")
   if(length(out_dir) > 1) stop("Only one file path allowed")
-  if(!is.numeric(epsg)) stop("'epsg' is invalid, requires a numerical EPSG code")
+  if(!is.numeric(epsg)) stop("\rError in epsg: Not a numerical EPSG code")
   
   # Use list processing throughout. If not initially a list, make into one
   rand_name <- basename(tempfile())
@@ -112,7 +118,8 @@ get_bc_shapes <- function(in_aoi, out_dir, epsg = 3005) {
       any(class(st_geometry(x)) %in% c("sfc_POLYGON", "sfc_MULTIPOLYGON"))
     }))) {
       study_area <- lapply(in_aoi, st_geometry)
-    } else stop("Not all listed sf features are of POLYGON or MULTIPOLYGON class")
+    } else 
+      stop("Not all listed sf features are of POLYGON or MULTIPOLYGON class")
     
     # If some are sfc and some are sf...
   } else if(all(sapply(in_aoi, function(x)
@@ -124,8 +131,10 @@ get_bc_shapes <- function(in_aoi, out_dir, epsg = 3005) {
     if(all(sapply(in_aoi_sf, function(x) 
       any(class(st_geometry(x)) %in% c("sfc_POLYGON", "sfc_MULTIPOLYGON"))))) {
       study_area <- c(lapply(in_aoi_sf, st_geometry), in_aoi_sfc)
-    } else stop("Not all listed sf features are of POLYGON or MULTIPOLYGON class")
-  } else stop("Some list elements are not valid sf or sfc obects.")
+    } else 
+      stop("Not all listed sf features are of POLYGON or MULTIPOLYGON class")
+  } else 
+    stop("Some list elements are not valid sf or sfc obects.")
   
   # Set out_dir variable
   if(length(study_area) > 1 || names(study_area)[1] != rand_name) {
@@ -206,7 +215,8 @@ get_bc_shapes <- function(in_aoi, out_dir, epsg = 3005) {
     lapply(names(tem), function(x) {
       
       if(nrow(tem[[x]]) > 0 && 
-         all(unique(bec_sf[[x]]$MAP_LABEL) %in% unique(tem[[x]]$BIOGEOCLIMATIC_LBL))) {
+         all(unique(bec_sf[[x]]$MAP_LABEL) %in% 
+             unique(tem[[x]]$BIOGEOCLIMATIC_LBL))) {
         bec_fix <- tem[[x]] %>% dplyr::select(BIOGEOCLIMATIC_LBL) %>% 
           dplyr::group_by(BIOGEOCLIMATIC_LBL) %>% 
           dplyr::summarise(.groups = "drop") %>% st_force_poly()
@@ -219,7 +229,8 @@ get_bc_shapes <- function(in_aoi, out_dir, epsg = 3005) {
             dplyr::group_by(BIOGEOCLIMATIC_LBL) %>% 
             dplyr::summarise(.groups = "drop") %>% 
             dplyr::rename(MAP_LABEL = BIOGEOCLIMATIC_LBL) %>% st_force_poly()
-        } else bec_sf[[x]] <- dplyr::rename(bec_fix, MAP_LABEL = BIOGEOCLIMATIC_LBL)
+        } else bec_sf[[x]] <- dplyr::rename(bec_fix, 
+                                            MAP_LABEL = BIOGEOCLIMATIC_LBL)
       }
       sf::st_write(bec_sf[[x]], file.path(out_dir[[x]], "bec.gpkg"), 
                    delete_dsn = TRUE, quiet = TRUE)
@@ -246,8 +257,8 @@ get_bc_shapes <- function(in_aoi, out_dir, epsg = 3005) {
       } else vri <- vri
       return(vri)}, simplify = FALSE, USE.NAMES = TRUE)
     
-    # Download recent cutblocks layer
-    # Uses date filter which filters cutblock ages less than 20 years, or 7305 days
+    # Download recent cutblocks layer. Uses date filter which filters cutblock 
+    # ages less than 20 years, or 7305 days
     cat("Downloading cutblock layer\n")
     cutblocks <- bcdata::bcdc_query_geodata(
       "b1b647a6-f271-42e0-9cd0-89ec24bce9f7", crs = epsg) %>% 
@@ -262,7 +273,8 @@ get_bc_shapes <- function(in_aoi, out_dir, epsg = 3005) {
           st_force_poly() %>% 
           mutate(DISTURBANCE_START_DATE = as.Date(DISTURBANCE_START_DATE),
              DISTURBANCE_END_DATE = as.Date(DISTURBANCE_END_DATE)) %>% 
-          dplyr::filter(as.numeric(format(Sys.time(), "%Y")) - HARVEST_YEAR <= 20)
+          dplyr::filter(
+            as.numeric(format(Sys.time(), "%Y")) - HARVEST_YEAR <= 20)
         sf::st_write(cutblocks, file.path(out_dir[[x]], "young_cutblocks.gpkg"), 
                      delete_dsn = TRUE, quiet = TRUE)
       } else cutblocks <- cutblocks
@@ -392,7 +404,7 @@ get_bc_shapes <- function(in_aoi, out_dir, epsg = 3005) {
 
 ```
 
-The AOI's are read into R and then converted to sfc objects (not necessary, just simpler for me to think about). The function is then ran to process each file. Improvements may be made where files don't get saved in the function but rather get saved in the markdown file below, as well as perhaps placing the above function into a .R file of its own, and finally applying filters for which layers I would care to download from the ones coded in there.
+The AOI's are read into R and then converted to sfc objects (not necessary, just simpler for me to think about). The function is then ran to process each file. Improvements may be made where files don't get saved in the function but rather get loaded into the R environment, as well as perhaps placing the above function into a .R file of its own, and finally applying filters for which layers I would care to download from the ones coded in there.
 
 ```{r Run Function}
 
