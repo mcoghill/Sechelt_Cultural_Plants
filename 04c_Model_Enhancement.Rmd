@@ -5,6 +5,8 @@ date: "9/9/2020"
 output: html_document
 ---
 
+The purpose of this document is to once again run modelling using similar machine learning techniques from before. At this point, there is more data available so that hopefully modelling plant presence/absence should be more accurate. Again, this script uses the `mlr3` package, so some of the scripting language looks strange. First, load the required packages.
+
 ```{r Load Packages}
 
 suppressMessages(suppressWarnings({
@@ -16,12 +18,13 @@ suppressMessages(suppressWarnings({
   lapply(ls, library, character.only = TRUE)[0]
   rm(ls, new.packages)}))
 
+# Load custom scripts
 source("./_functions/model_gen_mlr3.R")
 source("./_functions/predict_landscape_mlr3.R")
 
 ```
 
-
+Next, define the locations and options for where files are located and how to continue processing.
 
 ```{r Define directories}
 
@@ -47,7 +50,7 @@ dir.create(file.path(output_dir, "cover_predictions"), showWarnings = FALSE)
 
 ```
 
-
+Next, load the data and define processing options. This is copied and pasted from the 02c script.
 
 ```{r Load data}
 
@@ -94,12 +97,13 @@ climate_covariates <- if(any(climate_vars)) {
 } else NULL
 
 bgc_layer <- if(any(bgc)) {
-  bgc_vector <- vect(file.path(AOI_dir, "0_raw_inputs", "base_layers", paste0(map_res, "m"), "bec.gpkg"))
+  bgc_vector <- vect(
+    file.path(AOI_dir, "0_raw_inputs", "base_layers", paste0(map_res, "m"), "bec.gpkg"))
   bgc_raster <- terra::rasterize(bgc_vector, rast(terrain_covariates[1])) %>% 
     magrittr::set_names("bgc") %>% 
     writeRaster(
       filename = grep("site_ser", file.path(dsmart_site_ser_dir, "bgc.tif"), value = TRUE), 
-      overwrite = TRUE)
+      overwrite = TRUE, wopt = list(datatype = "INT2S"))
   
   sources(bgc_raster)[, "source"]
 } else NULL
@@ -130,14 +134,11 @@ if(!all(is.na(ss))) {
   site_series <- subset(site_series, ss_pattern)
 } else site_series <- NULL
 
-# We also need to include the structural stage rasters in this analysis as well
-struct_stg <- c(
-  rast(file.path(dsmart_struct_stg_dir, "struct_stg_dsmart.tif")) %>% 
-    magrittr::set_names("dsmart_struct_stg_class"),
-  rast(list.files(
-    file.path(dsmart_struct_stg_dir, "output", "probabilities"), full.names = TRUE)) %>% 
-    magrittr::set_names(paste0("dsmart_struct_stg_probability_", names(.)))
-)
+# We also need to include the structural stage rasters in this analysis as well.
+# I debated on whether I should include the associated probabilities. In the end,
+# I decided no.
+struct_stg <- rast(file.path(dsmart_struct_stg_dir, "struct_stg_dsmart.tif")) %>% 
+  magrittr::set_names("dsmart_struct_stg_class")
 
 # Combine all covariates
 covariates <- c(rast(c(terrain_covariates, sentinel_covariates, 
@@ -161,7 +162,7 @@ covariates <- subset(covariates, dplyr::pull(
 
 # Attributed point data - limit to only CORNCAN and RUBUSPE
 pres_abs_points <- sapply(c("Corn can", "Rubu spe"), function(x) {
-  st_read(file.path(input_dir, "2020_pres_abs.gpkg"), layer = x, quiet = TRUE) %>% 
+  st_read(file.path(input_dir, "pres_abs.gpkg"), layer = x, quiet = TRUE) %>% 
     cbind(st_coordinates(.)) %>% 
     {if(!is.null(site_series)) {
       cbind(., terra::extract(c(site_series, struct_stg), st_coordinates(.)))
@@ -219,7 +220,7 @@ var_list <- foreach(i = 1:nrow(perms), .combine = c) %do% {
         grep(ifelse(
           length(unlist(strsplit(perms[i, "probabilities"], split = "[, ]"))) > 1, 
           "probability|class", ifelse(perms[i, "probabilities"], "probability", "class")), 
-          grep(paste0(perms[i, "ss"], "|_struct_stg"), names(x), value = TRUE), 
+          grep(perms[i, "ss"], names(x), value = TRUE), 
           value = TRUE)
       },
       
@@ -396,8 +397,9 @@ best_model_sets <- foreach(x = c("Corn can", "Rubu spe"), .combine = rbind) %do%
   } %>% arrange(classif.ce)
 }
 
-write.csv(best_model_sets, file.path(output_dir, "pres_abs_predictions", "model_performance_index.csv"), 
-          row.names = FALSE)
+write.csv(best_model_sets, file.path(
+  output_dir, "pres_abs_predictions", "model_performance_index.csv"), 
+  row.names = FALSE)
 
 ```
 
@@ -406,29 +408,40 @@ write.csv(best_model_sets, file.path(output_dir, "pres_abs_predictions", "model_
 ```{r Zonal statistics}
 
 # Using the dsmart TEM as the zonal layer, run zonal statistics for each map model
-site_series_t <- rast(file.path(dsmart_site_ser_dir, "output", "realisations", "realisation_1.tif")) %>% 
+site_series_z <- rast(file.path(dsmart_site_ser_dir, "site_ser_dsmart.tif")) %>% 
       magrittr::set_names("dsmart_ss_class")
+
+# Get the numeric codes representing the site series classes
 dsmart_lookup <- read.csv(file.path(dsmart_site_ser_dir, "output", "lookup.txt"))
 
-pres_zonal <- sapply(list.dirs(
+# Collect all model output folder names. Should be the same for both pres/abs
+# and cover
+model_outs <- list.dirs(
   file.path(output_dir, "pres_abs_predictions"), 
-  full.names = FALSE)[-1], function(x) {
-    
-    t <- rast(file.path(output_dir, "pres_abs_predictions", x, paste0(x, "_TRUE.tif")))
-    zonal_stats <- cbind(
-      zonal(t, site_series_t, fun = "mean", na.rm = TRUE), 
-      min = zonal(t, site_series_t, fun = "min", na.rm = TRUE)[, names(t)], 
-      max = zonal(t, site_series_t, fun = "max", na.rm = TRUE)[,  names(t)],
-      sd = zonal(t, site_series_t, fun = "sd", na.rm = TRUE)[,  names(t)]) %>% 
-      merge(dsmart_lookup, by.x = "zone", by.y = "code") %>% 
-      dplyr::rename_at(vars(names(t), name), ~c("mean", "site_series")) %>% 
-      dplyr::select(site_series, mean, min, max, sd)
-    
-    write.csv(zonal_stats, file.path(
-      output_dir, "pres_abs_predictions", x, paste0(x, "_pres_abs_zonal_stats.csv")), 
-      row.names = FALSE)
-    return(zonal_stats)
-  }, simplify = FALSE, USE.NAMES = TRUE
-)
+  full.names = FALSE)[-1]
+
+# Load the predicted output rasters from each folder and rename them
+pres_abs_outs <- rast(file.path(output_dir, "pres_abs_predictions", model_outs, 
+                    paste0(model_outs, "_TRUE.tif"))) %>% 
+  magrittr::set_names(model_outs)
+
+# Perform zonal statistics for each of the predicted outputs
+pres_stats <- sapply(c("mean", "min", "max", "sd"), function(x) 
+  zonal(pres_abs_outs, site_series_z, fun = x, na.rm = TRUE), 
+  simplify = FALSE, USE.NAMES = TRUE)
+
+# Reorder the dataframes and merge with the lookup table to define actual
+# site series instead of just numeric codes. Save the outputs to the defined
+# folders.
+pres_reorder <- sapply(model_outs, function(x) {
+  z <- lapply(pres_stats, function(y) y[, c("zone", make.names(x))]) %>% Reduce(
+    function(x, y, ...) merge(x, y, all = TRUE, by = "zone", ...), .) %>% 
+    magrittr::set_names(c("zone", "mean", "min", "max", "sd")) %>% 
+    merge(dsmart_lookup, ., by.x = "code", by.y = "zone")
+  write.csv(z, file.path(output_dir, "pres_abs_predictions", x, 
+                         paste0(x, "_pres_abs_zonal_stats.csv")), 
+            row.names = FALSE)
+  return(z)
+}, simplify = FALSE, USE.NAMES = TRUE)
 
 ```
