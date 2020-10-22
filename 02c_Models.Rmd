@@ -5,7 +5,7 @@ date: "2/19/2020"
 output: html_document
 ---
 
-This document is meant to generate models and predictions of either binary classification of presence / absence, or regression models of plant cover. This script should be the last script ran in the whole process as it depends on:
+This document is meant to generate models and predictions of either binary classification of presence / absence, or regression models of plant cover. This script depends on:
 
 1. Covariate layers generated in 01 scripts;
 2. Proper datasets generated in the 02a script; and
@@ -24,12 +24,13 @@ suppressMessages(suppressWarnings({
   lapply(ls, library, character.only = TRUE)[0]
   rm(ls, new.packages)}))
 
+# Load custom functions
 source("./_functions/model_gen_mlr3.R")
 source("./_functions/predict_landscape_mlr3.R")
 
 ```
 
-Next, directories and certain files are defined.
+Next, directories and certain files are defined. This is where you would also specify the resolution at which you want to produce your map predictions.
 
 ```{r Define directories}
 
@@ -55,20 +56,20 @@ dir.create(file.path(output_dir, "cover_predictions"), showWarnings = FALSE)
 
 ```
 
-It is highly anticipated that a site series layer will have a high degree of importance in predicting the locations of these culturally sensitive plants. We will let the models decide whether that is true or not, but it is possible to always be kept in the model by defining one of the options (not incorporated here).
+It is highly anticipated that a site series layer will have a high degree of importance in predicting the locations of these culturally sensitive plants. We will let the models decide whether that is true or not, but it is possible to always be kept in the model by defining one of the options (not incorporated here). Cover models will be a regression with outputs of actual plant cover (%) and presence / absence models will output probabilities of presence.
 
-The only step in this script that requires you changing anything is the first line, model_run. Change this parameter to be whatever model you want to generate results for. Cover models will be a regression and presence / absence models will be a classification.
+The `mlr3` package creates models using building blocks called "tasks" and "learners". Tasks are essentially the data you are creating your models from, and learners are more specific to building models. For example, the first learner that's created here says "create a ranger regression model, and when creating the model rank importance variables by their impurity values. Also, this is a response model". The next learner is a feature selection filter which wraps around the first learner. It pretty much says that it will filter the variables using the ranger_impurity algorithm, but always will keep the site_series layer. The last learner is a parameter tuning algorithm wrapped around the feature selection filter, and gives further details on the model. It will be a spatial 10-fold cross validation repeated 5 times. Also, it will create models using different amounts of covariate layers and numbers of trees so that it selects the best model from that bunch.
 
-The mlr package creates models using building blocks called "tasks" and "learners". Tasks are essentially the data you are creating your models from, and learners are more specific to building models. For example, the first learner that's created here says "create a ranger regression model, and when creating the model rank importance variables by their impurity values. Also, this is a response model". The next learner is a feature selection filter which wraps around the first learner. It pretty much says that it will filter the variables using the ranger_impurity algorithm, but always will keep the site_series layer. The last learner is a parameter tuning algorithm wrapped around the feature selection filter, and gives further details on the model. It will be a spatial 10-fold cross validation repeated 5 times. Also, it will create models using different amounts of covariate layers and numbers of trees so that it selects the best model from that bunch.
+After the best model is fit, that model is extracted and the predictions for presence / absence or cover are created. This can take some time depending on the amount of predictor variables used in the final model and on the resolution of the maps. For example, running 28 different models for 2 plants separately (a total of 56 models) at a 4m resolution took over 2 days, whereas at a 25m pixel took approximately 3 hours. Finally, some zonal statistics are calculated per site series.
 
-After mlr fits the best model, that model is extracted and the predictions for presence / absence or cover are created. This can take some time depending on the amount of predictor variables used in the final model. Finally, some zonal statistics are calculated per site series.
+The following chunk sets up the filtering parameters to produce the correct amount of models from the master dataset.
 
 ```{r Load data}
 
 # List of processing options...
 temporal <- c("annual") # either or both of annual and seasonal
 ss <- c("simple", "dsmart", NA) # any of simple, dsmart, and/or NA
-probabilities <- c(TRUE, FALSE) # Use probabilites or classification
+probabilities <- c(TRUE, FALSE) # Use probabilities or classification
 bgc <- c(TRUE, FALSE) # Whether or not to use classified BGC subzone layer
 climate_vars <- c(TRUE, FALSE) # TRUE, FALSE
 perms <- expand.grid(
@@ -167,13 +168,10 @@ if(!all(is.na(ss))) {
 } else site_series <- NULL
 
 # We also need to include the structural stage rasters in this analysis as well
-struct_stg <- c(
-  rast(file.path(dsmart_struct_stg_dir, "struct_stg_dsmart.tif")) %>% 
-    magrittr::set_names("dsmart_struct_stg_class"),
-  rast(list.files(
-    file.path(dsmart_struct_stg_dir, "output", "probabilities"), full.names = TRUE)) %>% 
-    magrittr::set_names(paste0("dsmart_struct_stg_probability_", names(.)))
-)
+# I debated on whether I should include the associated probabilities. In the end,
+# I decided no.
+struct_stg <- rast(file.path(dsmart_struct_stg_dir, "struct_stg_dsmart.tif")) %>% 
+    magrittr::set_names("dsmart_struct_stg_class")
 
 # Combine all covariates
 covariates <- c(rast(c(terrain_covariates, sentinel_covariates, 
@@ -250,6 +248,7 @@ var_list <- foreach(i = 1:nrow(perms), .combine = c) %do% {
   filtered_data <- lapply(pres_abs_points[1], function(x) {
     variables <- c(
       basename(tools::file_path_sans_ext(terrain_covariates)), 
+      names(struct_stg),
       if("annual" %in% unlist(strsplit(perms[i, "temporal"], split = "[, ]"))) {
         c(grep("sentinel2.*.2019", names(x), value = TRUE),
           grep("normal(?!.*(_at|_sm|_sp|_wt))", names(x), value = TRUE, perl = TRUE))
@@ -263,7 +262,7 @@ var_list <- foreach(i = 1:nrow(perms), .combine = c) %do% {
         grep(ifelse(
           length(unlist(strsplit(perms[i, "probabilities"], split = "[, ]"))) > 1, 
           "probability|class", ifelse(perms[i, "probabilities"], "probability", "class")), 
-          grep(paste0(perms[i, "ss"], "|_struct_stg"), names(x), value = TRUE), 
+          grep(perms[i, "ss"], names(x), value = TRUE), 
           value = TRUE)
       },
       
@@ -305,7 +304,7 @@ lapply(names(pres_abs), function(x) {
 # iterate through the list of input data to model and predict
 for(i in 1:length(pres_abs)) {
   
-  dir_out <- file.path(dir_out, names(pres_abs[i]))
+  dir_out <- file.path(output_dir, "pres_abs_predictions", names(pres_abs[i]))
   dir.create(dir_out, showWarnings = FALSE)
   
   # Create models for each dataset. Each model is a 10-fold spatial cross validation
@@ -605,56 +604,65 @@ write.csv(best_model_sets, file.path(output_dir, "cover_predictions", "model_per
 
 ```
 
-
+One of the things that would be interesting to look at is the average probability of presence of a given plant within each site series. This is accomplished by zonal statistics, where the site series layer is the "zone". Mean, min, max, and standard deviation of the probability of presence is carried out here. This information could be directed in a way that we might be able to tell where a given plant has a higher chance of being found based on site series. For cover, this would indicate where the most plant cover would be found based on a given site series.
 
 ```{r Zonal statistics}
 
 # Using the dsmart TEM as the zonal layer, run zonal statistics for each map model
-site_series_t <- rast(file.path(dsmart_site_ser_dir, "output", "realisations", "realisation_1.tif")) %>% 
+site_series_z <- rast(file.path(dsmart_site_ser_dir, "site_ser_dsmart.tif")) %>% 
       magrittr::set_names("dsmart_ss_class")
+
+# Get the numeric codes representing the site series classes
 dsmart_lookup <- read.csv(file.path(dsmart_site_ser_dir, "output", "lookup.txt"))
 
-pres_zonal <- sapply(list.dirs(
+# Collect all model output folder names. Should be the same for both pres/abs
+# and cover
+model_outs <- list.dirs(
   file.path(output_dir, "pres_abs_predictions"), 
-  full.names = FALSE)[-1], function(x) {
-    
-    t <- rast(file.path(output_dir, "pres_abs_predictions", x, paste0(x, "_TRUE.tif")))
-    zonal_stats <- cbind(
-      zonal(t, site_series_t, fun = "mean", na.rm = TRUE), 
-      min = zonal(t, site_series_t, fun = "min", na.rm = TRUE)[, names(t)], 
-      max = zonal(t, site_series_t, fun = "max", na.rm = TRUE)[,  names(t)],
-      sd = zonal(t, site_series_t, fun = "sd", na.rm = TRUE)[,  names(t)]) %>% 
-      merge(dsmart_lookup, by.x = "zone", by.y = "code") %>% 
-      dplyr::rename_at(vars(names(t), name), ~c("mean", "site_series")) %>% 
-      dplyr::select(site_series, mean, min, max, sd)
-    
-    write.csv(zonal_stats, file.path(
-      output_dir, "pres_abs_predictions", x, paste0(x, "_pres_abs_zonal_stats.csv")), 
-      row.names = FALSE)
-    return(zonal_stats)
-  }, simplify = FALSE, USE.NAMES = TRUE
-)
+  full.names = FALSE)[-1]
 
-cover_zonal <- sapply(list.dirs(
-  file.path(output_dir, "cover_predictions"), 
-  full.names = FALSE)[-1], function(x) {
-    
-    t <- rast(file.path(output_dir, "cover_predictions", x, paste0(x, "_cover.tif")))
-    zonal_stats <- cbind(
-      zonal(t, site_series_t, fun = "mean", na.rm = TRUE), 
-      min = zonal(t, site_series_t, fun = "min", na.rm = TRUE)[, names(t)], 
-      max = zonal(t, site_series_t, fun = "max", na.rm = TRUE)[,  names(t)],
-      sd = zonal(t, site_series_t, fun = "sd", na.rm = TRUE)[,  names(t)]) %>% 
-      merge(dsmart_lookup, by.x = "zone", by.y = "code") %>% 
-      dplyr::rename_at(vars(names(t), name), ~c("mean", "site_series")) %>% 
-      dplyr::select(site_series, mean, min, max, sd)
-    
-    write.csv(
-      zonal_stats, 
-      file.path(output_dir, "cover_predictions", x, paste0(x, "_cover_zonal_stats.csv")), 
-      row.names = FALSE)
-    return(zonal_stats)
-  }, simplify = FALSE, USE.NAMES = TRUE
-)
+# Load the predicted output rasters from each folder and rename them
+pres_abs_outs <- rast(file.path(output_dir, "pres_abs_predictions", model_outs, 
+                    paste0(model_outs, "_TRUE.tif"))) %>% 
+  magrittr::set_names(model_outs)
+
+# Perform zonal statistics for each of the predicted outputs
+pres_stats <- sapply(c("mean", "min", "max", "sd"), function(x) 
+  zonal(pres_abs_outs, site_series_z, fun = x, na.rm = TRUE), 
+  simplify = FALSE, USE.NAMES = TRUE)
+
+# Reorder the dataframes and merge with the lookup table to define actual
+# site series instead of just numeric codes. Save the outputs to the defined
+# folders.
+pres_reorder <- sapply(model_outs, function(x) {
+  z <- lapply(pres_stats, function(y) y[, c("zone", x)]) %>% Reduce(
+    function(x, y, ...) merge(x, y, all = TRUE, by = "zone", ...), .) %>% 
+    magrittr::set_names(c("zone", "mean", "min", "max", "sd")) %>% 
+    merge(dsmart_lookup, ., by.x = "code", by.y = "zone")
+  write.csv(z, file.path(output_dir, "pres_abs_predictions", x, 
+                         paste0(x, "_pres_abs_zonal_stats.csv")), 
+            row.names = FALSE)
+  return(z)
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+# Below is the same as pres/abs modelling, but save cover outputs
+cover_outs <- rast(file.path(output_dir, "cover_predictions", model_outs, 
+                    paste0(model_outs, "_cover.tif"))) %>% 
+  magrittr::set_names(model_outs)
+
+cover_stats <- sapply(c("mean", "min", "max", "sd"), function(x) 
+  zonal(cover_outs, site_series_z, fun = x, na.rm = TRUE), 
+  simplify = FALSE, USE.NAMES = TRUE)
+
+cover_reorder <- sapply(model_outs, function(x) {
+  z <- lapply(cover_stats, function(y) y[, c("zone", x)]) %>% Reduce(
+    function(x, y, ...) merge(x, y, all = TRUE, by = "zone", ...), .) %>% 
+    magrittr::set_names(c("zone", "mean", "min", "max", "sd")) %>% 
+    merge(dsmart_lookup, ., by.x = "code", by.y = "zone")
+  write.csv(z, file.path(output_dir, "cover_predictions", x, 
+                         paste0(x, "_cover_zonal_stats.csv")), 
+            row.names = FALSE)
+  return(z)
+}, simplify = FALSE, USE.NAMES = TRUE)
 
 ```
