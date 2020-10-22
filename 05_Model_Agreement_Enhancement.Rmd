@@ -5,9 +5,9 @@ date: "9/27/2020"
 output: html_document
 ---
 
-This file is very similar in style to the 03 file, just using models that were run in the 04 scripts (i.e.: updated models). First, load the pakcages.
+This file is very similar in style to the 03 file, just using models that were run in the 04 scripts (i.e.: updated models). First, load the packages.
 
-```{r}
+```{r Load Packages}
 
 suppressMessages(suppressWarnings({
   ls <- c("tidyverse", "terra")
@@ -25,17 +25,17 @@ Then, set up the directories.
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 4
+map_res <- 25
+res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
-model_dir <- file.path(AOI_dir, "4_map_predictions_enhanced")
-covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
-res_dir <- paste0(map_res, "m")
+model_dir <- file.path(AOI_dir, "4_map_predictions_enhanced", res_dir)
+covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates", res_dir)
+
 dsmart_dirs <- file.path(
-  AOI_dir, "1_map_inputs", paste0("2020_dsmart_", c("site_ser", "struct_stg")))
+  AOI_dir, "1_map_inputs", "dsmart_2020", res_dir, c("site_ser", "struct_stg"))
 
 covariates <- rast(c(
-  list.files(file.path(covariate_dir, res_dir), 
-             pattern = ".tif$", full.names = TRUE),
+  list.files(covariate_dir, pattern = ".tif$", full.names = TRUE),
   list.files(c(file.path(
     dsmart_dirs[endsWith(dsmart_dirs, "site_ser")], "simple"), 
     file.path(dsmart_dirs, "output", "probabilities")), 
@@ -50,7 +50,7 @@ The below script processes the models to reclassify the models to have cell valu
 
 pred_dir <- file.path(model_dir, "pres_abs_predictions")
 out_dir <- file.path(
-  AOI_dir, "5_model_agreement_enhanced", "pres_abs_agreement")
+  AOI_dir, "5_model_agreement_enhanced", res_dir, "pres_abs_agreement")
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 prob_cutoff <- c(0.5, 0.75) %>% magrittr::set_names(c("0.5", "0.75"))
 
@@ -62,9 +62,9 @@ out <- sapply(c("Corn can", "Rubu spe"), function(i) {
            pattern = "_TRUE.tif$", full.names = TRUE))
   
   mod_modified <- sapply(prob_cutoff, function(j) {
-    
     # Classify cell values
-    rcl <- classify(model_stack, matrix(c(0, j, 0, j, 1, 1), ncol = 3, byrow = TRUE))
+    rcl <- classify(model_stack, matrix(
+      c(0, j, 0, j, 1, 1), ncol = 3, byrow = TRUE))
     
     # Create summed raster
     agreement <- app(
