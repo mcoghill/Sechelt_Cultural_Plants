@@ -124,6 +124,8 @@ During modelling of presence/absence and cover in future scripts, one of the que
 ```{r Simple TEM rasterization}
 
 if(run == "site_ser") {
+  if(dir.exists(file.path(dsmart_dir, "simple")))
+    unlink(file.path(dsmart_dir, "simple"), recursive = TRUE)
   dir.create(file.path(dsmart_dir, "simple"), showWarnings = FALSE)
   
   # Rasterize first calls only
