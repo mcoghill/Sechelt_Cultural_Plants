@@ -5,14 +5,14 @@ date: "8/25/2020"
 output: html_document
 ---
 
-In August 2020, another field visit to the Sechelt study area was organized and another week worth of field data was collected. New methods were used to collect this data and certain methods of how cover data was collected was even changed during the course of the field visit. This document is intended to walk through the steps of preparing the field data for model enhancement use. Essentially, data from the previous model runs will be combined with the data collected from this field visit and the models will be reran to see if the additional data helped with model accuracy.
+In August 2020, another field visit to the Sechelt study area was organized and another week worth of field data was collected. New methods were used to collect this data and certain methods of how cover data was collected was even changed during the course of the field visit. This document is intended to walk through the steps of preparing the field data for model enhancement use. Essentially, data from the previous model runs will be combined with the data collected from this field visit and the models will be reran to see if the additional data helped with model accuracy. In this version, only presence/absence data will be used; however, cover data does exist, it is just not considered from here.
 
-First, R packages need to be loaded. (currently copied and pasted from 02a document)
+First, R packages need to be loaded. 
 
 ```{r Load Packages}
 
 suppressMessages(suppressWarnings({
-  ls <- c("plyr", "tidyverse", "readxl", "foreach", "RODBC", "sf", "terra")
+  ls <- c("plyr", "tidyverse", "readxl", "foreach", "sf", "terra")
   new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
   if(length(new.packages))
     install.packages(new.packages)
@@ -23,7 +23,7 @@ suppressMessages(suppressWarnings({
 
 Next, data from the field visits will be loaded in and processed. I'll first deal with site related data, and then move on to plant related data.
 
-Since 2019, I've edited the original field data Excel spreadhseet. Instead of having separate sheets for each species of interest, they are all on a single page for presences only. This will indicate that if at a given point, there is no data for a given plant, then it will be treated as an absence. Additionally, I've sifted through the data very carefully and where there were certain issues with the way it was laid out previously (e.g.: transition calls in the site series column, descriptions where it wasn't necessary for the structural stage and disturbance classes, etc.), I've edited them manually. This was done to maintain continuity between the newly collected field data and the data from 2019.
+Since 2019, I've edited the original field data Excel spreadsheet. Instead of having separate sheets for each species of interest, they are now all combined on a single sheet. For each species, there is data for whether it was present or absent at a given site. Additionally, I've sifted through the data very carefully and where there were certain issues with the way it was laid out previously (e.g.: transition calls in the site series column, descriptions where it wasn't necessary for the structural stage and disturbance classes, etc.), I've edited them manually. This was done to maintain continuity between the newly collected field data and the data from 2019. In 2020, plant recordings only indicate that a plant was present, so the absence points for each site will need to be filled in here.
 
 ```{r Set directories}
 
@@ -42,83 +42,84 @@ aoi_sf <- st_read(file.path(shapes_dir, "aoi.gpkg"), quiet = TRUE) %>%
 
 ```
 
-
+The spreadsheets for site information for both years are loaded below. These will be used later on near the end.
 
 ```{r Field data 2019 2020 merge - Site}
 
-data_2019 <- file.path(field_data_dir, "raw", "shishalhBECandCulturalPlants_FieldData_2019_EDITS.xlsx")
-data_2020 <- file.path(field_data_dir, "raw", "Sechelt_FieldSampling_Aug2020.xlsx")
+data_2019 <- file.path(
+  field_data_dir, "raw", 
+  "shishalhBECandCulturalPlants_FieldData_2019_EDITS.xlsx")
+data_2020 <- file.path(
+  field_data_dir, "raw", "Sechelt_FieldSampling_Aug2020.xlsx")
 sheets <- excel_sheets(data_2019)
 
 bgc_2019 <- read_excel(data_2019, sheet = "sechelt_site")
 bgc_2020 <- read_excel(data_2020, sheet = "sechelt_site")
 
-bgc_merge <- rbind(
-  bgc_2019[, names(bgc_2019) %in% names(bgc_2020)], 
-  bgc_2020[, names(bgc_2020) %in% names(bgc_2019)]) %>% 
-  magrittr::set_names(make.names(names(.)))
-
 ```
 
-This chunk will combine the two field data sets into a single plant data dataframe. For the 2019 data, fewer focal species were recorded after the first week of data collection, so the Excel sheet reflects the points where data was "not recorded" for a given species at a site. For those records that indicate not being recorded, those records are removed from the final pres/abs dataset
+This chunk will combine the two field data sets into a single plant data dataframe. For the 2019 data, fewer focal species were recorded after the first week of data collection, so the Excel sheet reflects the points where data was "*not recorded" for a given species at a site. For those records that indicate not being recorded, those records are removed from the final pres/abs dataset.
 
 ```{r Field data 2019 2020 merge - Plants}
 
-plants_2019 <- read_excel(data_2019, sheet = "sechelt_plants")
-plants_2020 <- read_excel(data_2020, sheet = "sechelt_plants")
-
+# Plant species names in 2019 were concatenated, add space at the 4th character
+# to be consistent with the 2020 naming
+plants_2019 <- read_excel(data_2019, sheet = "sechelt_plants") %>% 
+  left_join(bgc_2019[, c("Point ID", "Lat", "Long")], by = "Point ID") %>% 
+  dplyr::mutate(Species = ifelse(nchar(Species) > 2, 
+                                 gsub('(.{4})', '\\1 ', Species), Species))
 plant_list_2019 <- unique(plants_2019$Species)
+
+# In 2020, we only marked where plants were present at a site, not where they
+# were absent. Need to expand the 2020 plant list to include absence points at
+# each site. This differs from 2019 data collection where this was already
+# filled in.
+plants_2020 <- read_excel(data_2020, sheet = "sechelt_plants")
 plant_list_2020 <- unique(plants_2020$Species)
 
-# Only consider points that had greater than 0.1% cover in a plot
-plants_merge <- rbind(
-  plants_2019[, names(plants_2019) %in% names(plants_2020)], 
-  plants_2020[, names(plants_2020) %in% names(plants_2019)]) %>% 
-  dplyr::mutate(
-    Pres = rowSums(.[, c("A1", "A2", "A3", "B1", "B2", "C", "D")], na.rm = TRUE) > 0.1) %>% 
-  magrittr::set_names(make.names(names(.)))
-
-# The data currently has points for plant presence for a given plant at each 
-# site, but absence records were never recorded so those need to be added in.
-# Comments from 2019 indicate if a given plant species was in fact recorded there
-# or not.
-plant_expand <- foreach(i = unique(bgc_merge$Point.ID), .combine = rbind) %do% {
-  site <- plants_merge %>% 
-    dplyr::filter(Point.ID == i) %>% 
+plants_2020_fix <- foreach(i = unique(plants_2020$`Point ID`), .combine = rbind) %do% {
+  site <- plants_2020 %>% 
+    dplyr::filter(`Point ID` == i) %>% 
     as.data.frame()
   if(nrow(site) == 0) {
-    site[1, c("Point.ID", "Lat", "Long")] <- c(i, bgc_merge[bgc_merge$Point.ID == i, ]$Lat,
-                                               bgc_merge[bgc_merge$Point.ID == i, ]$Long)
+    site[1, c("Point ID", "Lat", "Long")] <- c(i, bgc_2020[bgc_2020$`Point ID` == i, ]$Lat,
+                                               bgc_2020[bgc_2020$`Point ID` == i, ]$Long)
   }
-  sp_add <- if(any(grepl("_2019$", site$Point.ID))) {
-    plant_list_2019[!plant_list_2019 %in% site$Species]
-    } else plant_list_2020[!plant_list_2020 %in% site$Species]
+  sp_add <- plant_list_2020[!plant_list_2020 %in% site$Species]
   
-  out <- dplyr::filter(site, !Comments %in% "*not recorded") %>% 
-    {if(length(sp_add) > 0) {
-      rbind(., data.frame(
-        Point.ID = i, 
-        Lat = site$Lat[1], 
-        Long = site$Long[1], 
-        Species = sp_add, 
-        A1 = NA, A2 = NA, A3 = NA, B1 = NA, B2 = NA, C = NA, D = NA, 
-        Flowers = NA, Fruit = NA, Comments = NA, Pres = FALSE
-      )) %>% 
-        drop_na(Species)
-    } else .}
-} %>% dplyr::rename(point_id = Point.ID)
+  out <- if(length(sp_add) > 0) {
+    rbind(site, data.frame(
+      Point.ID = i, 
+      Lat = site$Lat[1], 
+      Long = site$Long[1], 
+      Species = sp_add, 
+      A1 = NA, A2 = NA, A3 = NA, B1 = NA, B2 = NA, C = NA, D = NA, 
+      Flowers = NA, Fruit = NA, Comments = NA) %>% 
+        magrittr::set_names(gsub("\\.", " ", names(.)))) %>% 
+      drop_na(Species)
+  } else site
+}
+
+# Only consider points that had greater than 0.1% cover in a plot
+plants_merge <- rbind(plants_2019, plants_2020_fix) %>% 
+  dplyr::mutate(
+    Pres = rowSums(.[, c("A1", "A2", "A3", "B1", "B2", "C", "D")], na.rm = TRUE) > 0.1) %>% 
+  magrittr::set_names(make.names(names(.))) %>% 
+  dplyr::filter(!Comments %in% "*not recorded") %>% 
+  dplyr::rename(point_id = Point.ID)
 
 # Use a list of dataframes for each plant species
-plant_data <- lapply(unique(plant_expand$Species), function(x) {
-  dplyr::filter(plant_expand, Species == x) %>% 
+plant_data <- lapply(unique(plants_merge$Species), function(x) {
+  dplyr::filter(plants_merge, Species == x) %>% 
     dplyr::select(point_id, Lat, Long, Pres)
-}) %>% magrittr::set_names(unique(plant_expand$Species)) %>% 
+}) %>% magrittr::set_names(unique(plants_merge$Species)) %>% 
   lapply(function(x) {
     st_as_sf(x, coords = c("Long", "Lat"), crs = 4326) %>% 
       st_transform(3005) %>% 
       dplyr::rename(geom = geometry)
   })
 
+# Interesting tables of pres/abs frequencies
 plant_table <- lapply(plant_data, function(x) data.frame(table(x$Pres)))
 
 # If there is a skewed presence/absence ratio, remove the entire collection
@@ -128,33 +129,34 @@ plant_data <- plant_data[sapply(plant_table, function(x)
 
 ```
 
-The next chunk will load in processed points from the 02a script, i.e.: unattributed points from TEM data collection as well as 2019 point data
+The next chunk will load in processed points from the 02a script, i.e.: unattributed points from TEM data collection as well as 2019 point data. The 2020 pres/abs points are added to the dataset.
 
-```{r}
+```{r old point data}
 
-old_pto <- file.path(field_data_dir, "processed_2019")
+old_pto <- file.path(field_data_dir, "processed_2019", res_dir)
 old_points <- lapply(c("RUBUSPE", "CORNCAN", "VERAVIR", "LEDUGRO"), function(x) {
   st_read(file.path(old_pto, "pres_abs_no_atts.gpkg"), layer = x, quiet = TRUE)
 }) %>% magrittr::set_names(c("Rubu spe", "Corn can", "Vera vir", "Ledu gro"))
 
-# Using an underscore character as a filter will filter out the 2019 points 
-# that were processed in 2019 as they had no underscore character. All other
-# points (2019 and 2020 points processed for this map, and all TEM points)
-# have underscore values in their ID's, so we can filter by that.
-points_comb <- c(
-  sapply(names(old_points)[names(old_points) %in% names(plant_data)], 
-         function(x) {
-           rbind(old_points[[x]], plant_data[[x]]) %>% 
-             dplyr::filter(grepl("_", point_id))
-         }, simplify = FALSE, USE.NAMES = TRUE), 
+# Need to filter away the 2019 processed points and keep just the points from 
+# TEM processing. 2019 points start with either M or Op, and end with _2019, so
+# use that pattern to filter out the appropriate points. Then, add in the 2019
+# and 2020 data
+
+points_comb <- c(sapply(
+  names(old_points)[names(old_points) %in% names(plant_data)], function(x) {
+    rbind(
+      old_points[[x]] %>% 
+        dplyr::filter(!grepl("^M|Op", point_id, ), !grepl("_2019$", point_id)), 
+      plant_data[[x]])}, simplify = FALSE, USE.NAMES = TRUE), 
   plant_data[!names(plant_data) %in% names(old_points)], 
   old_points[!names(old_points) %in% names(plant_data)])
-  
+
 ```
 
 Now that the points are brought together from all data sources, the extraction from the rasters on them can once again be performed.
 
-```{r}
+```{r Extract raster data}
 
 pto <- file.path(field_data_dir, "processed_2020", res_dir)
 dir.create(pto, recursive = TRUE, showWarnings = FALSE)
@@ -175,7 +177,7 @@ if(nrow(cov_check) != nlyr(covariates))
 pres_abs_2020 <- sapply(names(points_comb), function(x) {
   
   # Create unattributed points and write those
-  st_write(points_comb[[x]], file.path(pto, "2020_pres_abs_no_atts.gpkg"), layer = x, 
+  st_write(points_comb[[x]], file.path(pto, "pres_abs_no_atts.gpkg"), layer = x, 
            delete_layer = TRUE, quiet = TRUE)
   
   # Attribute the points and write those separately
@@ -183,39 +185,44 @@ pres_abs_2020 <- sapply(names(points_comb), function(x) {
     Filter(function(y) !all(is.na(y)), .) %>% 
     dplyr::select(Pres, names(covariates)) %>% 
     drop_na()
-  st_write(out_att, file.path(pto, "2020_pres_abs.gpkg"), layer = x, 
+  st_write(out_att, file.path(pto, "pres_abs.gpkg"), layer = x, 
            delete_layer = TRUE, quiet = TRUE)
   return(out_att)
 }, simplify = FALSE, USE.NAMES = TRUE)
 
 ```
 
-Lastly, we have incorporated using structural stage into the modelling process. The data here needs to be appended to the old dataset:
+Lastly, we need to add the new site series and structural stage points from 2020 to the respective datasets. At the end, these points get saved to the processed_2020 folder.
 
-```{r}
+```{r site series and structural stage points}
 
+# Load previous years site series data
 site_ser_old <- st_read(file.path(old_pto, "site_ser_pts.gpkg"), quiet = TRUE)
 
+# Combine all site series data together
 site_ser_pts <- dplyr::select(bgc_2020, `BGC Subzone / Variant`, `Forested Site Series`,
                               `Nonforested Class`, Long, Lat) %>% 
-  dplyr::mutate(`Forested Site Series` = toupper(`Forested Site Series`)) %>% 
-  tidyr::unite(MapUnit, c(`BGC Subzone / Variant`, `Forested Site Series`,
-                              `Nonforested Class`), sep = ".", na.rm = TRUE) %>% 
-  st_as_sf(coords = c("Long", "Lat")) %>% 
-  st_set_crs(4326) %>% 
+  dplyr::mutate(across(c(`Forested Site Series`, `Nonforested Class`), toupper)) %>% 
+  dplyr::mutate(
+    MapUnit = ifelse(
+      is.na(`Forested Site Series`), `Nonforested Class`, 
+      paste0(`BGC Subzone / Variant`, ".", `Forested Site Series`))) %>% 
+  st_as_sf(coords = c("Long", "Lat"), crs = 4326) %>% 
   st_transform(crs = st_crs(site_ser_old)) %>% 
   dplyr::rename(geom = geometry) %>% 
+  dplyr::select(MapUnit) %>% 
   rbind(site_ser_old) %>% 
   st_set_agr("constant") %>% 
   st_intersection(aoi_sf)
 
+# Load previous years structural stage data
 struct_stg_old <- st_read(file.path(old_pto, "struct_stg_pts.gpkg"), quiet = TRUE) %>% 
   dplyr::select(StructuralStage)
 
+# Combine all structural stage data together
 struct_stg_pts <- dplyr::select(bgc_2020, `Structural Stage`, Long, Lat) %>% 
   drop_na(`Structural Stage`) %>% 
-  st_as_sf(coords = c("Long", "Lat")) %>% 
-  st_set_crs(4326) %>% 
+  st_as_sf(coords = c("Long", "Lat"), crs = 4326) %>% 
   st_transform(crs = st_crs(struct_stg_old)) %>% 
   dplyr::mutate(`Structural Stage` = make.names(`Structural Stage`)) %>% 
   dplyr::rename(StructuralStage = `Structural Stage`, 
@@ -224,8 +231,9 @@ struct_stg_pts <- dplyr::select(bgc_2020, `Structural Stage`, Long, Lat) %>%
   st_set_agr("constant") %>% 
   st_intersection(aoi_sf)
 
+# Write outputs
 sapply(c("site_ser_pts", "struct_stg_pts"), function(x) st_write(
-  eval(parse(text = x)), file.path(dirname(pto), paste0("2020_", x, ".gpkg")), 
+  eval(parse(text = x)), file.path(pto, paste0(x, ".gpkg")), 
   delete_layer = TRUE, quiet = TRUE))[0]
 
 ```
