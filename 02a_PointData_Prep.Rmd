@@ -509,8 +509,8 @@ sapply(
       file.path(dso, paste0(x, ".csv")), row.names = FALSE))[0]
 
 # Write output as processed points in separate folder
-proc_dir <- file.path(field_data_dir, "processed_2019")
-dir.create(proc_dir, showWarnings = FALSE)
+proc_dir <- file.path(field_data_dir, res_dir, "processed_2019")
+dir.create(proc_dir, showWarnings = FALSE, recursive = TRUE)
 dsmart_site_ser_observations %>% 
   st_as_sf(coords = c("X", "Y")) %>% 
   st_set_crs(st_crs(tem_sf)) %>% 
