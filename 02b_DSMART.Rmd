@@ -4,13 +4,11 @@ author: "Matthew Coghill"
 date: "2/19/2020"
 output: html_document
 ---
-This document details how to run the DSMART algorithm: Disaggregation and harmonisation of Soil MAp units through Resampled classification Trees. Originally, the algorithm was intented to create a model predicting soil classes; however, it's being used here to predict site series across a landscape because the process has many parallels. Here, it will be used to convert a TEM to a raster based on the proportions of each polygon.
+This document details how to run the DSMART algorithm: Disaggregation and harmonisation of Soil MAp units through Resampled classification Trees. Originally, the algorithm was intended to create a model predicting soil classes; however, it's being used here to predict site series or structural stage classes across a landscape because the process has many parallels. Here, it will be used to convert a TEM to a raster based on the proportions of each polygon.
 
 Additionally, this script assumes that all data manipulation and pre-processing has occurred prior to running (script 02a_PointData_Prep has been ran). The intention of this script was to be a standalone documentation of DSMART since it takes quite a while to run and produce a map.
 
-First, libraries are loaded and data directories are defined. The rdsmart package comes from BitBucket (similar to GitHub) and it is not on CRAN, so it must be downloaded separately and an installation of the devtools package is required for that. The rdsmart package has also been recently updated to streamline the process of making these spatial predictions; by combining the caret package and rdsmart, it is now much quicker to produce a map than it was previously. The whole process takes ~12 hours now on a machine running with 4 cores which is much quicker than previous trials which took upwards of 4 days.
-
-June update: Thinking about this a bit, I have improved the DSMART algorithm internally so that it runs much quicker now. The base way of producing a map through the DSMART algorithm is to generate "n.reals" amounts of predictions using C50 tree models and then calculate the best map it could from the realilsations at hand. The other way that I was doing involved using a RandomForest approach in either the caret or mlr3 packages. If this is the way it's going to be created, THIS SHOULD ONLY NEED TO HAVE A SINGLE REALISATION since it creates predictions based on multiple resamplings etc.
+First, libraries are loaded and data directories are defined. A custom function `dsmsart()` was created based on the existing `rdsmart` package (available on BitBucket). The intention of creating my own function was to improve upon the existing functions using newer, faster packages to accomplish the same tasks.
 
 ```{r Load Packages}
 
@@ -32,7 +30,7 @@ source("./_functions/dsmart_custom/dsmart.R")
 
 ```
 
-Next, file paths are defined.
+Next, file paths are defined. There are two major branches: First, what resolution should this be run at? Second, should this run be for site series or for structural stage? The option `include_bgc` will run stratified virtual sampling using the bec subzone as the stratified layer, and `use_caret` will indicate that the model to be used will be a random forest model using 10 fold cross validation repeated 5 times, instead of C5.0 tree models (base).
 
 ```{r Set directories}
 
@@ -121,7 +119,7 @@ observations <- read.csv(file.path(dsmart_dir, "inputs", paste0(
 
 ```
 
-
+During modelling of presence/absence and cover in future scripts, one of the questions that we had was if it was worth it to spend time creating this DSMART layer, or if we should just use the TEM. In order to seek out that questions, rasterized versions of the TEM are created here.
 
 ```{r Simple TEM rasterization}
 
@@ -163,7 +161,7 @@ if(run == "site_ser") {
 
 ```
 
-The following section sets up some additional parameters for the DSAMRT algorithm. The args.model object specifies some of the modelling intricacies. Modelling will be passed on to the caret package where it will run a parallelized version of random forest analysis to generate class probabilities. 
+The following section sets up some additional parameters for the DSAMRT algorithm. The `args.model` object specifies some of the modelling intricacies. Modelling will be passed on to the caret package where it will run a parallelized version of random forest analysis to generate class probabilities. 
 
 There was a point in time that I tried to do the modelling via the mlr3 package since it has spatial capabilities; however, this proved to be a very difficult challenge and did not incur any speed benefit in terms of processing since the ranger package (used for the core modelling aspects) is written in C++ as it is. For those reasons, I did not implement the mlr3 modelling techniques into the DSMART algorithm.
 
@@ -224,7 +222,7 @@ dsm <- try(dsmart(
   polygons = polygons, 
   composition = composition,
   rate = 5, # How many samples to draw per polygon
-  reals = 5, # How many models to produce from the modeling run? Gets overridden by number of repeats if caret package is used with repeated cross validation
+  reals = 5, # How many models to produce from the modelling run? Gets overridden by number of repeats if caret package is used with repeated cross validation
   observations = observations, 
   method.sample = "by_polygon", 
   method.allocate = "weighted",

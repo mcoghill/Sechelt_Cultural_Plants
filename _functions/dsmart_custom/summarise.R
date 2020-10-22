@@ -125,15 +125,23 @@ summarise <- function(
   
   # Set up output directories
   outputdir <- file.path(outputdir)
-  dir.create(file.path(outputdir, "output"), showWarnings = FALSE)
-  dir.create(file.path(outputdir, "output", "probabilities"), showWarnings = FALSE)
-  dir.create(file.path(outputdir, "output", "mostprobable"), showWarnings = FALSE)
+  ndirs <- length(dir(outputdir, pattern = "output"))
+  if(ndirs > 1) {
+    last <- max(as.numeric(
+      gsub("\\D", "", dir(outputdir, pattern = "output"))), na.rm = TRUE)
+    subdir <- paste0("output_", formatC(last, width = 3, format = "d", flag = 0))
+  } else {
+    subdir <- "output"
+  }
+  dir.create(file.path(outputdir, subdir), showWarnings = FALSE)
+  dir.create(file.path(outputdir, subdir, "probabilities"), showWarnings = FALSE)
+  dir.create(file.path(outputdir, subdir, "mostprobable"), showWarnings = FALSE)
   
   # Save output locations
   output$locations <- base::list(
-    root = file.path(outputdir, "output"), 
-    probabilities = file.path(outputdir, "output", "probabilities"), 
-    mostprobable = file.path(outputdir, "output", "mostprobable"))
+    root = file.path(outputdir, subdir), 
+    probabilities = file.path(outputdir, subdir, "probabilities"), 
+    mostprobable = file.path(outputdir, subdir, "mostprobable"))
   
   # Don't want to display a bunch of progress bars here, so turn that off for
   # the time being
@@ -157,7 +165,7 @@ summarise <- function(
     # Compute probabilities and write probabilities to raster files
     probs <- (counts / n.realisations) %>% 
       terra::writeRaster(filename = file.path(
-        outputdir, "output", "probabilities", 
+        outputdir, subdir, "probabilities", 
         paste0(stub, "prob_", names(.), ".tif")), 
         overwrite = TRUE)
   } else {
@@ -169,7 +177,7 @@ summarise <- function(
     if(length(realisations) == 1 | n.realisations == 1) {
       # If only one realisation is used, no averaging is needed.
       probs <- terra::writeRaster(realisations[[1]], filename = file.path(
-        outputdir, "output", "probabilities", 
+        outputdir, subdir, "probabilities", 
         paste0(stub, "prob_", names(realisations[[1]]), ".tif")), 
         overwrite = TRUE)
     } else {
@@ -178,7 +186,7 @@ summarise <- function(
           return(realisations[[j]][[i]])
         }
         return(terra::app(rlist, fun = "mean", na.rm = TRUE, filename = file.path(
-          outputdir, "output", "probabilities", 
+          outputdir, subdir, "probabilities", 
           paste0(stub, "prob_", lookup$name[which(lookup$code == i)], ".tif")), 
           overwrite = TRUE))
       }
@@ -207,7 +215,7 @@ summarise <- function(
                                formatC(1:nprob, width = nchar(nrow(lookup)), 
                                        format = "d", flag = "0"), "_class")) %>% 
     terra::writeRaster(filename = file.path(
-      outputdir, "output", "mostprobable", 
+      outputdir, subdir, "mostprobable", 
       paste0(names(.), ".tif")), 
       overwrite = TRUE, wopt = list(datatype = "INT2S"))
   
@@ -224,7 +232,7 @@ summarise <- function(
   cat("\nGenerating confusion index raster from the class probabilities")
   confusion <- terra::app(ordered.probs, function(x) {
     (1 - (x[[1]] - x[[2]]))
-  }, filename = file.path(outputdir, "output", "mostprobable", 
+  }, filename = file.path(outputdir, subdir, "mostprobable", 
                           paste0(stub, "confusion.tif")), overwrite = TRUE)
   
   # Compute Shannon's entropy on the class probabilities
@@ -234,14 +242,14 @@ summarise <- function(
   shannon <- terra::app(ordered.probs, function(x) {
     -sum(x * (log(x, base = length(x))), na.rm = TRUE)}) %>% 
     terra::mask(mask_layer, filename = file.path(
-      outputdir, "output", "mostprobable", 
+      outputdir, subdir, "mostprobable", 
       paste0(stub, "shannon.tif")), overwrite = TRUE)
   
   # Write ith-most-probable soil class probability raster to file
   cat("\nWriting probability raster(s)")
   ordered.probs <- terra::subset(ordered.probs, 1:nprob) %>% 
     terra::writeRaster(filename = file.path(
-      outputdir, "output", "mostprobable", 
+      outputdir, subdir, "mostprobable", 
       paste0(names(.), ".tif")), 
       overwrite = TRUE)
   
