@@ -7,7 +7,7 @@ output: html_document
 
 The purpose of this file is to pull together all of the models run in the previous script and merge them together in order to find the areas where models are agreeing that a plant is present in a given raster cell. This is a fairly simple idea that was founded by Michael Ryan in our discussions. First, load the required packages.
 
-```{r}
+```{r Load Packages}
 
 suppressMessages(suppressWarnings({
   ls <- c("tidyverse", "terra", "foreach")
@@ -49,11 +49,14 @@ Simple method proposed by Mike: Count the number of maps that predicted a plant 
 ```{r Pres Abs model agreement}
 
 prob_in_dir <- file.path(model_dir, "pres_abs_predictions")
-prob_out_dir <- file.path(AOI_dir, "3_model_agreement", res_dir, "pres_abs_agreement")
+prob_out_dir <- file.path(
+  AOI_dir, "3_model_agreement", res_dir, "pres_abs_agreement")
 dir.create(prob_out_dir, showWarnings = FALSE, recursive = TRUE)
 prob_cutoff <- c(0.5, 0.75) %>% magrittr::set_names(c("0.5", "0.75"))
 
 out <- sapply(c("CORNCAN", "RUBUSPE"), function(i) {
+  
+  # Gather all of the model outputs
   model_stack <- rast(
     sapply(dir(prob_in_dir, pattern = i, full.names = TRUE), list.files, 
            pattern = "_TRUE.tif$", full.names = TRUE))
@@ -201,4 +204,3 @@ efficiency <- rast(likely_files) %>%
 suppressWarnings(terra::tmpFiles(old = TRUE, remove = TRUE))
 
 ```
-
