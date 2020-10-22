@@ -5,6 +5,8 @@ date: "9/8/2020"
 output: html_document
 ---
 
+The purpose of this document is to create a new DSMART site series and structural stage classification layer and associated probability layers. It incorporates newly obtained data from 2020 field sampling (processed in the 04a script). Most of the code is carried over from the 02b script. First, load the required packages.
+
 ```{r Load Packages}
 
 suppressMessages(suppressWarnings({
@@ -25,7 +27,7 @@ source("./_functions/dsmart_custom/dsmart.R")
 
 ```
 
-
+Next, set the directories and processing options used in this DSMART run.
 
 ```{r Set directories}
 
@@ -36,19 +38,27 @@ res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates", res_dir)
-old_pto <- file.path(AOI_dir, "1_map_inputs", "field_data", "processed_2019")
-pto <- file.path(AOI_dir, "1_map_inputs", "field_data", "processed_2020")
+old_pto <- file.path(AOI_dir, "1_map_inputs", "field_data", "processed_2019", res_dir)
+pto <- file.path(AOI_dir, "1_map_inputs", "field_data", "processed_2020", res_dir)
 
 include_bgc <- FALSE
 use_caret <- TRUE
 run <- "site_ser" # option of "struct_stg" or "site_ser"
 old_dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2019", res_dir, run)
 dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2020", res_dir, run)
+input_dir <- file.path(dsmart_dir, "inputs")
 dir.create(dsmart_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(input_dir, showWarnings = FALSE, recursive = TRUE)
 
 ```
 
+Next, load the data specified from the run options above. The covariates chosen are as follows:
 
+* Terrain variables
+* Annual sentinel-2 variables
+* Annual climate variables from the 1981-2010 average
+
+If a BGC layer is determined necessary, 
 
 ```{r Load 2020 data}
 
@@ -60,10 +70,11 @@ sentinel_covariates <- list.files(
   covariate_dir, pattern = "^sentinel2.*.2019.tif$", full.names = TRUE)
 climate_covariates <- list.files(
   covariate_dir, pattern = "^normal_1981_2010y", full.names = TRUE)
-covariates <- terra::rast(c(terrain_covariates, sentinel_covariates, climate_covariates))
+covariates <- terra::rast(
+  c(terrain_covariates, sentinel_covariates, climate_covariates))
 
-# Preliminary check of covariate data to eliminate any outlying rasters containing
-# less data than normal
+# Preliminary check of covariate data to eliminate any outlying rasters
+# containing less data than normal
 cov_check <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
   new <- subset(covariates, i) * 0
   data.frame(layer = names(new), 
@@ -72,7 +83,8 @@ cov_check <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
 if(nrow(cov_check) != nlyr(covariates)) 
   covariates <- subset(covariates, cov_check$layer)
 
-# Load the polygons and associated observations. The polygons are unchanged from 2019
+# Load the polygons and associated observations. The polygons are unchanged
+# from 2019
 polygons <- terra::vect(file.path(old_dsmart_dir, "inputs", paste0(
   "dsmart_", run, "_polys.gpkg")))
 
@@ -101,10 +113,12 @@ if(include_bgc) {
     # File needs to be written to disk and then reloaded back into R for proper 
     # feature assignments
     bgc_rast <- writeRaster(bgc_rast, file.path(
-      old_dsmart_dir, "inputs", "bgc.tif"), 
+      input_dir, "bgc.tif"), 
       overwrite = TRUE, wopt = list(datatype = "INT2S"))
   } else {
-    bgc_rast <- rast(bgc_rast)
+    bgc_rast <- rast(bgc_rast) %>% 
+      writeRaster(file.path(input_dir, "bgc.tif"), overwrite = TRUE,
+                  wopt = list(datatype = "INT2S"))
   }
   
   covariates <- c(covariates, bgc_rast)
@@ -113,23 +127,37 @@ if(include_bgc) {
   factors <- NULL
 }
 
+# Since the polygons won't have changed, just load the composition file from 2019
 composition <- read.csv(file.path(old_dsmart_dir, "inputs", paste0(
   "dsmart_", run, "_composition.csv"))) %>% 
     dplyr::select(-Subzone)
 
 # From 2019, the difference here is that this contains additional observations
-observations <- st_read(file.path(pto, paste0("2020_", run, "_pts.gpkg")), quiet = TRUE) %>% 
+observations <- st_read(file.path(pto, paste0(run, "_pts.gpkg")), quiet = TRUE) %>% 
   cbind(st_coordinates(.)) %>% 
   st_drop_geometry() %>% 
   dplyr::select(X, Y, everything())
 
+# Write the DSMART inputs to the 2020 DSMART inputs folder
+as(polygons, "Spatial") %>% st_as_sf() %>% st_set_crs(crs(polygons)) %>% 
+  st_write(file.path(input_dir, paste0("dsmart_", run, "_polys.gpkg")), 
+           quiet = TRUE, delete_layer = TRUE)
+write.csv(composition, 
+          file.path(input_dir, paste0("dsmart_", run, "_composition.csv")), 
+          row.names = FALSE)
+write.csv(observations, 
+          file.path(input_dir, paste0("dsmart_", run, "_observations.csv")), 
+          row.names = FALSE)
+
 ```
 
-
+Similar to 2019, create a simplified site series raster. Copied and pasted from the 02b script with changes to where the files are saved.
 
 ```{r Simple TEM rasterization}
 
 if(run == "site_ser") {
+  if(dir.exists(file.path(dsmart_dir, "simple")))
+    unlink(file.path(dsmart_dir, "simple"), recursive = TRUE)
   dir.create(file.path(dsmart_dir, "simple"), showWarnings = FALSE, recursive = TRUE)
   
   # Get the TEM polygons from the original DSMART input data folder
@@ -168,7 +196,7 @@ if(run == "site_ser") {
 
 ```
 
-
+After the input data is loaded, run the DSMART algorithm. Pretty much the only difference from before is that there are additional observations that should hopefully create better predictions.
 
 ```{r Editing the dsmart functions}
 
