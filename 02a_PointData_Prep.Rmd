@@ -1,5 +1,5 @@
 ---
-title: "02a_Data_Consolidation"
+title: "02a_PointData_Prep"
 author: "Matthew Coghill"
 date: "2/6/2020"
 output: html_document
@@ -40,7 +40,7 @@ Additionally, we need to set the directory for where the 32-bit version of R is 
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 25
+map_res <- 4
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 poi <- c("RUBUSPE", "CORNCAN", "VERAVIR", "LEDUGRO") # plants of interest
 
@@ -509,7 +509,7 @@ sapply(
       file.path(dso, paste0(x, ".csv")), row.names = FALSE))[0]
 
 # Write output as processed points in separate folder
-proc_dir <- file.path(field_data_dir, res_dir, "processed_2019")
+proc_dir <- file.path(field_data_dir, "processed_2019", res_dir)
 dir.create(proc_dir, showWarnings = FALSE, recursive = TRUE)
 dsmart_site_ser_observations %>% 
   st_as_sf(coords = c("X", "Y")) %>% 
@@ -753,8 +753,7 @@ dsmart_struct_stg_polys <- rbind(
   dplyr::mutate(
     across(EST_COVERAGE_PCT_1, ~ replace_na(., 100)),
     across(c(EST_COVERAGE_PCT_2, EST_COVERAGE_PCT_3), ~ replace_na(., 0)), 
-    across(ss1, ~ as.factor(make.names(.))),
-    across(c(ss1, ss2), ~ as.factor(sub(".*NA\\.", NA, make.names(.)))),
+    across(c(ss1, ss2, ss3), ~ as.factor(sub(".*NA\\.", NA, make.names(.)))),
     MAP_CODE = paste0(MAP_ID, "_", POLYGON_ID)) %>% 
   unite(Subzone, c(BEC_ZONE_CODE, BEC_SUBZONE, BEC_VARIANT), 
         sep = "", remove = TRUE, na.rm = TRUE) %>% 
@@ -823,8 +822,7 @@ dsmart_struct_stg_observations <- dplyr::select(sechelt_bec, Structural.Stage) %
 
 # Create extracted sf dataframe of observations
 struct_stg <- dsmart_struct_stg_observations %>% 
-  sf::st_as_sf(coords = c("X", "Y")) %>% 
-  sf::st_set_crs(sf::st_crs(dsmart_struct_stg_polys)) %>% 
+  sf::st_as_sf(coords = c("X", "Y"), crs = st_crs(dsmart_struct_stg_polys)) %>% 
   cbind(terra::extract(covariates, st_coordinates(.))) %>% 
   Filter(function(y) !all(is.na(y)), .) %>% 
   dplyr::select(StructuralStage, names(covariates)) %>% 
