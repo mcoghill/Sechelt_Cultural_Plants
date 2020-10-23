@@ -4,6 +4,7 @@ author: "Matthew Coghill"
 date: "2/19/2020"
 output: html_document
 ---
+
 This document details how to run the DSMART algorithm: Disaggregation and harmonisation of Soil MAp units through Resampled classification Trees. Originally, the algorithm was intended to create a model predicting soil classes; however, it's being used here to predict site series or structural stage classes across a landscape because the process has many parallels. Here, it will be used to convert a TEM to a raster based on the proportions of each polygon.
 
 Additionally, this script assumes that all data manipulation and pre-processing has occurred prior to running (script 02a_PointData_Prep has been ran). The intention of this script was to be a standalone documentation of DSMART since it takes quite a while to run and produce a map.
@@ -36,7 +37,7 @@ Next, file paths are defined. There are two major branches: First, what resoluti
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 25
+map_res <- 4
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
