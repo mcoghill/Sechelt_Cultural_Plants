@@ -1,7 +1,7 @@
 ---
-title: "Satellite Derived Covariates Prep"
+title: "01c_Satellite_SpatialLayer_Prep"
 author: "Matt Coghill"
-script author: "Matt Coghill"
+date: "02/05/2020"
 output: html_document
 ---
 
