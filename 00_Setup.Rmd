@@ -1,0 +1,139 @@
+---
+title: "00_Setup"
+author: "Matt"
+date: "10/23/2020"
+output: html_document
+---
+
+Welcome to the setup script of for the Sechelt Cultural Plants project! Before proceeding, please ensure that you have the following programs installed on your machine:
+
+1. R 4.0.0 or greater (32-bit required, 64-bit recommended, can have both installed at the same time. Available from [CRAN]("https://cran.r-project.org/"))
+2. RStudio IDE for R (available from the [RStudio website]("https://rstudio.com/products/rstudio/download/#download"))
+
+The intention of this script is to properly set up the computing environment and R packages required for carrying out this project. Checks and messages will appear at certain points if certain requirements are not met. Simply follow the instructions laid out to fix any issues you may be encountering.
+
+```{r}
+
+# First, check your R version
+if(as.numeric(version$major) < 4) {
+  if("installr"[!"installr" %in% installed.packages()[, "Package"]])
+    install.packages("installr")
+  installr::install.R()
+  stop(paste0("\r        
+  ******************************************************************************
+  R has now been upgraded to the latest version!
+  With RStudio open, select \"Tools\" > \"Global Options\". In the \"General\" 
+  tab, find the file path listing the current R version, and select the \"Change\"
+  button to locate the installation path for the newly downloaded R version. 
+  RStudio should populate a list of all currently installed R versions, but in
+  case it does not your new R version is located here:\n
+  ", normalizePath(tail(list.dirs(dirname(R.home()), recursive = FALSE), n = 1)), "
+  
+  You must now close and reopen RStudio in order for the changes to take effect.
+  ******************************************************************************
+  "))
+}
+
+# Some packages require devtools to be installed since they are not on CRAN and
+# therefore need to be downloaded from github. Do that first
+if(!"devtools" %in% installed.packages()[, "Package"])
+  install.packages("devtools")
+
+# One of the packages that will be used below is raster, and it needs to be the
+# development version 3.3-14. The package requires compilation, accomplished by
+# rtools. Install rtools here if it isn't already.
+
+if(.Platform$OS.type == "windows") {
+  if(!devtools::find_rtools()) {
+    if(!"curl" %in% installed.packages()[, "Package"])
+      install.packages("curl")
+    if(.Platform$r_arch == "x64") {
+      url <- "https://cran.r-project.org/bin/windows/Rtools/rtools40-x86_64.exe"
+    } else {
+      url <- "https://cran.r-project.org/bin/windows/Rtools/rtools40-i686.exe"
+    }
+    curl::curl_download(url, destfile = file.path(tempdir(), basename(url)))
+    system(file.path(tempdir(), basename(url)))
+    
+    # Create environment variable
+    writeLines('PATH="${RTOOLS40_HOME}\\usr\\bin;${PATH}"', con = "~/.Renviron")
+    
+    # Restart R
+    stop("\r        
+    ****************************************************************************
+    You must now close and reopen RStudio in order for the changes to take effect
+    ****************************************************************************
+    "
+    )
+  }
+}
+
+# Confirm that rtools is installed properly. If it didn't, follow the 
+# instructions on the rtools website: 
+# https://cran.r-project.org/bin/windows/Rtools/
+if(Sys.which("make") == "") 
+  stop("Installation of rtools 4.0 failed. Follow the instructions at 
+       \rhttps://cran.r-project.org/bin/windows/Rtools/")
+
+# List of packages used by all scripts
+ls <- c("tidyverse", "terra", "xml2", "sf", "lubridate", "foreach", "rvest", 
+        "httr", "tools", "bcdata", "bcmaps", "future.apply", "raster", 
+        "RStoolbox", "reticulate", "googledrive", "stringi", "rstudioapi",
+        "readxl", "svSocket", "RODBC", "caret", "ranger", "GSIF", "MLmetrics",
+        "mlr3verse", "mlr3fselect")
+
+if(ls[!ls %in% installed.packages()[, "Package"]])
+  install.packages(ls)
+
+# Standalone packages that require installation from github
+if(!"mlr3spatiotempcv" %in% installed.packages()[, "Package"])
+  devtools::install_github("mlr-org/mlr3spatiotempcv")
+
+# # 1a
+# ls <- c("tidyverse", "terra", "xml2", "sf", "lubridate", "foreach", "rvest", 
+#         "httr", "tools")
+# # 1b
+# ls <- c(ls, "bcdata", "bcmaps", "future.apply")
+# 
+# # 1c
+# ls <- c(ls, "raster", "RStoolbox", "reticulate", 
+#         "googledrive", "stringi", "rstudioapi", "foreach")
+# 
+# # 2a, removed plyr
+# ls <- c(ls, "tidyverse", "readxl", "svSocket", "RODBC", "sf", "terra", "foreach")
+# 
+# # 2b, removed raster and gdalUtils
+# ls <- c(ls, "tidyverse", "terra", "sf", "foreach", "caret", "ranger", "GSIF", "MLmetrics")
+# 
+# # 2c, removed parallel, parallelMap, randomForest, ModelMap, and gdalUtils
+# ls <- c(ls, "tidyverse", "tools", "terra", "sf", "ranger", "mlr3verse", "foreach")
+# 
+# # 3
+# ls <- c(ls, "tidyverse", "terra", "foreach")
+# 
+# # 4a, removed plyr
+# ls <- c(ls, "tidyverse", "readxl", "foreach", "sf", "terra")
+# 
+# # 4b, removed raster and gdalUtils
+# ls <- c(ls, "tidyverse", "terra", "sf", "foreach", "caret", "ranger", 
+#           "GSIF", "MLmetrics")
+# 
+# # 4c, removed parallel, parallelMap, randomForest, ModelMap, and gdalUtils
+# ls <- c(ls, "tidyverse", "tools", "terra", "sf", "ranger", "mlr3verse", "foreach")
+# 
+# # 5
+# ls <- c(ls, "tidyverse", "terra")
+# 
+# # scripts
+# ls <- c(ls, "mlr3fselect", "mlr3spatiotempcv")
+# 
+# all <- unique(ls)
+
+# Requirements
+if(compareVersion(packageDescription("terra")$Version, "0.8-5") < 0) 
+  install.packages("rspatial/terra")
+if(compareVersion(packageDescription("raster")$Version, "3.3-14") < 0) 
+  devtools::install_github("rspatial/raster")
+
+```
+
