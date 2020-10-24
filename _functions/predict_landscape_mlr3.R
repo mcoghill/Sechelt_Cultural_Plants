@@ -67,13 +67,28 @@ predict_landscape_mlr3 <- function(
       # Load all tile data from each raster, if any variable is all NA then
       # return to top of loop
       cat("\r...Loading raster data...")
-      r <- stars::read_stars(cov,
-                             RasterIO = list(nXOff  = t$offset.x[1] + 1, 
-                                             nYOff  = t$offset.y[1] + 1,
-                                             nXSize = t$region.dim.x[1],
-                                             nYSize = t$region.dim.y[1])) %>% 
-        magrittr::set_names(names(covariates))
+      r_init <- try(stars::read_stars(
+        cov, RasterIO = list(nXOff  = t$offset.x[1] + 1,
+                             nYOff  = t$offset.y[1] + 1,
+                             nXSize = t$region.dim.x[1],
+                             nYSize = t$region.dim.y[1])) %>%
+          magrittr::set_names(tools::file_path_sans_ext(names(.))), silent = TRUE)
+      
+      # Error handling workaround
+      if(class(r_init) == "try-error") {
+        r <- lapply(cov, stars::read_stars, RasterIO = list(
+          nXOff  = t$offset.x[1] + 1, 
+          nYOff  = t$offset.y[1] + 1,
+          nXSize = t$region.dim.x[1],
+          nYSize = t$region.dim.y[1])) %>% 
+          magrittr::set_names(names(covariates)) %>%
+          lapply("[[", 1) %>%
+          stars::st_as_stars(dimensions = stars::st_dimensions(r), 
+                             coordinates = st_coordinates(r))
+      } else r <- r_init
+      
       cat("done!\n")
+      
     }
     
     if(any(sapply(r, function(x) all(is.na(x))))) {
