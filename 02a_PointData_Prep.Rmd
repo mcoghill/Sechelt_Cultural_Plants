@@ -22,8 +22,7 @@ Using the RMarkdown format, I'll walk through the scripting process used to crea
 ```{r Load Packages}
 
 suppressMessages(suppressWarnings({
-  ls <- c("plyr", "tidyverse", "readxl", "svSocket", "RODBC", "sf", "terra", 
-          "foreach")
+  ls <- c("tidyverse", "readxl", "svSocket", "RODBC", "sf", "terra", "foreach")
   new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
   if(length(new.packages))
     install.packages(new.packages)
@@ -40,7 +39,7 @@ Additionally, we need to set the directory for where the 32-bit version of R is 
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 4
+map_res <- "TRIM"
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 poi <- c("RUBUSPE", "CORNCAN", "VERAVIR", "LEDUGRO") # plants of interest
 

@@ -10,12 +10,10 @@ The purpose of this script is to download the relevant spatial data for BEC zone
 ```{r packages, include=FALSE}
 
 suppressMessages(suppressWarnings({
-  ls <- c("bcdata", "bcmaps", "tidyverse", "terra", "future.apply", "raster")
+  ls <- c("bcdata", "bcmaps", "tidyverse", "terra", "future.apply")
   new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
   if(length(new_packages))
     install.packages(new_packages)
-  if(compareVersion(packageDescription("raster")$Version, "3.3-14") < 0) 
-    devtools::install_github("rspatial/raster")
   if(compareVersion(packageDescription("terra")$Version, "0.8-5") < 0) 
     install.packages("rspatial/terra")
   lapply(ls, library, character.only = TRUE)[0]

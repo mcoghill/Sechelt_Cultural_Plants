@@ -14,15 +14,12 @@ First, libraries are loaded and data directories are defined. A custom function 
 ```{r Load Packages}
 
 suppressMessages(suppressWarnings({
-  ls <- c("tidyverse", "terra", "sf", "raster", "foreach", "caret", "ranger", 
-          "GSIF", "gdalUtils", "MLmetrics")
+  ls <- c("tidyverse", "terra", "stars", "foreach", "caret", "ranger", "GSIF", 
+          "MLmetrics")
   new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
   if(length(new.packages))
     install.packages(new.packages)
   
-  # Make sure terra package is up to date! This may take a moment
-  if(compareVersion(as.character(packageVersion("terra")), "0.7-4") < 0)
-    install.packages("terra")
   lapply(ls, library, character.only = TRUE)[0]
   rm(ls, new.packages)}))
 
@@ -37,7 +34,7 @@ Next, file paths are defined. There are two major branches: First, what resoluti
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 4
+map_res <- "TRIM"
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
