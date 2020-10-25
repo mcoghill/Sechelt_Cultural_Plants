@@ -10,12 +10,7 @@ This file is very similar in style to the 03 file, just using models that were r
 ```{r Load Packages}
 
 suppressMessages(suppressWarnings({
-  ls <- c("tidyverse", "terra")
-  new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
-  if(length(new.packages))
-    install.packages(new.packages)
-  lapply(ls, library, character.only = TRUE)[0]
-  rm(ls, new.packages)}))
+  lapply(c("tidyverse", "terra"), library, character.only = TRUE)}))
 
 ```
 
@@ -25,7 +20,7 @@ Then, set up the directories.
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 25
+map_res <- "TRIM"
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 model_dir <- file.path(AOI_dir, "4_map_predictions_enhanced", res_dir)
@@ -52,7 +47,7 @@ pred_dir <- file.path(model_dir, "pres_abs_predictions")
 out_dir <- file.path(
   AOI_dir, "5_model_agreement_enhanced", res_dir, "pres_abs_agreement")
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
-prob_cutoff <- c(0.5, 0.75) %>% magrittr::set_names(c("0.5", "0.75"))
+prob_cutoff <- c(0.5, 0.75) %>% magrittr::set_names(make.names(.))
 
 out <- sapply(c("Corn can", "Rubu spe"), function(i) {
   
@@ -70,16 +65,18 @@ out <- sapply(c("Corn can", "Rubu spe"), function(i) {
     agreement <- app(
       rcl, fun = "sum", na.rm = TRUE,
       filename = file.path(out_dir, paste0(
-        i, "_pres_abs_gt_", 100 * j, "_model_agreement.tif")), 
+        i, "_pres_abs_gt_", j * 100, "_model_agreement.tif")), 
       overwrite = TRUE, wopt = list(datatype = "INT2S"))
     
     agreement_freq <- as.data.frame(freq(agreement, bylayer = FALSE)) %>%
       magrittr::set_colnames(c("zone", "count"))
     
     # Zonal statistics
-    z_stats <- c(sapply(c("mean", "sd", "min", "max"), function(x) 
-      zonal(covariates, agreement, fun = x, na.rm = TRUE), 
-      simplify = FALSE, USE.NAMES = TRUE), 
+    z_stats <- c(sapply(c("mean", "min", "max", "sd"), function(k) {
+      z <- zonal(covariates, agreement, fun = k, na.rm = TRUE)
+      write.csv(z, file.path(out_dir, paste0(
+        i, "_", k, "_pres_abs_gt_", j * 100, ".csv")), row.names = FALSE)
+      return(z)}, simplify = FALSE, USE.NAMES = TRUE), 
       freq = list(agreement_freq))
     
     # Cleanup
@@ -88,13 +85,5 @@ out <- sapply(c("Corn can", "Rubu spe"), function(i) {
     return(z_stats)
   }, simplify = FALSE, USE.NAMES = TRUE)
 }, simplify = FALSE, USE.NAMES = TRUE)
-
-# Write csv's of results
-lapply(names(out), function(x) {
-  lapply(names(out[[x]]), function(y) {
-    lapply(names(out[[x]][[y]]), function(z) {
-      write.csv(out[[x]][[y]][[z]], file.path(out_dir, paste0(
-        x, "_", z, "_pres_abs_gt_", as.numeric(y) * 100, ".csv")), 
-        row.names = FALSE)})})})
 
 ```
