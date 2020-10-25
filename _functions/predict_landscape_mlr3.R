@@ -24,6 +24,9 @@ predict_landscape_mlr3 <- function(
   
   source('./_functions/tile_index.R')
   
+  lapply(c("tidyverse", "stars", "GSIF", "foreach", "terra"), 
+         require, character.only = TRUE)
+  
   if(!is.character(mask_layer) || missing(mask_layer)) 
     stop("The mask_layer variable needs to be a character vector of length 1 
     \ridentifying the layer to subset from the 'covariates' object")

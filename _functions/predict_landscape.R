@@ -27,6 +27,9 @@ predict_landscape <- function(
   
   source('./_functions/tile_index.R')
   
+  lapply(c("tidyverse", "stars", "GSIF", "foreach", "terra"), 
+         require, character.only = TRUE)
+  
   if(missing(model) || class(model) != "train") 
     stop("A valid 'model' object from the caret package is required to proceed.")
   
