@@ -12,12 +12,8 @@ First, R packages need to be loaded.
 ```{r Load Packages}
 
 suppressMessages(suppressWarnings({
-  ls <- c("plyr", "tidyverse", "readxl", "foreach", "sf", "terra")
-  new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
-  if(length(new.packages))
-    install.packages(new.packages)
-  sapply(ls, library, character.only = TRUE, quietly = TRUE)[0]
-  rm(ls, new.packages)}))
+  lapply(c("tidyverse", "readxl", "foreach", "sf", "terra"), 
+         library, character.only = TRUE)}))
 
 ```
 
@@ -29,7 +25,7 @@ Since 2019, I've edited the original field data Excel spreadsheet. Instead of ha
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 25
+map_res <- "TRIM"
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
@@ -38,7 +34,7 @@ covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates", res_dir)
 dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2020", res_dir)
 
 aoi_sf <- st_read(file.path(shapes_dir, "aoi.gpkg"), quiet = TRUE) %>% 
-  st_geometry() %>% st_make_valid() %>% st_set_crs(3005)
+  st_geometry() %>% st_make_valid()
 
 ```
 
@@ -82,8 +78,9 @@ plants_2020_fix <- foreach(i = unique(plants_2020$`Point ID`), .combine = rbind)
     dplyr::filter(`Point ID` == i) %>% 
     as.data.frame()
   if(nrow(site) == 0) {
-    site[1, c("Point ID", "Lat", "Long")] <- c(i, bgc_2020[bgc_2020$`Point ID` == i, ]$Lat,
-                                               bgc_2020[bgc_2020$`Point ID` == i, ]$Long)
+    site[1, c("Point ID", "Lat", "Long")] <- c(
+      i, bgc_2020[bgc_2020$`Point ID` == i, ]$Lat,
+      bgc_2020[bgc_2020$`Point ID` == i, ]$Long)
   }
   sp_add <- plant_list_2020[!plant_list_2020 %in% site$Species]
   
@@ -164,8 +161,8 @@ dir.create(pto, recursive = TRUE, showWarnings = FALSE)
 # Create the raster stack (terra package) which will be used for data extraction
 covariates <- terra::rast(list.files(covariate_dir, full.names = TRUE))
 
-# Preliminary check of covariate data to eliminate any outlying rasters containing
-# less data than normal
+# Preliminary check of covariate data to eliminate any outlying rasters
+# containing less data than normal
 cov_check <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
   new <- subset(covariates, i) * 0
   data.frame(layer = names(new), 
@@ -181,7 +178,9 @@ pres_abs_2020 <- sapply(names(points_comb), function(x) {
            delete_layer = TRUE, quiet = TRUE)
   
   # Attribute the points and write those separately
-  out_att <- cbind(points_comb[[x]], terra::extract(covariates, st_coordinates(points_comb[[x]]))) %>% 
+  out_att <- cbind(
+    points_comb[[x]], 
+    terra::extract(covariates, st_coordinates(points_comb[[x]]))) %>% 
     Filter(function(y) !all(is.na(y)), .) %>% 
     dplyr::select(Pres, names(covariates)) %>% 
     drop_na()
@@ -200,8 +199,9 @@ Lastly, we need to add the new site series and structural stage points from 2020
 site_ser_old <- st_read(file.path(old_pto, "site_ser_pts.gpkg"), quiet = TRUE)
 
 # Combine all site series data together
-site_ser_pts <- dplyr::select(bgc_2020, `BGC Subzone / Variant`, `Forested Site Series`,
-                              `Nonforested Class`, Long, Lat) %>% 
+site_ser_pts <- dplyr::select(
+  bgc_2020, `BGC Subzone / Variant`, `Forested Site Series`,
+  `Nonforested Class`, Long, Lat) %>% 
   dplyr::mutate(across(c(`Forested Site Series`, `Nonforested Class`), toupper)) %>% 
   dplyr::mutate(
     MapUnit = ifelse(
@@ -216,7 +216,8 @@ site_ser_pts <- dplyr::select(bgc_2020, `BGC Subzone / Variant`, `Forested Site 
   st_intersection(aoi_sf)
 
 # Load previous years structural stage data
-struct_stg_old <- st_read(file.path(old_pto, "struct_stg_pts.gpkg"), quiet = TRUE) %>% 
+struct_stg_old <- st_read(file.path(old_pto, "struct_stg_pts.gpkg"), 
+                          quiet = TRUE) %>% 
   dplyr::select(StructuralStage)
 
 # Combine all structural stage data together
