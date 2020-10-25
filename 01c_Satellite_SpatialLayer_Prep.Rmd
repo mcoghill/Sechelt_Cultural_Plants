@@ -12,17 +12,8 @@ The first thing that will be done is load in the required packages.
 ```{r Load packages, echo = FALSE}
 
 suppressMessages(suppressWarnings({
-  ls <- c("raster", "RStoolbox", "reticulate", "terra", "sf",
-          "googledrive", "tidyverse", "stringi", "rstudioapi", "foreach")
-  new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
-  if(length(new_packages))
-    install.packages(new_packages)
-  if(compareVersion(packageDescription("raster")$Version, "3.3-14") < 0) 
-    devtools::install_github("rspatial/raster")
-  if(compareVersion(packageDescription("terra")$Version, "0.8-5") < 0) 
-    install.packages("rspatial/terra")
-  lapply(ls[ls != "reticulate"], library, character.only = TRUE)[0]
-  rm(ls, new_packages)}))
+  lapply(c("raster", "RStoolbox", "terra", "sf", "googledrive", "tidyverse", 
+           "stringi", "rstudioapi", "foreach"), library, character.only = TRUE)}))
 
 ```
 

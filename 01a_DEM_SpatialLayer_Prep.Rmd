@@ -26,12 +26,8 @@ Before getting started, the first thing to do is to load the required packages. 
 ```{r Load Packages}
 
 suppressMessages(suppressWarnings({
-  ls <- c("tidyverse", "terra", "xml2", "sf", "lubridate", "foreach", "rvest", 
-          "httr", "tools")
-  new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
-  if(length(new_packages)) install.packages(new_packages)
-  lapply(ls, library, character.only = TRUE)[0]  # load the required packages
-  rm(ls, new_packages)
+  lapply(c("tidyverse", "terra", "xml2", "sf", "lubridate", "foreach", "rvest", 
+           "httr", "tools"), library, character.only = TRUE)
   
   source(file.path('_functions', 'get_saga.R'))
   source(file.path("_functions", "derive_terrain.R"))}))

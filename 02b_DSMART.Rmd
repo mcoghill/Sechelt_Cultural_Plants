@@ -14,14 +14,8 @@ First, libraries are loaded and data directories are defined. A custom function 
 ```{r Load Packages}
 
 suppressMessages(suppressWarnings({
-  ls <- c("tidyverse", "terra", "stars", "foreach", "caret", "ranger", "GSIF", 
-          "MLmetrics")
-  new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
-  if(length(new.packages))
-    install.packages(new.packages)
-  
-  lapply(ls, library, character.only = TRUE)[0]
-  rm(ls, new.packages)}))
+  lapply(c("tidyverse", "terra", "sf", "foreach", "caret"), 
+         library, character.only = TRUE)}))
 
 # Load custom DSMART files
 source("./_functions/dsmart_custom/dsmart.R")
