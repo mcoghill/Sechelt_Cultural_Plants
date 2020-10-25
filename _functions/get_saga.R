@@ -37,15 +37,13 @@ get_saga <- function() {
       
     } else {
       message("Multiple instances of saga_cmd.exe found on your system")
-      for(i in saga_dir) {
-        version <- readr::parse_number(system(paste0('"', i, '" -v'), intern = TRUE)[1])
-        if(!version < 7.7) {
-          message("SAGA GIS found in ", i)
-          saga_cmd <- i
-          break
-        }
-      }
-      if(!exists("saga_cmd")) message("Unfortunately, all detected versions of SAGA are outdated. An upgrade will be performed.")
+      saga_cmd <- saga_dir[which.max(sapply(saga_dir, function(i) {
+        readr::parse_number(system(paste0('"', i, '" -v'), intern = TRUE)[1])}))]
+      version <- readr::parse_number(system(paste0('"', saga_cmd, '" -v'), intern = TRUE)[1])
+      if(version < 7.7) rm(saga_cmd) else message("SAGA GIS found in ", saga_cmd) 
+      
+      if(!exists("saga_cmd")) 
+        message("Unfortunately, all detected versions of SAGA are outdated. An upgrade will be performed.")
     }
     
     # Check if directory exists from string
@@ -156,15 +154,13 @@ get_saga <- function() {
       
     } else if(length(saga_dir) > 1) {
       message("Multiple instances of saga_cmd found on your system")
-      for(i in saga_dir) {
-        version <- readr::parse_number(system(paste0('"', i, '" -v'), intern = TRUE)[1])
-        if(!version < 7.7) {
-          message("Using ", i)
-          saga_cmd <- i
-          break
-        }
-      }
-      if(!exists("saga_cmd")) message("Unfortunately, all instances of saga_cmd are outdated. An upgrade will occur.")
+      saga_cmd <- saga_dir[which.max(sapply(saga_dir, function(i) {
+        readr::parse_number(system(paste0('"', i, '" -v'), intern = TRUE)[1])}))]
+      version <- readr::parse_number(system(paste0('"', saga_cmd, '" -v'), intern = TRUE)[1])
+      if(version < 7.7) rm(saga_cmd) else message("SAGA GIS found in ", saga_cmd) 
+      
+      if(!exists("saga_cmd")) 
+        message("Unfortunately, all instances of saga_cmd are outdated. An upgrade will occur.")
     }
     
     if(!exists("saga_cmd")) {
