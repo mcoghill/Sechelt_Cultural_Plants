@@ -16,13 +16,8 @@ This script uses the mlr3 package (machine learning R) in order to make models. 
 ```{r Load Packages}
 
 suppressMessages(suppressWarnings({
-  ls <- c("tidyverse", "tools", "terra", "sf", "ranger", "mlr3verse", "parallel", 
-          "parallelMap", "randomForest", "ModelMap", "foreach", "gdalUtils")
-  new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
-  if(length(new.packages))
-    install.packages(new.packages)
-  lapply(ls, library, character.only = TRUE)[0]
-  rm(ls, new.packages)}))
+  lapply(c("tidyverse", "tools", "terra", "sf", "mlr3verse", "foreach"), 
+         library, character.only = TRUE)}))
 
 # Load custom functions
 source("./_functions/model_gen_mlr3.R")
@@ -36,7 +31,7 @@ Next, directories and certain files are defined. This is where you would also sp
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 25
+map_res <- "TRIM"
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 input_dir <- file.path(
@@ -114,9 +109,9 @@ bgc_layer <- if(any(bgc)) {
   # Create BEC layer if it doesn't exist
   if(!file.exists(file.path(dsmart_site_ser_dir, "inputs", "bgc.tif"))) {
     
-    bgc <- st_read(file.path(shapes_dir, "bec.gpkg"), quiet = TRUE) %>% 
+    bgc_sf <- st_read(file.path(shapes_dir, "bec.gpkg"), quiet = TRUE) %>% 
       mutate(MAP_LABEL = as.factor(MAP_LABEL), bgc = as.numeric(as.factor(MAP_LABEL))) 
-    tem_geom <- st_geometry(bgc)
+    tem_geom <- st_geometry(bgc_sf)
     
     # Fix geometries that aren't polygon/multipolygon
     for(i in 1:length(tem_geom)) {
@@ -124,18 +119,18 @@ bgc_layer <- if(any(bgc)) {
         tem_geom[[i]] <- st_collection_extract(tem_geom[[i]], "POLYGON") %>% 
           st_multipolygon()
     }
-    st_geometry(bgc) <- st_cast(tem_geom, "MULTIPOLYGON")
+    st_geometry(bgc_sf) <- st_cast(tem_geom, "MULTIPOLYGON")
     
     level_table <- unique.data.frame(data.frame(
-      label = as.character(bgc$MAP_LABEL), 
-      value = as.numeric(bgc$MAP_LABEL)))
+      label = as.character(bgc_sf$MAP_LABEL), 
+      value = as.numeric(bgc_sf$MAP_LABEL)))
     
-    bgc_rast <- as.factor(terra::rasterize(vect(bgc), covariates[[1]], field = "bgc"))
+    bgc_rast <- as.factor(terra::rasterize(vect(bgc_sf), rast(terrain_covariates[1]), field = "bgc"))
     levels(bgc_rast) <- level_table
     
     # File needs to be written to disk and then reloaded back into R for proper 
     # feature assignments
-    bgc_rast <- writeRaster(bgc_rast, file.path(dsmart_dir, "inputs", "bgc.tif"), 
+    bgc_rast <- writeRaster(bgc_rast, file.path(dsmart_site_ser_dir, "inputs", "bgc.tif"), 
                             overwrite = TRUE, wopt = list(datatype = "INT2S"))
     sources(bgc_rast)[, "source"]
   } else file.path(dsmart_site_ser_dir, "inputs", "bgc.tif")
@@ -448,159 +443,159 @@ write.csv(best_model_sets, file.path(output_dir, "pres_abs_predictions", "model_
 
 ```{r mlr3 cover modelling}
 
-cover <- foreach(i = names(var_list)) %do% {
-  lapply(cover_points, function(x) {
-    x %>% dplyr::select(any_of(c("Cover", var_list[[i]], "X", "Y"))) %>% 
-      drop_na() %>% 
-      dplyr::rename_with(toupper, c("X", "x", "Y", "y")
-                         [c("X", "x", "Y", "y") %in% names(.)])
-  }) %>% magrittr::set_names(paste0(names(.), i))
-} %>% unlist(recursive = FALSE)
-
-# Write input data
-lapply(names(cover), function(x) {
-  dir_out <- file.path(output_dir, "cover_predictions")
-  dir.create(dir_out, showWarnings = FALSE)
-  y <- st_as_sf(cover[[x]], coords = c("X", "Y"), crs = crs(covariates))
-  st_write(y, file.path(dir_out, paste0("cover_input_data.gpkg")), 
-           layer = x, delete_layer = TRUE)
-})[0]
-
-# To save a bit of memory and in order to see some results as they are 
-# generated, limit the number of models ran at a time by subsetting into groups of 10
-for(i in 1:length(cover)) {
-  
-  dir_out <- file.path(output_dir, "cover_predictions", names(cover[i]))
-  dir.create(dir_out, showWarnings = FALSE)
-  
-  # Run the models. Each is a 10-fold spatial cross validation repeated 5 times
-  cover_models <- model_gen_mlr3(traindat = cover[i], target = "Cover", 
-                                 feature_selection = "filter", type = "response")
-  
-  # Extract performance metrics for each model
-  cover_performance <- sapply(names(cover_models$learners), function(x) {
-    
-    folds <- cover_models$learners[[x]]$instance_args$resampling$param_set$values$folds
-    reps <- cover_models$learners[[x]]$instance_args$resampling$param_set$values$repeats
-    n_iters <- cover_models$learners[[x]]$archive$benchmark_result$n_resample_results
-    
-    tune_results <- data.frame(
-      filter_fraction = cover_models$learners[[x]]$archive$data()$importance.filter.frac, 
-      regr.mse = cover_models$learners[[x]]$archive$data()$regr.mse
-    ) %>% arrange(regr.mse)
-    
-    model_data <- foreach(j = 1:n_iters) %do% {
-      test_data <- cover_models$learners[[x]]$archive$benchmark_result$resample_result(j)$
-        resampling$instance %>% 
-        cbind(batch_nr = j, 
-              filter_frac = cover_models$learners[[x]]$model$tuning_instance$
-                archive$data()$importance.filter.frac[j])
-      train_data <- foreach(k = 1:reps, .combine = rbind) %do% { 
-        foreach(l = 1:folds, .combine = rbind) %do% {
-          test_rows <- dplyr::filter(test_data, rep == k, fold == l)
-          missing <- as.numeric(rownames(pres_abs[[i]])[
-            !as.numeric(rownames(pres_abs[[i]])) %in% test_rows$row_id])
-          data.frame(row_id = missing, rep = k, fold = l, batch_nr = j)
-        }
-      } %>% 
-        cbind(filter_frac = cover_models$learners[[x]]$model$tuning_instance$
-                archive$data()$importance.filter.frac[j])
-      return(list(test_data = test_data, train_data = train_data))
-    } %>% magrittr::set_names(paste0(
-      "filter_frac = ", 
-      cover_models$learners[[x]]$model$tuning_instance$archive$data()$
-        importance.filter.frac))
-    
-    train_data <- do.call(rbind, lapply(model_data, "[[", "train_data")) %>% 
-      magrittr::set_rownames(NULL)
-    test_data <- do.call(rbind, lapply(model_data, "[[", "test_data")) %>% 
-      magrittr::set_rownames(NULL)
-     
-    imp <- data.frame(importance = cover_models$learners[[x]]$learner$model$
-                        importance$scores) %>% 
-      rownames_to_column("layer") %>% 
-      dplyr::filter(layer %in% cover_models$learners[[x]]$learner$model$
-                      importance$features) %>% 
-      arrange(desc(importance))
-    
-    out <- utils::capture.output(cover_models$learners[[x]]$learner$model$regr.ranger$model)
-    best_model <- cover_models$learners[[x]]$learner$model$regr.ranger$model
-    
-    write.csv(tune_results, file = file.path(dir_out, paste0(x, "_cover_tune_results.csv")),
-              row.names = FALSE)
-    cat(out, file = file.path(dir_out, paste0(x, "_cover_model.txt")), sep = "\n")
-    save(best_model, file = file.path(dir_out, paste0(x, "_cover_model.RData")))
-    write.csv(test_data, file = file.path(
-      dir_out, paste0(x, "_cover_model_resampling_test_data.csv")), 
-      row.names = FALSE)
-    write.csv(train_data, file = file.path(
-      dir_out, paste0(x, "_cover_model_resampling_train_data.csv")), 
-      row.names = FALSE)
-    write.csv(imp, file.path(dir_out, paste0(x, "_cover_var_importance.csv")), 
-              row.names = FALSE)
-    write.csv(cover[i][[x]], file.path(dir_out, paste0(x, "_cover_input_data.csv")), 
-              row.names = FALSE)
-    
-    return(list(
-      tune_results = tune_results,
-      best_model = best_model, 
-      resampling = list(test_data = test_data, train_data = train_data),
-      importance = imp
-    ))
-    
-  }, simplify = FALSE, USE.NAMES = TRUE)
-  
-  # Run the map predictions
-  cover_predictions <- sapply(names(cover_models$learners), function(x) {
-    
-    cov_sub <- subset(covariates, cover_models$tasks[[x]]$col_roles$feature)
-    
-    for(j in 1:nrow(mask_layers)) {
-      if(mask_layers[j, "layer"] %in% names(cov_sub)) {
-        pred_mask <- mask_layers[j, "layer"]
-        break
-      }
-    }
-    
-    out <- predict_landscape_mlr3(
-      learner = cover_models$learners[[x]],
-      task = cover_models$tasks[[x]], 
-      type = "response",
-      covariates = cov_sub,
-      tilesize = 500, 
-      outDir = tile_dir, 
-      mask_layer = pred_mask
-    )
-    
-    # with predict_landscape_mlr3 type set to "response", the output is a single raster image
-    writeRaster(
-      out, 
-      file.path(dir_out, paste0(x, "_cover.tif")), 
-      overwrite = TRUE)
-    
-    return(out)
-    
-  }, simplify = FALSE, USE.NAMES = TRUE)
-}
-
-# Using the available cover model results, find the best models for each species
-# First, collect all of that data together and then use an upper percentile or top
-# number of models from the entire collection for a single species
-best_model_sets <- foreach(x = c("CORNCAN", "RUBUSPE"), .combine = rbind) %do% {
-  
-  sp_dirs <- dir(file.path(output_dir, "cover_predictions"), pattern = x, 
-                 full.names = TRUE)
-  
-  result_list <- foreach(i = sp_dirs, .combine = rbind) %do% {
-    
-    read.csv(file.path(i, list.files(i, pattern = "_tune_results.csv$"))) %>% 
-      dplyr::slice(which.min(regr.mse)) %>% 
-      mutate(model = basename(i))
-  } %>% arrange(regr.mse)
-}
-
-write.csv(best_model_sets, file.path(output_dir, "cover_predictions", "model_performance_index.csv"), 
-          row.names = FALSE)
+# cover <- foreach(i = names(var_list)) %do% {
+#   lapply(cover_points, function(x) {
+#     x %>% dplyr::select(any_of(c("Cover", var_list[[i]], "X", "Y"))) %>% 
+#       drop_na() %>% 
+#       dplyr::rename_with(toupper, c("X", "x", "Y", "y")
+#                          [c("X", "x", "Y", "y") %in% names(.)])
+#   }) %>% magrittr::set_names(paste0(names(.), i))
+# } %>% unlist(recursive = FALSE)
+# 
+# # Write input data
+# lapply(names(cover), function(x) {
+#   dir_out <- file.path(output_dir, "cover_predictions")
+#   dir.create(dir_out, showWarnings = FALSE)
+#   y <- st_as_sf(cover[[x]], coords = c("X", "Y"), crs = crs(covariates))
+#   st_write(y, file.path(dir_out, paste0("cover_input_data.gpkg")), 
+#            layer = x, delete_layer = TRUE)
+# })[0]
+# 
+# # To save a bit of memory and in order to see some results as they are 
+# # generated, limit the number of models ran at a time by subsetting into groups of 10
+# for(i in 1:length(cover)) {
+#   
+#   dir_out <- file.path(output_dir, "cover_predictions", names(cover[i]))
+#   dir.create(dir_out, showWarnings = FALSE)
+#   
+#   # Run the models. Each is a 10-fold spatial cross validation repeated 5 times
+#   cover_models <- model_gen_mlr3(traindat = cover[i], target = "Cover", 
+#                                  feature_selection = "filter", type = "response")
+#   
+#   # Extract performance metrics for each model
+#   cover_performance <- sapply(names(cover_models$learners), function(x) {
+#     
+#     folds <- cover_models$learners[[x]]$instance_args$resampling$param_set$values$folds
+#     reps <- cover_models$learners[[x]]$instance_args$resampling$param_set$values$repeats
+#     n_iters <- cover_models$learners[[x]]$archive$benchmark_result$n_resample_results
+#     
+#     tune_results <- data.frame(
+#       filter_fraction = cover_models$learners[[x]]$archive$data()$importance.filter.frac, 
+#       regr.mse = cover_models$learners[[x]]$archive$data()$regr.mse
+#     ) %>% arrange(regr.mse)
+#     
+#     model_data <- foreach(j = 1:n_iters) %do% {
+#       test_data <- cover_models$learners[[x]]$archive$benchmark_result$resample_result(j)$
+#         resampling$instance %>% 
+#         cbind(batch_nr = j, 
+#               filter_frac = cover_models$learners[[x]]$model$tuning_instance$
+#                 archive$data()$importance.filter.frac[j])
+#       train_data <- foreach(k = 1:reps, .combine = rbind) %do% { 
+#         foreach(l = 1:folds, .combine = rbind) %do% {
+#           test_rows <- dplyr::filter(test_data, rep == k, fold == l)
+#           missing <- as.numeric(rownames(pres_abs[[i]])[
+#             !as.numeric(rownames(pres_abs[[i]])) %in% test_rows$row_id])
+#           data.frame(row_id = missing, rep = k, fold = l, batch_nr = j)
+#         }
+#       } %>% 
+#         cbind(filter_frac = cover_models$learners[[x]]$model$tuning_instance$
+#                 archive$data()$importance.filter.frac[j])
+#       return(list(test_data = test_data, train_data = train_data))
+#     } %>% magrittr::set_names(paste0(
+#       "filter_frac = ", 
+#       cover_models$learners[[x]]$model$tuning_instance$archive$data()$
+#         importance.filter.frac))
+#     
+#     train_data <- do.call(rbind, lapply(model_data, "[[", "train_data")) %>% 
+#       magrittr::set_rownames(NULL)
+#     test_data <- do.call(rbind, lapply(model_data, "[[", "test_data")) %>% 
+#       magrittr::set_rownames(NULL)
+#      
+#     imp <- data.frame(importance = cover_models$learners[[x]]$learner$model$
+#                         importance$scores) %>% 
+#       rownames_to_column("layer") %>% 
+#       dplyr::filter(layer %in% cover_models$learners[[x]]$learner$model$
+#                       importance$features) %>% 
+#       arrange(desc(importance))
+#     
+#     out <- utils::capture.output(cover_models$learners[[x]]$learner$model$regr.ranger$model)
+#     best_model <- cover_models$learners[[x]]$learner$model$regr.ranger$model
+#     
+#     write.csv(tune_results, file = file.path(dir_out, paste0(x, "_cover_tune_results.csv")),
+#               row.names = FALSE)
+#     cat(out, file = file.path(dir_out, paste0(x, "_cover_model.txt")), sep = "\n")
+#     save(best_model, file = file.path(dir_out, paste0(x, "_cover_model.RData")))
+#     write.csv(test_data, file = file.path(
+#       dir_out, paste0(x, "_cover_model_resampling_test_data.csv")), 
+#       row.names = FALSE)
+#     write.csv(train_data, file = file.path(
+#       dir_out, paste0(x, "_cover_model_resampling_train_data.csv")), 
+#       row.names = FALSE)
+#     write.csv(imp, file.path(dir_out, paste0(x, "_cover_var_importance.csv")), 
+#               row.names = FALSE)
+#     write.csv(cover[i][[x]], file.path(dir_out, paste0(x, "_cover_input_data.csv")), 
+#               row.names = FALSE)
+#     
+#     return(list(
+#       tune_results = tune_results,
+#       best_model = best_model, 
+#       resampling = list(test_data = test_data, train_data = train_data),
+#       importance = imp
+#     ))
+#     
+#   }, simplify = FALSE, USE.NAMES = TRUE)
+#   
+#   # Run the map predictions
+#   cover_predictions <- sapply(names(cover_models$learners), function(x) {
+#     
+#     cov_sub <- subset(covariates, cover_models$tasks[[x]]$col_roles$feature)
+#     
+#     for(j in 1:nrow(mask_layers)) {
+#       if(mask_layers[j, "layer"] %in% names(cov_sub)) {
+#         pred_mask <- mask_layers[j, "layer"]
+#         break
+#       }
+#     }
+#     
+#     out <- predict_landscape_mlr3(
+#       learner = cover_models$learners[[x]],
+#       task = cover_models$tasks[[x]], 
+#       type = "response",
+#       covariates = cov_sub,
+#       tilesize = 500, 
+#       outDir = tile_dir, 
+#       mask_layer = pred_mask
+#     )
+#     
+#     # with predict_landscape_mlr3 type set to "response", the output is a single raster image
+#     writeRaster(
+#       out, 
+#       file.path(dir_out, paste0(x, "_cover.tif")), 
+#       overwrite = TRUE)
+#     
+#     return(out)
+#     
+#   }, simplify = FALSE, USE.NAMES = TRUE)
+# }
+# 
+# # Using the available cover model results, find the best models for each species
+# # First, collect all of that data together and then use an upper percentile or top
+# # number of models from the entire collection for a single species
+# best_model_sets <- foreach(x = c("CORNCAN", "RUBUSPE"), .combine = rbind) %do% {
+#   
+#   sp_dirs <- dir(file.path(output_dir, "cover_predictions"), pattern = x, 
+#                  full.names = TRUE)
+#   
+#   result_list <- foreach(i = sp_dirs, .combine = rbind) %do% {
+#     
+#     read.csv(file.path(i, list.files(i, pattern = "_tune_results.csv$"))) %>% 
+#       dplyr::slice(which.min(regr.mse)) %>% 
+#       mutate(model = basename(i))
+#   } %>% arrange(regr.mse)
+# }
+# 
+# write.csv(best_model_sets, file.path(output_dir, "cover_predictions", "model_performance_index.csv"), 
+#           row.names = FALSE)
 
 ```
 
@@ -646,23 +641,23 @@ pres_reorder <- sapply(model_outs, function(x) {
 }, simplify = FALSE, USE.NAMES = TRUE)
 
 # Below is the same as pres/abs modelling, but save cover outputs
-cover_outs <- rast(file.path(output_dir, "cover_predictions", model_outs, 
-                    paste0(model_outs, "_cover.tif"))) %>% 
-  magrittr::set_names(model_outs)
-
-cover_stats <- sapply(c("mean", "min", "max", "sd"), function(x) 
-  zonal(cover_outs, site_series_z, fun = x, na.rm = TRUE), 
-  simplify = FALSE, USE.NAMES = TRUE)
-
-cover_reorder <- sapply(model_outs, function(x) {
-  z <- lapply(cover_stats, function(y) y[, c("zone", x)]) %>% Reduce(
-    function(x, y, ...) merge(x, y, all = TRUE, by = "zone", ...), .) %>% 
-    magrittr::set_names(c("zone", "mean", "min", "max", "sd")) %>% 
-    merge(dsmart_lookup, ., by.x = "code", by.y = "zone")
-  write.csv(z, file.path(output_dir, "cover_predictions", x, 
-                         paste0(x, "_cover_zonal_stats.csv")), 
-            row.names = FALSE)
-  return(z)
-}, simplify = FALSE, USE.NAMES = TRUE)
+# cover_outs <- rast(file.path(output_dir, "cover_predictions", model_outs, 
+#                     paste0(model_outs, "_cover.tif"))) %>% 
+#   magrittr::set_names(model_outs)
+# 
+# cover_stats <- sapply(c("mean", "min", "max", "sd"), function(x) 
+#   zonal(cover_outs, site_series_z, fun = x, na.rm = TRUE), 
+#   simplify = FALSE, USE.NAMES = TRUE)
+# 
+# cover_reorder <- sapply(model_outs, function(x) {
+#   z <- lapply(cover_stats, function(y) y[, c("zone", x)]) %>% Reduce(
+#     function(x, y, ...) merge(x, y, all = TRUE, by = "zone", ...), .) %>% 
+#     magrittr::set_names(c("zone", "mean", "min", "max", "sd")) %>% 
+#     merge(dsmart_lookup, ., by.x = "code", by.y = "zone")
+#   write.csv(z, file.path(output_dir, "cover_predictions", x, 
+#                          paste0(x, "_cover_zonal_stats.csv")), 
+#             row.names = FALSE)
+#   return(z)
+# }, simplify = FALSE, USE.NAMES = TRUE)
 
 ```
