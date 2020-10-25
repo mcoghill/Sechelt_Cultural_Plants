@@ -10,13 +10,8 @@ The purpose of this document is to once again run modelling using similar machin
 ```{r Load Packages}
 
 suppressMessages(suppressWarnings({
-  ls <- c("tidyverse", "tools", "terra", "sf", "ranger", "mlr3verse", "parallel", 
-          "parallelMap", "randomForest", "ModelMap", "foreach", "gdalUtils")
-  new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
-  if(length(new.packages))
-    install.packages(new.packages)
-  lapply(ls, library, character.only = TRUE)[0]
-  rm(ls, new.packages)}))
+  lapply(c("tidyverse", "tools", "terra", "sf", "mlr3verse", "foreach"), 
+         library, character.only = TRUE)}))
 
 # Load custom scripts
 source("./_functions/model_gen_mlr3.R")
@@ -30,7 +25,7 @@ Next, define the locations and options for where files are located and how to co
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 25
+map_res <- "TRIM"
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 input_dir <- file.path(
@@ -98,7 +93,7 @@ climate_covariates <- if(any(climate_vars)) {
 
 bgc_layer <- if(any(bgc)) {
   bgc_vector <- vect(
-    file.path(AOI_dir, "0_raw_inputs", "base_layers", paste0(map_res, "m"), "bec.gpkg"))
+    file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir, "bec.gpkg"))
   bgc_raster <- terra::rasterize(bgc_vector, rast(terrain_covariates[1])) %>% 
     magrittr::set_names("bgc") %>% 
     writeRaster(
