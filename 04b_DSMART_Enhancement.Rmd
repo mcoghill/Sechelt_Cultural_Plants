@@ -10,17 +10,8 @@ The purpose of this document is to create a new DSMART site series and structura
 ```{r Load Packages}
 
 suppressMessages(suppressWarnings({
-  ls <- c("tidyverse", "terra", "sf", "raster", "foreach", "caret", "ranger", 
-          "GSIF", "gdalUtils", "MLmetrics")
-  new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
-  if(length(new.packages))
-    install.packages(new.packages)
-  
-  # Make sure terra package is up to date! This may take a moment
-  if(compareVersion(as.character(packageVersion("terra")), "0.7-4") < 0)
-    install.packages("terra")
-  lapply(ls, library, character.only = TRUE)[0]
-  rm(ls, new.packages)}))
+  lapply(c("tidyverse", "terra", "sf", "foreach", "caret"), 
+         library, character.only = TRUE)}))
 
 # Load custom DSMART files
 source("./_functions/dsmart_custom/dsmart.R")
@@ -33,7 +24,7 @@ Next, set the directories and processing options used in this DSMART run.
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 25
+map_res <- "TRIM"
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
@@ -43,7 +34,7 @@ pto <- file.path(AOI_dir, "1_map_inputs", "field_data", "processed_2020", res_di
 
 include_bgc <- FALSE
 use_caret <- TRUE
-run <- "site_ser" # option of "struct_stg" or "site_ser"
+run <- "struct_stg" # option of "struct_stg" or "site_ser"
 old_dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2019", res_dir, run)
 dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2020", res_dir, run)
 input_dir <- file.path(dsmart_dir, "inputs")
@@ -164,9 +155,9 @@ if(run == "site_ser") {
   tem <- terra::vect(file.path(old_dsmart_dir, "inputs", 
                                paste0("dsmart_", run, "_polys.gpkg")))
   tem$MapUnit1_num <- as.numeric(as.factor(tem$MapUnit1))
-  tem_rast <- terra::rasterize(tem, covariates[[1]], field = "MapUnit1_num", 
-                               filename = file.path(dsmart_dir, "simple", "site_series_simple.tif"), 
-                               overwrite = TRUE)
+  tem_rast <- terra::rasterize(
+    tem, covariates[[1]], field = "MapUnit1_num", overwrite = TRUE, 
+    filename = file.path(dsmart_dir, "simple", "site_series_simple.tif"))
   
   # Generate probabilities based on composition
   ss_calls <- unique(composition$MapUnit)
@@ -188,9 +179,11 @@ if(run == "site_ser") {
   
   tem_props <- foreach(i = unique(tem_remake$MapUnit), .combine = c) %do% {
     tem_remake[tem_remake$MapUnit == i] %>% 
-      magrittr::set_names(c(names(.)[names(.) != "proportion"], paste0("probability_", i))) %>% 
-      rasterize(covariates[[1]], field = paste0("probability_", i), overwrite = TRUE, 
-                filename = file.path(dsmart_dir, "simple", paste0("probability_", i, ".tif")))
+      magrittr::set_names(c(names(.)[names(.) != "proportion"], 
+                            paste0("probability_", i))) %>% 
+      rasterize(
+        covariates[[1]], field = paste0("probability_", i), overwrite = TRUE, 
+        filename = file.path(dsmart_dir, "simple", paste0("probability_", i, ".tif")))
   }
 }
 
@@ -198,7 +191,7 @@ if(run == "site_ser") {
 
 After the input data is loaded, run the DSMART algorithm. Pretty much the only difference from before is that there are additional observations that should hopefully create better predictions.
 
-```{r Editing the dsmart functions}
+```{r DSMART parameters}
 
 # Note: for randomForest model method, you only need to have the mtry defined in 
 # the tuneGrid part. Also note that if class probabilities are requested, the 
@@ -228,7 +221,14 @@ if(use_caret) {
   args.model <- NULL
 }
 
-dsm <- dsmart(
+
+```
+
+
+
+```{r DSMART run}
+
+dsm <- try(dsmart(
   covariates = covariates, 
   polygons = polygons, 
   composition = composition,
@@ -242,8 +242,7 @@ dsm <- dsmart(
   outputdir = dsmart_dir, 
   factors = factors,
   type = "prob", 
-  nprob = 1
-)
+  nprob = 1))
 
 # Save the file to a better location
 out <- rast(list.files(dsm$summarise$locations$mostprobable, 
