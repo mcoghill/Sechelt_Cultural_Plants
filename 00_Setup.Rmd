@@ -14,12 +14,23 @@ The intention of this script is to properly set up the computing environment and
 
 ```{r}
 
-# First, check your R version
-if(as.numeric(version$major) < 4) {
-  if("installr"[!"installr" %in% installed.packages()[, "Package"]])
-    install.packages("installr")
-  installr::install.R()
-  stop(paste0("\r        
+# Change default package installation option to prefer binary packages first
+def_opt <- getOption("install.packages.compile.from.source")
+options(install.packages.compile.from.source = "never")
+cpus <- as.numeric(Sys.getenv("NUMBER_OF_PROCESSORS"))
+
+# Some packages require devtools to be installed since they are not on CRAN and
+# therefore need to be downloaded from github. Do that first
+if(!"devtools" %in% installed.packages()[, "Package"])
+  install.packages("devtools", Ncpus = cpus)
+
+# First, check your system and your R version
+if(.Platform$OS.type == "windows") {
+  if(!"installr" %in% installed.packages()[, "Package"])
+    install.packages("installr", Ncpus = cpus)
+  if(as.numeric(version$major) < 4) {
+    installr::install.R()
+    stop(paste0("\r        
   ******************************************************************************
   R has now been upgraded to the latest version!
   With RStudio open, select \"Tools\" > \"Global Options\". In the \"General\" 
@@ -32,21 +43,17 @@ if(as.numeric(version$major) < 4) {
   You must now close and reopen RStudio in order for the changes to take effect.
   ******************************************************************************
   "))
-}
-
-# Some packages require devtools to be installed since they are not on CRAN and
-# therefore need to be downloaded from github. Do that first
-if(!"devtools" %in% installed.packages()[, "Package"])
-  install.packages("devtools")
-
-# One of the packages that will be used below is raster, and it needs to be the
-# development version 3.3-14. The package requires compilation, accomplished by
-# rtools. Install rtools here if it isn't already.
-
-if(.Platform$OS.type == "windows") {
+  } else {
+    message("R minimum requirements met")
+  }
+  
+  # One of the packages that will be used below is raster, and it needs to be
+  # the development version 3.3-14. The package requires compilation,
+  # accomplished by rtools on Windows machines. Install rtools here if it
+  # isn't already.
   if(!devtools::find_rtools()) {
     if(!"curl" %in% installed.packages()[, "Package"])
-      install.packages("curl")
+      install.packages("curl", Ncpus = cpus)
     if(.Platform$r_arch == "x64") {
       url <- "https://cran.r-project.org/bin/windows/Rtools/rtools40-x86_64.exe"
     } else {
@@ -65,75 +72,70 @@ if(.Platform$OS.type == "windows") {
     ****************************************************************************
     "
     )
+  } else {
+    # Confirm that rtools is installed properly. If it didn't, follow the 
+    # instructions on the rtools website: 
+    # https://cran.r-project.org/bin/windows/Rtools/
+    if(Sys.which("make") == "") 
+      stop("rtools 4.0 is installed but not registered in your sytem PATH. Did
+      \ryou close and reopen RStudio? If error persists after restarting, follow 
+      \rthe instructions at https://cran.r-project.org/bin/windows/Rtools/")
+  }
+} else {
+  if(as.numeric(version$major) < 4) {
+    stop("You must upgrade your R version to be at least version 4.0.0. Please
+         \rvisit https://cran.r-project.org/ to download the latest version for
+         \r your system")
+  } else {
+    message("R minimum requirements met")
   }
 }
 
-# Confirm that rtools is installed properly. If it didn't, follow the 
-# instructions on the rtools website: 
-# https://cran.r-project.org/bin/windows/Rtools/
-if(Sys.which("make") == "") 
-  stop("Installation of rtools 4.0 failed. Follow the instructions at 
-       \rhttps://cran.r-project.org/bin/windows/Rtools/")
+# Check that you are using RStudio
+if(!"rstudioapi" %in% installed.packages()[, "Package"])
+  install.packages("rstudioapi", Ncpus = cpus)
+if(!rstudioapi::isAvailable()) {
+  stop("RStudio is not running in this session. Have you installed it on your
+       \rmachine? RStudio is available from https://rstudio.com/products/rstudio/download/#download")
+} else {
+  message("RStudio is running")
+}
+
+# One of the packages that will be used below is raster, and it needs to be the
+# development version 3.3-14. The package requires compilation, accomplished by
+# rtools on Windows machines. Install rtools here if it isn't already.
 
 # List of packages used by all scripts
-ls <- c("tidyverse", "terra", "xml2", "sf", "lubridate", "foreach", "rvest", 
-        "httr", "tools", "bcdata", "bcmaps", "future.apply", "raster", 
-        "RStoolbox", "reticulate", "googledrive", "stringi", "rstudioapi",
-        "readxl", "svSocket", "RODBC", "caret", "ranger", "GSIF", "MLmetrics",
-        "mlr3verse", "mlr3fselect")
+ls <- c("tidyverse", "raster", "sf", "terra", "foreach", "tools", "bcdata", 
+        "bcmaps", "future.apply", "RStoolbox", "reticulate", "googledrive", 
+        "stringi", "stars", "svSocket", "RODBC", "caret", "ranger", "GSIF",
+        "MLmetrics", "mlr3verse", "mlr3fselect")
 
-if(ls[!ls %in% installed.packages()[, "Package"]])
-  install.packages(ls)
+new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+if(length(new_packages)) 
+  install.packages(new_packages, Ncpus = cpus)
 
 # Standalone packages that require installation from github
-if(!"mlr3spatiotempcv" %in% installed.packages()[, "Package"])
-  devtools::install_github("mlr-org/mlr3spatiotempcv")
+if(!"mlr3spatiotempcv" %in% installed.packages()[, "Package"] || 
+   compareVersion(packageDescription("mlr3spatiotempcv")$Version, "0.0.0.9009") < 0)
+  devtools::install_github("mlr-org/mlr3spatiotempcv", upgrade = TRUE, force = TRUE)
 
-# # 1a
-# ls <- c("tidyverse", "terra", "xml2", "sf", "lubridate", "foreach", "rvest", 
-#         "httr", "tools")
-# # 1b
-# ls <- c(ls, "bcdata", "bcmaps", "future.apply")
-# 
-# # 1c
-# ls <- c(ls, "raster", "RStoolbox", "reticulate", 
-#         "googledrive", "stringi", "rstudioapi", "foreach")
-# 
-# # 2a, removed plyr
-# ls <- c(ls, "tidyverse", "readxl", "svSocket", "RODBC", "sf", "terra", "foreach")
-# 
-# # 2b, removed raster and gdalUtils
-# ls <- c(ls, "tidyverse", "terra", "sf", "foreach", "caret", "ranger", "GSIF", "MLmetrics")
-# 
-# # 2c, removed parallel, parallelMap, randomForest, ModelMap, and gdalUtils
-# ls <- c(ls, "tidyverse", "tools", "terra", "sf", "ranger", "mlr3verse", "foreach")
-# 
-# # 3
-# ls <- c(ls, "tidyverse", "terra", "foreach")
-# 
-# # 4a, removed plyr
-# ls <- c(ls, "tidyverse", "readxl", "foreach", "sf", "terra")
-# 
-# # 4b, removed raster and gdalUtils
-# ls <- c(ls, "tidyverse", "terra", "sf", "foreach", "caret", "ranger", 
-#           "GSIF", "MLmetrics")
-# 
-# # 4c, removed parallel, parallelMap, randomForest, ModelMap, and gdalUtils
-# ls <- c(ls, "tidyverse", "tools", "terra", "sf", "ranger", "mlr3verse", "foreach")
-# 
-# # 5
-# ls <- c(ls, "tidyverse", "terra")
-# 
-# # scripts
-# ls <- c(ls, "mlr3fselect", "mlr3spatiotempcv")
-# 
-# all <- unique(ls)
-
-# Requirements
-if(compareVersion(packageDescription("terra")$Version, "0.8-5") < 0) 
-  install.packages("rspatial/terra")
+# Required minimum versions for certain packages
 if(compareVersion(packageDescription("raster")$Version, "3.3-14") < 0) 
-  devtools::install_github("rspatial/raster")
+  devtools::install_github("rspatial/raster", upgrade = TRUE, force = TRUE)
+if(compareVersion(packageDescription("terra")$Version, "0.8-5") < 0) 
+  install.packages("rspatial/terra", Ncpus = cpus)
+
+# Return default option
+options(install.packages.compile.from.source = def_opt)
+
+# Now that packages are installed, make sure a valid installation of SAGA GIS is
+# downloaded to your PC. This is used in the first script to generate multiple
+# terrain layers used in modelling later on
+source(file.path("_functions", "get_saga.R"))
+saga_cmd <- get_saga()
+saga_ver <- system2(saga_cmd, "-v", stdout = TRUE)
+saga_ver <- unlist(regmatches(saga_ver, regexec("Version:\\s*(.*?)\\s*\\(", saga_ver)))[2]
 
 ```
 
