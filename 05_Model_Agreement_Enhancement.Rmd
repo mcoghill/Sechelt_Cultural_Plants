@@ -20,7 +20,7 @@ Then, set up the directories.
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- "TRIM"
+map_res <- 4
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 model_dir <- file.path(AOI_dir, "4_map_predictions_enhanced", res_dir)

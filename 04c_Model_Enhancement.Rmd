@@ -25,7 +25,7 @@ Next, define the locations and options for where files are located and how to co
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- "TRIM"
+map_res <- 4
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 input_dir <- file.path(

@@ -24,7 +24,7 @@ Next, set the directories and processing options used in this DSMART run.
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- "TRIM"
+map_res <- 4
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
@@ -34,7 +34,7 @@ pto <- file.path(AOI_dir, "1_map_inputs", "field_data", "processed_2020", res_di
 
 include_bgc <- FALSE
 use_caret <- TRUE
-run <- "struct_stg" # option of "struct_stg" or "site_ser"
+run <- "site_ser" # option of "struct_stg" or "site_ser"
 old_dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2019", res_dir, run)
 dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2020", res_dir, run)
 input_dir <- file.path(dsmart_dir, "inputs")
