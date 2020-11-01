@@ -76,35 +76,32 @@ predict_landscape <- function(
     
     # Do a test run on a single layer, if any variable is all NA then return to
     # top of loop
-    r <- stars::read_stars(cov[1],
-                           RasterIO = list(nXOff  = t$offset.x[1] + 1, 
-                                           nYOff  = t$offset.y[1] + 1,
-                                           nXSize = t$region.dim.x[1],
-                                           nYSize = t$region.dim.y[1]))
+    r <- stars::read_stars(
+      cov[1], RasterIO = list(nXOff  = t$offset.x[1] + 1, 
+                              nYOff  = t$offset.y[1] + 1,
+                              nXSize = t$region.dim.x[1],
+                              nYSize = t$region.dim.y[1]))
     
     if(!any(sapply(r, function(x) all(is.na(x))))) {
       # Load all tile data from each raster, if any variable is all NA then
-      # return to top of loop
+      # return to top of loop. Handle errors where necessary
       cat("\r...Loading raster data...")
-      r_init <- try(stars::read_stars(
-        cov, RasterIO = list(nXOff  = t$offset.x[1] + 1,
-                             nYOff  = t$offset.y[1] + 1,
-                             nXSize = t$region.dim.x[1],
-                             nYSize = t$region.dim.y[1])) %>%
-          magrittr::set_names(names(covariates)), silent = TRUE)
-      
-      # Error handling workaround
-      r <- if(class(r_init) == "try-error") {
-       lapply(cov, stars::read_stars, RasterIO = list(
+      r <- tryCatch({
+        stars::read_stars(
+          cov, RasterIO = list(nXOff  = t$offset.x[1] + 1,
+                               nYOff  = t$offset.y[1] + 1,
+                               nXSize = t$region.dim.x[1],
+                               nYSize = t$region.dim.y[1]))
+      }, error = function(e) {
+        lapply(cov, stars::read_stars, RasterIO = list(
           nXOff  = t$offset.x[1] + 1, 
           nYOff  = t$offset.y[1] + 1,
           nXSize = t$region.dim.x[1],
           nYSize = t$region.dim.y[1])) %>% 
-          magrittr::set_names(names(covariates)) %>%
           lapply("[[", 1) %>%
           stars::st_as_stars(dimensions = stars::st_dimensions(r), 
-                             coordinates = st_coordinates(r))
-      } else r_init
+                             coordinates = st_coordinates(r))}) %>% 
+        magrittr::set_names(names(covariates))
       
       cat("done!\n")
       
