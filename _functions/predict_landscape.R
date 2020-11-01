@@ -91,11 +91,11 @@ predict_landscape <- function(
                              nYOff  = t$offset.y[1] + 1,
                              nXSize = t$region.dim.x[1],
                              nYSize = t$region.dim.y[1])) %>%
-          magrittr::set_names(tools::file_path_sans_ext(names(.))), silent = TRUE)
+          magrittr::set_names(names(covariates)), silent = TRUE)
       
       # Error handling workaround
-      if(class(r_init) == "try-error") {
-        r <- lapply(cov, stars::read_stars, RasterIO = list(
+      r <- if(class(r_init) == "try-error") {
+       lapply(cov, stars::read_stars, RasterIO = list(
           nXOff  = t$offset.x[1] + 1, 
           nYOff  = t$offset.y[1] + 1,
           nXSize = t$region.dim.x[1],
@@ -104,7 +104,7 @@ predict_landscape <- function(
           lapply("[[", 1) %>%
           stars::st_as_stars(dimensions = stars::st_dimensions(r), 
                              coordinates = st_coordinates(r))
-      } else r <- r_init
+      } else r_init
       
       cat("done!\n")
       
