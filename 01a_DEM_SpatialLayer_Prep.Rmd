@@ -23,11 +23,11 @@ The purpose of this document is to derive desired lower resolution DEM's from a 
 
 Before getting started, the first thing to do is to load the required packages. Most of the processing work will actually be accomplished by SAGA GIS, thus there are only a few packages required here.
 
-```{r Load Packages}
+```{r Load Packages, echo=TRUE, results='hide'}
 
 suppressMessages(suppressWarnings({
   lapply(c("tidyverse", "terra", "xml2", "sf", "lubridate", "foreach", "rvest", 
-           "httr", "tools"), library, character.only = TRUE)
+           "httr", "tools"), library, character.only = TRUE)[0]
   
   source(file.path('_functions', 'get_saga.R'))
   source(file.path("_functions", "derive_terrain.R"))}))

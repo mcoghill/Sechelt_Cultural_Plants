@@ -7,10 +7,10 @@ output: html_document
 
 The purpose of this file is to pull together all of the models run in the previous script and merge them together in order to find the areas where models are agreeing that a plant is present in a given raster cell. This is a fairly simple idea that was founded by Michael Ryan in our discussions. First, load the required packages.
 
-```{r Load Packages}
+```{r Load Packages, echo=TRUE, results='hide'}
 
 suppressMessages(suppressWarnings({
-  lapply(c("tidyverse", "terra", "foreach"), library, character.only = TRUE)}))
+  lapply(c("tidyverse", "terra", "foreach"), library, character.only = TRUE)[0]}))
 
 ```
 

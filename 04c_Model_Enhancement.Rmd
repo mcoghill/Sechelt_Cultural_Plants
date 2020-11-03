@@ -7,11 +7,11 @@ output: html_document
 
 The purpose of this document is to once again run modelling using similar machine learning techniques from before. At this point, there is more data available so that hopefully modelling plant presence/absence should be more accurate. Again, this script uses the `mlr3` package, so some of the scripting language looks strange. First, load the required packages.
 
-```{r Load Packages}
+```{r Load Packages, echo=TRUE, results='hide'}
 
 suppressMessages(suppressWarnings({
   lapply(c("tidyverse", "tools", "terra", "sf", "mlr3verse", "foreach"), 
-         library, character.only = TRUE)}))
+         library, character.only = TRUE)[0]}))
 
 # Load custom scripts
 source("./_functions/model_gen_mlr3.R")

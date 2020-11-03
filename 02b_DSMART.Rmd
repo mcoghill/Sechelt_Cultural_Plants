@@ -11,11 +11,11 @@ Additionally, this script assumes that all data manipulation and pre-processing 
 
 First, libraries are loaded and data directories are defined. A custom function `dsmsart()` was created based on the existing `rdsmart` package (available on BitBucket). The intention of creating my own function was to improve upon the existing functions using newer, faster packages to accomplish the same tasks.
 
-```{r Load Packages}
+```{r Load Packages, echo=TRUE, results='hide'}
 
 suppressMessages(suppressWarnings({
   lapply(c("tidyverse", "terra", "sf", "foreach", "caret"), 
-         library, character.only = TRUE)}))
+         library, character.only = TRUE)[0]}))
 
 # Load custom DSMART files
 source("./_functions/dsmart_custom/dsmart.R")

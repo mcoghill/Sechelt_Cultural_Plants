@@ -19,11 +19,11 @@ A lot of the work stems from previously ran scripts which have:
 
 Using the RMarkdown format, I'll walk through the scripting process used to create the final maps. First, we must load/install the required packages.
 
-```{r Load Packages}
+```{r Load Packages, echo=TRUE, results='hide'}
 
 suppressMessages(suppressWarnings({
   lapply(c("tidyverse", "readxl", "svSocket", "RODBC", "sf", "terra", "foreach"), 
-         library, character.only = TRUE, quietly = TRUE)}))
+         library, character.only = TRUE, quietly = TRUE)[0]}))
 
 ```
 

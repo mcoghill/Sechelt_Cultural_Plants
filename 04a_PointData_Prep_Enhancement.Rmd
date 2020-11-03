@@ -9,11 +9,11 @@ In August 2020, another field visit to the Sechelt study area was organized and 
 
 First, R packages need to be loaded. 
 
-```{r Load Packages}
+```{r Load Packages, echo=TRUE, results='hide'}
 
 suppressMessages(suppressWarnings({
   lapply(c("tidyverse", "readxl", "foreach", "sf", "terra"), 
-         library, character.only = TRUE)}))
+         library, character.only = TRUE)[0]}))
 
 ```
 
