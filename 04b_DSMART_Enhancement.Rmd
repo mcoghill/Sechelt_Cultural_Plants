@@ -7,11 +7,11 @@ output: html_document
 
 The purpose of this document is to create a new DSMART site series and structural stage classification layer and associated probability layers. It incorporates newly obtained data from 2020 field sampling (processed in the 04a script). Most of the code is carried over from the 02b script. First, load the required packages.
 
-```{r Load Packages}
+```{r Load Packages, echo=TRUE, results='hide'}
 
 suppressMessages(suppressWarnings({
   lapply(c("tidyverse", "terra", "sf", "foreach", "caret"), 
-         library, character.only = TRUE)}))
+         library, character.only = TRUE)[0]}))
 
 # Load custom DSMART files
 source("./_functions/dsmart_custom/dsmart.R")

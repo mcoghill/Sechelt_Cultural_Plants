@@ -7,10 +7,10 @@ output: html_document
 
 This file is very similar in style to the 03 file, just using models that were run in the 04 scripts (i.e.: updated models). First, load the packages.
 
-```{r Load Packages}
+```{r Load Packages, echo=TRUE, results='hide'}
 
 suppressMessages(suppressWarnings({
-  lapply(c("tidyverse", "terra"), library, character.only = TRUE)}))
+  lapply(c("tidyverse", "terra"), library, character.only = TRUE)[0]}))
 
 ```
 

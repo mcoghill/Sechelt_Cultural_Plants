@@ -13,11 +13,11 @@ This document is meant to generate models and predictions of either binary class
 
 This script uses the mlr3 package (machine learning R) in order to make models. It's very powerful and can evaluate a lot of different models at the same time. I'll attempt to explain things each step of the way. First, we will load the packages used in this script.
 
-```{r Load Packages}
+```{r Load Packages, echo=TRUE, results='hide'}
 
 suppressMessages(suppressWarnings({
   lapply(c("tidyverse", "tools", "terra", "sf", "mlr3verse", "foreach"), 
-         library, character.only = TRUE)}))
+         library, character.only = TRUE)[0]}))
 
 # Load custom functions
 source("./_functions/model_gen_mlr3.R")

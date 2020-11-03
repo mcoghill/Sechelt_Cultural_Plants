@@ -7,11 +7,11 @@ output: html_document
 
 The purpose of this script is to download the relevant spatial data for BEC zones, VRI, TEM, waterbodies and the road network. Data is downloaded directly from the [BC Data Catalogue](https://catalogue.data.gov.bc.ca/dataset?download_audience=Public) using the [bcdata](https://github.com/bcgov/bcdata) package.
 
-```{r packages, include=FALSE}
+```{r Load Packages, echo=TRUE, results='hide'}
 
 suppressMessages(suppressWarnings({
   lapply(c("bcdata", "bcmaps", "tidyverse", "terra", "future.apply"), 
-         library, character.only = TRUE)}))
+         library, character.only = TRUE)[0]}))
 
 ```
 
