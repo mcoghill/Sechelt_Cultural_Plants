@@ -69,11 +69,13 @@ plant_list_2019 <- unique(plants_2019$Species)
 # In 2020, we only marked where plants were present at a site, not where they
 # were absent. Need to expand the 2020 plant list to include absence points at
 # each site. This differs from 2019 data collection where this was already
-# filled in.
+# filled in. Extra points that were opportunistically collected are appended
+# since a whole site description wasn't filled out and they are simply just
+# plant observations.
 plants_2020 <- read_excel(data_2020, sheet = "sechelt_plants")
 plant_list_2020 <- unique(plants_2020$Species)
 
-plants_2020_fix <- foreach(i = unique(plants_2020$`Point ID`), .combine = rbind) %do% {
+plants_2020_fix <- foreach(i = unique(bgc_2020$`Point ID`), .combine = rbind) %do% {
   site <- plants_2020 %>% 
     dplyr::filter(`Point ID` == i) %>% 
     as.data.frame()
@@ -95,7 +97,7 @@ plants_2020_fix <- foreach(i = unique(plants_2020$`Point ID`), .combine = rbind)
         magrittr::set_names(gsub("\\.", " ", names(.)))) %>% 
       drop_na(Species)
   } else site
-}
+} %>% rbind(dplyr::filter(plants_2020, !`Point ID` %in% bgc_2020$`Point ID`))
 
 # Only consider points that had greater than 0.1% cover in a plot
 plants_merge <- rbind(plants_2019, plants_2020_fix) %>% 
@@ -113,8 +115,7 @@ plant_data <- lapply(unique(plants_merge$Species), function(x) {
   lapply(function(x) {
     st_as_sf(x, coords = c("Long", "Lat"), crs = 4326) %>% 
       st_transform(3005) %>% 
-      dplyr::rename(geom = geometry)
-  })
+      dplyr::rename(geom = geometry)})
 
 # Interesting tables of pres/abs frequencies
 plant_table <- lapply(plant_data, function(x) data.frame(table(x$Pres)))
