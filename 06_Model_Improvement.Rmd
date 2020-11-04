@@ -1,0 +1,81 @@
+---
+title: "06_Model_Improvement"
+author: "Matt"
+date: "11/4/2020"
+output: html_document
+---
+
+```{r}
+
+suppressMessages(suppressWarnings({
+  lapply(c("tidyverse"), library, character.only = TRUE)[0]}))
+
+```
+
+
+
+```{r}
+
+AOI <- "Sechelt"
+AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
+map_res <- 4
+res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
+
+model_dir_2019 <- file.path(AOI_dir, "2_map_predictions", res_dir, "pres_abs_predictions")
+model_dir_2020 <- file.path(AOI_dir, "4_map_predictions_enhanced", res_dir, "pres_abs_predictions")
+
+out_dir <- file.path(AOI_dir, "6_model_improvement", res_dir)
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+```
+
+
+
+```{r}
+
+models_2019 <- list.dirs(model_dir_2019, recursive = FALSE)
+models_2020 <- list.dirs(model_dir_2020, recursive = FALSE)
+
+out <- lapply(1:length(models_2019), function(i) {
+  
+  mod_2019 <- list.files(models_2019[i], pattern = "_model.txt", full.names = TRUE)
+  mod_2020 <- list.files(models_2020[i], pattern = "_model.txt", full.names = TRUE)
+  
+  model_2019 <- as.data.frame(t(read_delim(mod_2019, skip = 5, delim = ":")), row.names = FALSE)
+  names(model_2019) <- model_2019[1, ]
+  model_2019 <- model_2019[-1, ] %>% mutate(year = 2019)
+  model_2020 <- as.data.frame(t(read_delim(mod_2020, skip = 5, delim = ":")), row.names = FALSE)
+  names(model_2020) <- model_2020[1, ]
+  model_2020 <- model_2020[-1, ] %>% mutate(year = 2020)
+  
+  conf_2019 <- read.csv(list.files(models_2019[i], pattern = "confusion", full.names = TRUE)) %>% 
+    dplyr::rename(Freq_2019 = Freq)
+  conf_2020 <- read.csv(list.files(models_2020[i], pattern = "confusion", full.names = TRUE))
+  
+  ce_2019 <- read.csv(list.files(models_2019[i], pattern = "tune_results", full.names = TRUE)) %>% 
+    dplyr::slice(which.min(classif.ce)) %>% 
+    dplyr::mutate(year = 2019)
+  ce_2020 <- read.csv(list.files(models_2020[i], pattern = "tune_results", full.names = TRUE)) %>% 
+    dplyr::slice(which.min(classif.ce)) %>% 
+    dplyr::mutate(year = 2020)
+  
+  conf <- cbind(conf_2019, Freq_2020 = conf_2020$Freq) %>% mutate(model = basename(models_2019[i]))
+  model <- rbind(model_2019, model_2020) %>% mutate(model = basename(models_2019[i]))
+  ce <- rbind(ce_2019, ce_2020) %>% mutate(model = basename(models_2019[i]))
+  
+  return(list(conf = conf, model = model, ce = ce))
+  
+})
+
+out_conf <- lapply(out, "[[", "conf") %>% do.call(rbind, .) %>% relocate(model)
+out_model <- lapply(out, "[[", "model") %>% do.call(rbind, .) %>% 
+  relocate(c(model, year))
+out_ce <- lapply(out, "[[", "ce") %>% do.call(rbind, .) %>% 
+  relocate(c(model, year))
+
+write.csv(out_conf, file.path(out_dir, "confusion_comparisons.csv"), row.names = FALSE)
+write.csv(out_model, file.path(out_dir, "model_comparisons.csv"), row.names = FALSE)
+write.csv(out_ce, file.path(out_dir, "classification_error_comparisons.csv"), row.names = FALSE)
+
+```
+
