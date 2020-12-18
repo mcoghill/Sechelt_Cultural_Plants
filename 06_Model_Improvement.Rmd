@@ -8,7 +8,8 @@ output: html_document
 ```{r}
 
 suppressMessages(suppressWarnings({
-  lapply(c("tidyverse"), library, character.only = TRUE)[0]}))
+  lapply(c("tidyverse", "sf", "rstatix", "emmeans"), 
+         library, character.only = TRUE)[0]}))
 
 ```
 
@@ -36,46 +37,907 @@ dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 models_2019 <- list.dirs(model_dir_2019, recursive = FALSE)
 models_2020 <- list.dirs(model_dir_2020, recursive = FALSE)
 
+# original model permutations
+perms <- expand.grid(
+  temporal = "annual", 
+  ss = c("simple", "dsmart", NA), 
+  probabilities = c(TRUE, FALSE, "TRUE, FALSE"),
+  bgc = c(TRUE, FALSE), 
+  climate_vars = c(TRUE, FALSE), 
+  stringsAsFactors = FALSE) %>% 
+  mutate(probabilities = ifelse(is.na(ss), NA, probabilities)) %>% 
+  distinct()
+
+# Total possibilities (will never do this because it would take forever)
+perms_all <- expand.grid(
+  terrain = c(TRUE, FALSE), satellite = c(TRUE, FALSE), 
+  climate_hist = c("annual", "seasonal", "both", NA), 
+  climate_modern = c("annual", "seasonal", "both", NA), 
+  site_ser = c("simple", "DSMART", NA), 
+  prob = c("prob", "class", "both", NA), bgc = c(TRUE, FALSE), 
+  strcut_stg = c(TRUE, FALSE)) %>% 
+  dplyr::mutate(prob = ifelse(is.na(site_ser), NA, as.character(prob)),
+                site_ser = ifelse(is.na(prob), NA, as.character(site_ser))) %>% 
+  distinct()
+
 out <- lapply(1:length(models_2019), function(i) {
   
-  mod_2019 <- list.files(models_2019[i], pattern = "_model.txt", full.names = TRUE)
-  mod_2020 <- list.files(models_2020[i], pattern = "_model.txt", full.names = TRUE)
+  mod_txt <- c(
+    list.files(models_2019[i], pattern = "_model.txt", full.names = TRUE),
+    list.files(models_2020[i], pattern = "_model.txt", full.names = TRUE))
   
-  model_2019 <- as.data.frame(t(read_delim(mod_2019, skip = 5, delim = ":")), row.names = FALSE)
-  names(model_2019) <- model_2019[1, ]
-  model_2019 <- model_2019[-1, ] %>% mutate(year = 2019)
-  model_2020 <- as.data.frame(t(read_delim(mod_2020, skip = 5, delim = ":")), row.names = FALSE)
-  names(model_2020) <- model_2020[1, ]
-  model_2020 <- model_2020[-1, ] %>% mutate(year = 2020)
+  mod_input <- c(
+    list.files(models_2019[i], pattern = "_input_data.csv", full.names = TRUE),
+    list.files(models_2020[i], pattern = "_input_data.csv", full.names = TRUE))
   
-  conf_2019 <- read.csv(list.files(models_2019[i], pattern = "confusion", full.names = TRUE)) %>% 
-    dplyr::rename(Freq_2019 = Freq)
-  conf_2020 <- read.csv(list.files(models_2020[i], pattern = "confusion", full.names = TRUE))
+  mod_read <- c(
+    list.files(models_2019[i], pattern = "_model.RData", full.names = TRUE),
+    list.files(models_2020[i], pattern = "_model.RData", full.names = TRUE))
   
-  ce_2019 <- read.csv(list.files(models_2019[i], pattern = "tune_results", full.names = TRUE)) %>% 
-    dplyr::slice(which.min(classif.ce)) %>% 
-    dplyr::mutate(year = 2019)
-  ce_2020 <- read.csv(list.files(models_2020[i], pattern = "tune_results", full.names = TRUE)) %>% 
-    dplyr::slice(which.min(classif.ce)) %>% 
-    dplyr::mutate(year = 2020)
-  
-  conf <- cbind(conf_2019, Freq_2020 = conf_2020$Freq) %>% mutate(model = basename(models_2019[i]))
-  model <- rbind(model_2019, model_2020) %>% mutate(model = basename(models_2019[i]))
-  ce <- rbind(ce_2019, ce_2020) %>% mutate(model = basename(models_2019[i]))
-  
-  return(list(conf = conf, model = model, ce = ce))
-  
-})
+  model <- lapply(seq_along(mod_txt), function(x) {
+    load(mod_read[x])
+    in_data <- read.csv(mod_input[x], header = TRUE) %>% 
+      dplyr::select(-c(Pres, X, Y)) %>% names()
+    mod <- as.data.frame(
+      t(read_delim(mod_txt[x], skip = 5, delim = ":", col_types = cols())), 
+      row.names = FALSE)
+    names(mod) <- mod[1, ]
+    mod <- mod[-1, ] %>% tibble() %>% 
+      mutate(year = ifelse(x == 1, 2019, 2020),
+             in_var = list(in_data),
+             out_var = list(names(best_model$variable.importance))) %>% 
+      mutate(n_vars = list(data.frame(
+        var = c("satellite", "climate_hist", "climate_modern", "dsmart_prob", 
+                "simple_prob", "dsmart_class", "simple_class", "bgc", "terrain"),
+        n_in = c(
+          sum(startsWith(in_var[[1]], "sentinel2"), na.rm = TRUE),
+          sum(startsWith(in_var[[1]], "normal_1961"), na.rm = TRUE),
+          sum(startsWith(in_var[[1]], "normal_1981"), na.rm = TRUE),
+          sum(startsWith(in_var[[1]], "dsmart_site_ser_probability"), na.rm = TRUE),
+          sum(startsWith(in_var[[1]], "simple_site_ser_probability"), na.rm = TRUE),
+          sum(startsWith(in_var[[1]], "dsmart_site_ser_class"), na.rm = TRUE),
+          sum(startsWith(in_var[[1]], "simple_site_ser_class"), na.rm = TRUE),
+          sum(startsWith(in_var[[1]], "bgc"), na.rm = TRUE),
+          sum(!grepl(
+            paste0("sentinel2|normal|dsmart_site_ser_probability|", 
+                   "simple_site_ser_probability|dsmart_site_ser_class|", 
+                   "simple_site_ser_class|bgc"), in_var[[1]]), na.rm = TRUE)),
+        n_out = c(
+          sum(startsWith(out_var[[1]], "sentinel2"), na.rm = TRUE),
+          sum(startsWith(out_var[[1]], "normal_1961"), na.rm = TRUE),
+          sum(startsWith(out_var[[1]], "normal_1981"), na.rm = TRUE),
+          sum(startsWith(out_var[[1]], "dsmart_site_ser_probability"), na.rm = TRUE),
+          sum(startsWith(out_var[[1]], "simple_site_ser_probability"), na.rm = TRUE),
+          sum(startsWith(out_var[[1]], "dsmart_site_ser_class"), na.rm = TRUE),
+          sum(startsWith(out_var[[1]], "simple_site_ser_class"), na.rm = TRUE),
+          sum(startsWith(out_var[[1]], "bgc"), na.rm = TRUE),
+          sum(!grepl(
+            paste0("sentinel2|normal|dsmart_site_ser_probability|", 
+                   "simple_site_ser_probability|dsmart_site_ser_class|", 
+                   "simple_site_ser_class|bgc"), out_var[[1]]), na.rm = TRUE))) %>% 
+          mutate(ratio = ifelse(is.na(n_out / n_in), 0, n_out / n_in))),
+        climate = n_vars[[1]][n_vars[[1]]$var == "climate_hist", ]$n_in > 0,
+        climate_inc = any(n_vars[[1]][startsWith(n_vars[[1]]$var, "climate"), ]$n_out > 0),
+        site_ser = ifelse(
+          any(n_vars[[1]][startsWith(n_vars[[1]]$var, "dsmart"), ]$n_in > 0),
+          "dsmart", ifelse(
+            any(n_vars[[1]][startsWith(n_vars[[1]]$var, "simple"), ]$n_in > 0),
+            "simple", NA)),
+        site_ser_inc = any(
+          n_vars[[1]][startsWith(n_vars[[1]]$var, "dsmart"), ]$n_out > 0,
+          n_vars[[1]][startsWith(n_vars[[1]]$var, "simple"), ]$n_out > 0),
+        prob = any(n_vars[[1]][endsWith(n_vars[[1]]$var, "prob"), ]$n_in > 0),
+        prob_inc = any(n_vars[[1]][endsWith(n_vars[[1]]$var, "prob"), ]$n_out > 0),
+        class = any(n_vars[[1]][endsWith(n_vars[[1]]$var, "class"), ]$n_in > 0),
+        class_inc = any(n_vars[[1]][endsWith(n_vars[[1]]$var, "class"), ]$n_out > 0),
+        bgc = n_vars[[1]][n_vars[[1]]$var == "bgc", ]$n_in > 0,
+        bgc_inc = n_vars[[1]][n_vars[[1]]$var == "bgc", ]$n_out > 0,
+        satellite_rat = n_vars[[1]][n_vars[[1]]$var == "satellite", ]$ratio,
+        climate_hist_rat = n_vars[[1]][n_vars[[1]]$var == "climate_hist", ]$ratio,
+        climate_modern_rat = n_vars[[1]][n_vars[[1]]$var == "climate_modern", ]$ratio,
+        dsmart_prob_rat = n_vars[[1]][n_vars[[1]]$var == "dsmart_prob", ]$ratio,
+        dsmart_class_rat = n_vars[[1]][n_vars[[1]]$var == "dsmart_class", ]$ratio,
+        simple_prob_rat = n_vars[[1]][n_vars[[1]]$var == "simple_prob", ]$ratio,
+        simple_class_rat = n_vars[[1]][n_vars[[1]]$var == "simple_class", ]$ratio,
+        bgc_rat = n_vars[[1]][n_vars[[1]]$var == "bgc", ]$ratio,
+        terrain_rat = n_vars[[1]][n_vars[[1]]$var == "terrain", ]$ratio)
+  }) %>% do.call(rbind, .) %>% mutate(model = basename(models_2019[i]))
 
-out_conf <- lapply(out, "[[", "conf") %>% do.call(rbind, .) %>% relocate(model)
-out_model <- lapply(out, "[[", "model") %>% do.call(rbind, .) %>% 
+  conf <- lapply(c(models_2019[i], models_2020[i]), function(x) {
+    read.csv(
+      list.files(x, pattern = "confusion", full.names = TRUE)) %>% 
+      pivot_wider(names_from = c(response, truth), values_from = Freq) %>% 
+      dplyr::mutate(prop.T_T = TRUE_TRUE / (TRUE_TRUE + FALSE_TRUE), 
+                    prop.F_T = FALSE_TRUE / (TRUE_TRUE + FALSE_TRUE),
+                    prop.T_F = TRUE_FALSE / (FALSE_FALSE + TRUE_FALSE),
+                    prop.F_F = FALSE_FALSE / (FALSE_FALSE + TRUE_FALSE), 
+                    prop.T = (TRUE_TRUE + FALSE_FALSE) / (TRUE_TRUE + TRUE_FALSE + 
+                                                            FALSE_TRUE + FALSE_FALSE), 
+                    prop.F = (TRUE_FALSE + FALSE_TRUE) / (TRUE_TRUE + TRUE_FALSE + 
+                                                            FALSE_TRUE + FALSE_FALSE)) %>% 
+      dplyr::rename_with(~ gsub(".", ".pred.", .x, fixed = TRUE)) %>% 
+      dplyr::rename_with(~ gsub("_", "_act.", .x, fixed = TRUE)) %>% 
+      dplyr::rename_with(~ gsub("TRUE_", "pred.TRUE_", .x, fixed = TRUE)) %>% 
+      dplyr::rename_with(~ gsub("FALSE_", "pred.FALSE_", .x, fixed = TRUE)) %>% 
+      dplyr::mutate(year = ifelse(x == models_2019[i], 2019, 2020))
+    }) %>% do.call(rbind, .) %>% 
+    mutate(model = basename(models_2019[i]))
+  
+  ce <- lapply(c(models_2019[i], models_2020[i]), function(x) {
+    read.csv(
+    list.files(x, pattern = "tune_results", full.names = TRUE)) %>% 
+    dplyr::slice(which.min(classif.ce)) %>% 
+    dplyr::mutate(year = ifelse(x == models_2019[i], 2019, 2020))
+  }) %>% do.call(rbind, .) %>% mutate(model = basename(models_2019[i]))
+  
+  imp <- lapply(c(models_2019[i], models_2020[i]), function(x) {
+    read.csv(
+      list.files(x, pattern = "importance", full.names = TRUE)) %>% 
+      dplyr::mutate(year = ifelse(x == models_2019[i], 2019, 2020))
+  }) %>% do.call(rbind, .) %>% 
+    mutate(model = basename(models_2019[i]), 
+           type = case_when(
+             startsWith(layer, "sentinel2") ~ "satellite",
+             startsWith(layer, "normal_1961") ~ "climate_hist",
+             startsWith(layer, "normal_1981") ~ "climate_modern",
+             startsWith(layer, "dsmart_site_ser_probability") ~ "dsmart_prob",
+             startsWith(layer, "simple_site_ser_probability") ~ "simple_prob",
+             layer == "dsmart_site_ser_class" ~ "dsmart_class",
+             layer == "simple_site_ser_class" ~ "simple_class", 
+             layer == "bgc" ~ "bgc",
+             TRUE ~ "terrain"))
+  
+  orig <- lapply(c(models_2019[i], models_2020[i]), function(x) {
+    data.frame(
+      layer = names(st_read(
+        file.path(dirname(x), "pres_abs_input_data.gpkg"), 
+        layer = basename(x), quiet = TRUE) %>% 
+          st_drop_geometry() %>% 
+          dplyr::select(-Pres))) %>% 
+      dplyr::mutate(
+        year = ifelse(x == models_2019[i], 2019, 2020),
+        type = case_when(
+          startsWith(layer, "sentinel2") ~ "satellite",
+          startsWith(layer, "normal_1961") ~ "climate_hist",
+          startsWith(layer, "normal_1981") ~ "climate_modern",
+          startsWith(layer, "dsmart_site_ser_probability") ~ "dsmart_prob",
+          startsWith(layer, "simple_site_ser_probability") ~ "simple_prob",
+          layer == "dsmart_site_ser_class" ~ "dsmart_class",
+          layer == "simple_site_ser_class" ~ "simple_class", 
+          layer == "bgc" ~ "bgc",
+          TRUE ~ "terrain"))
+  }) %>% do.call(rbind, .)
+  
+  layer_sum <- merge(
+    orig %>% 
+      group_by(year, type) %>% 
+      summarise(n_in = n(), .groups = "drop"), 
+    imp %>% 
+      group_by(year, type) %>% 
+      summarise(n_out = n(), .groups = "drop"),
+    all = TRUE) %>% 
+    dplyr::mutate(prop = n_out / n_in, 
+                  prop = ifelse(is.na(prop), 0, prop),
+                  n_out = ifelse(is.na(n_out), 0, n_out),
+                  model = basename(models_2019[i]))
+  
+  return(list(conf = conf, model = model, ce = ce, imp = imp, layer_sum = layer_sum))
+  
+}) %>% magrittr::set_names(basename(models_2019))
+
+# This is an important output: Gives breakdown of variable types by each model,
+# and which specific variables were used
+out_layer <- lapply(out, "[[", "layer_sum") %>% do.call(rbind, .) %>% 
+  tibble() %>% 
+  dplyr::mutate(
+    species = substr(model, start = 1, stop = 7), 
+    var = lapply(out[model], function(x) 
+      tibble(yr = x$model$year, out_var = x$model$out_var))) %>% 
+  unnest(cols = var) %>% 
+  dplyr::filter(year == yr) %>% 
+  dplyr::select(-yr) %>% 
+  dplyr::relocate(model)
+
+# Separate each species. Returns two data frames: For each year and each variable
+# type, there is a list of each model that used that variable type and how many
+# variables of that particular type were used.
+out_layer_summary <- sapply(unique(out_layer$species), function(x)
+  dplyr::filter(out_layer, species == x), simplify = FALSE, USE.NAMES = TRUE) %>% 
+  do.call(rbind, .) %>% 
+  group_by(species, year, type) %>% 
+  summarise(n_models = n(), mean_prop = mean(prop), .groups = "drop")
+
+out_conf <- lapply(out, "[[", "conf") %>% do.call(rbind, .) %>% 
   relocate(c(model, year))
 out_ce <- lapply(out, "[[", "ce") %>% do.call(rbind, .) %>% 
   relocate(c(model, year))
+out_model <- lapply(out, "[[", "model") %>% do.call(rbind, .) %>% 
+  dplyr::mutate(species = substr(model, start = 1, stop = 7)) %>% 
+  relocate(c(model, species, year)) %>% 
+  merge(out_ce, by = c("model", "year"))
 
-write.csv(out_conf, file.path(out_dir, "confusion_comparisons.csv"), row.names = FALSE)
-write.csv(out_model, file.path(out_dir, "model_comparisons.csv"), row.names = FALSE)
-write.csv(out_ce, file.path(out_dir, "classification_error_comparisons.csv"), row.names = FALSE)
+
+
+
+
+
+# write.csv(out_conf, file.path(out_dir, "confusion_comparisons.csv"), row.names = FALSE)
+# write.csv(out_model, file.path(out_dir, "model_comparisons.csv"), row.names = FALSE)
+# write.csv(out_ce, file.path(out_dir, "classification_error_comparisons.csv"), row.names = FALSE)
 
 ```
 
+One of the things that Mike wanted was a summary of these findings by model year, so do some wrangling on that!
+
+```{r}
+
+species <- unique(substr(basename(models_2019), start = 1, stop = 7))
+
+model_sum <- lapply(species, function(x) {
+  mods <- lapply(c(2019, 2020), function(y) {
+    out_model %>% 
+    dplyr::filter(substr(model, start = 1, stop = 7) == x) %>% 
+    dplyr::filter(year == y) %>% 
+    dplyr::mutate(across(c(
+      `Number of trees`, `Sample size`, `Number of independent variables`, 
+      Mtry, `Target node size`, `OOB prediction error (Brier s.)`
+    ), as.numeric))
+  }) %>% do.call(rbind, .) %>% 
+    group_by(year) %>% 
+    summarise(oob_mean = mean(`OOB prediction error (Brier s.)`),
+              oob_sd = sd(`OOB prediction error (Brier s.)`), 
+              .groups = "drop") %>% 
+    mutate(species = x)
+}) %>% do.call(rbind, .) %>% relocate(species)
+
+conf_sum <- lapply(species, function(x) {
+  out_conf %>% 
+    dplyr::filter(substr(model, start = 1, stop = 7) == x) %>% 
+    dplyr::group_by(year) %>% 
+    summarise(across(where(is.numeric), list(
+      mean = ~ mean(.x, na.rm = TRUE), sd = ~ sd(.x, na.rm = TRUE)), 
+      .names = "{.fn}_{.col}"), .groups = "drop") %>% 
+    dplyr::mutate(species = x)
+}) %>% do.call(rbind, .) %>% dplyr::relocate(species)
+
+ce_sum <- dplyr::mutate(out_ce, species = substr(model, start = 1, stop = 7)) %>% 
+  dplyr::group_by(species, year) %>% 
+  summarise(mean_ce = mean(classif.ce), sd_ce = sd(classif.ce),
+            mean_ff = mean(filter_fraction), sd_ff = sd(filter_fraction), .groups = "drop")
+
+out_imp <- lapply(out, "[[", "imp") %>% do.call(rbind, .) %>% 
+  relocate(c(model, year)) %>% 
+  dplyr::mutate(species = substr(model, start = 1, stop = 7)) 
+
+imp_sum <- lapply(species, function(x) {
+  imps <- do.call(merge, c(lapply(c(2019, 2020), function(y) {
+    out_imp %>% 
+      dplyr::filter(substr(model, start = 1, stop = 7) == x) %>% 
+      dplyr::filter(year == y) %>% 
+      dplyr::group_by(layer) %>% 
+      summarise(n = n(), sum_imp = sum(importance), mean_imp = mean(importance),
+                med_imp = median(importance), .groups = "drop")
+  }), by = "layer", all = TRUE)) %>% 
+    rename_with(~ gsub(".x", "_2019", .x, fixed = TRUE)) %>% 
+    rename_with(~ gsub(".y", "_2020", .x, fixed = TRUE)) %>% 
+    dplyr::mutate(type = case_when(
+      startsWith(layer, "sentinel2") ~ "satellite",
+      startsWith(layer, "normal") ~ "climate",
+      startsWith(layer, "dsmart_site_ser_probability") ~ "dsmart_prob",
+      startsWith(layer, "simple_site_ser_probability") ~ "simple_prob",
+      layer == "dsmart_site_ser_class" ~ "dsmart_class",
+      layer == "simple_site_ser_class" ~ "simple_class", 
+      layer == "bgc" ~ "bgc",
+      TRUE ~ "terrain"))
+})
+
+
+
+```
+
+
+```{r}
+
+# I want to get the mean proportion of variables used in each model. It has
+# to be proportion to be relateable since the models use different actual 
+# numbers of variables
+
+```
+
+
+
+```{r}
+
+# Lets think about some tests to do. We have different model permutations with
+# different amounts of variables used in each category. Can perform test to see
+# if including a particular group of variables was effective or not.
+
+# Split by species
+stat_data <- sapply(unique(out_model$species), function(x)
+  dplyr::filter(out_model, species == x) %>% 
+    dplyr::mutate(
+      site_ser = ifelse(is.na(site_ser), "NA", site_ser),
+      year = as.factor(year), 
+      `OOB prediction error (Brier s.)` = as.numeric(`OOB prediction error (Brier s.)`),
+      climate = ifelse(climate_inc, climate, FALSE),
+      site_ser = ifelse(site_ser_inc, site_ser, "NA"),
+      prob = ifelse(prob_inc, prob, FALSE),
+      class = ifelse(class_inc, class, FALSE),
+      bgc = ifelse(bgc_inc, bgc, FALSE)) %>% 
+    dplyr::select(starts_with(c("climate", "site_ser", "prob", "class", "bgc", "OOB")), 
+                  classif.ce, model, year) %>% 
+    as.data.frame(), simplify = FALSE, USE.NAMES = TRUE)
+
+# With split done by species, perform repeated measures ANOVA on CE and OOB
+# just do the test, don't perform assumptions
+
+two_way_rm_analysis <- lapply(stat_data, function(x) {
+  sapply(c("classif.ce", "OOB prediction error (Brier s.)"), function(y) {
+    sapply(c("climate", "site_ser_inc", "site_ser", "bgc"), function(z) {
+      x <- dplyr::select(x, all_of(y), all_of(z), year) %>% 
+        group_by(!!sym(z), year) %>% 
+        dplyr::mutate(id = row_number()) %>% 
+        ungroup() %>% 
+        as.data.frame()
+      
+      aov <- anova_test(data = x, dv = sym(y), wid = id, within = c(sym(z), year))
+      
+      one_way_treatment <- x %>% 
+        group_by(year) %>% 
+        anova_test(dv = sym(y), wid = id, within = sym(z)) %>% 
+        get_anova_table() %>% 
+        adjust_pvalue(method = "bonferroni")
+      
+      one_way_time <- x %>% 
+        group_by(!!sym(z)) %>% 
+        anova_test(dv = sym(y), wid = id, within = year) %>% 
+        get_anova_table() %>% 
+        adjust_pvalue(method = "bonferroni")
+      
+      site_ser_out <- if(z == "site_ser") {
+        x <- dplyr::filter(x, site_ser %in% c("dsmart", "simple")) %>% 
+          group_by(site_ser, year) %>% 
+          dplyr::mutate(id = row_number()) %>% 
+          ungroup() %>% 
+          as.data.frame()
+        
+        one_way_treatment_sans_na <- x %>% 
+          group_by(year) %>% 
+          anova_test(dv = sym(y), wid = id, within = sym(z)) %>% 
+          get_anova_table() %>% 
+          adjust_pvalue(method = "bonferroni")
+        
+        one_way_time_sans_na <- x %>% 
+          group_by(!!sym(z)) %>% 
+          anova_test(dv = sym(y), wid = id, within = year) %>% 
+          get_anova_table() %>% 
+          adjust_pvalue(method = "bonferroni")
+        
+        # xx <- dplyr::rename(x, var = sym(y))
+        # 
+        # pwc_treatment_sans_na <- xx %>%
+        #   group_by(year) %>%
+        #   pairwise_t_test(var ~ site_ser, paired = TRUE, p.adjust.method = "bonferroni") %>% 
+        #   dplyr::mutate(.y. = y)
+        # 
+        # pwc_time_sans_na <- xx %>%
+        #   group_by(site_ser) %>%
+        #   pairwise_t_test(var ~ year, paired = TRUE, p.adjust.method = "bonferroni") %>% 
+        #   dplyr::mutate(.y. = y)
+        
+        return(list(two_way = aov, one_way_time = one_way_time, 
+                    one_way_trt = one_way_treatment,
+                    one_way_trt_sans_na = one_way_treatment_sans_na,
+                    one_way_time_sans_na = one_way_time_sans_na))
+      } else {
+        return(list(two_way = aov, one_way_time = one_way_time, 
+                    one_way_trt = one_way_treatment))
+      }
+    }, simplify = FALSE, USE.NAMES = TRUE)
+  }, simplify = FALSE, USE.NAMES = TRUE)})
+
+three_way_rm_analysis <- lapply(stat_data, function(x) {
+  sapply(c("classif.ce", "OOB prediction error (Brier s.)"), function(y) {
+    x <- dplyr::select(x, all_of(y), prob, class, year) %>% 
+        group_by(prob, class, year) %>% 
+        dplyr::mutate(id = row_number()) %>% 
+        ungroup() %>% 
+        as.data.frame()
+    
+    aov <- anova_test(data = x, dv = sym(y), wid = id, within = c(prob, class, year))
+    
+    two_way_class <- x %>% 
+      group_by(class) %>% 
+      anova_test(dv = sym(y), wid = id, within = c(prob, year))
+    
+    two_way_prob <-  x %>% 
+      group_by(prob) %>% 
+      anova_test(dv = sym(y), wid = id, within = c(class, year))
+    
+    time_effect <- x %>% 
+      group_by(prob, class) %>% 
+      anova_test(dv = sym(y), wid = id, within = year)
+    
+    return(list(aov = aov, two_way_class = two_way_class, two_way_prob = two_way_prob,
+                time_effect = time_effect))
+  }, simplify = FALSE, USE.NAMES = TRUE)})
+
+summary_two_way <- lapply(stat_data, function(x)
+  sapply(c("classif.ce", "OOB prediction error (Brier s.)"), function(y) 
+    sapply(c("climate", "site_ser_inc", "site_ser", "bgc"), function(z) 
+      group_by(x, !!sym(z), year) %>% 
+        get_summary_stats(all_of(y), type = "mean_sd"), 
+      simplify = FALSE, USE.NAMES = TRUE),
+    simplify = FALSE, USE.NAMES = TRUE))
+
+summary_three_way <- lapply(stat_data, function(x)
+  sapply(c("classif.ce", "OOB prediction error (Brier s.)"), function(y)
+    group_by(x, prob, class, year) %>% 
+      get_summary_stats(all_of(y), type = "mean_sd"), simplify = FALSE, USE.NAMES = TRUE))
+
+# summarize by data type and year
+
+summary_type <- sapply(unique(out_model$species), function(x) 
+  sapply(c("climate", "site_ser_inc", "site_ser", "bgc"), function(y) 
+    sapply(names(out_model)[endsWith(names(out_model), "_rat")], function(z)
+      out_model %>% 
+        dplyr::filter(species == x) %>% 
+        dplyr::select(all_of(c(y, z)), year) %>% 
+        group_by(!!sym(y), year) %>% 
+        get_summary_stats(all_of(z), type = "mean_sd"), simplify = FALSE, USE.NAMES = TRUE),
+    simplify = FALSE, USE.NAMES = TRUE), simplify = FALSE, USE.NAMES = TRUE)
+
+# interpretation: When a variable type (climate, site series, bgc) is used/not used,
+# the returned table shows the mean ratio of a particular variable type (the 
+# frequency a variable type gets used when climate, site series, bgc is used or not)
+
+
+# Summarize variable importance by variable type next
+summary_var_imp <- out_imp %>% 
+  pivot_wider(names_from = type, values_from = importance) %>% 
+  group_by(model, year, species) %>% 
+  summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE), 
+                   .names = "{.col}_mean_var_imp"), .groups = "drop") %>% 
+  merge(out_model, by = c("model", "year", "species"))
+
+sum_var_imp <- sapply(unique(out_model$species), function(x) {
+  s <- summary_var_imp %>% 
+    dplyr::filter(species == x) %>% 
+    dplyr::mutate(site_ser = ifelse(is.na(site_ser), "NA", site_ser))
+  
+  sapply(c("climate", "site_ser_inc", "site_ser", "bgc"), function(y) {
+    sapply(as.character(unique(s[, y])), function(z) {
+      ss <- dplyr::filter(s, !!sym(y) == z) 
+      
+      sapply(
+        c("satellite", "climate_hist", "climate_modern", "terrain", "bgc",
+          "dsmart_prob", "dsmart_class", "simple_prob", "simple_class"), function(i) {
+            dplyr::select(ss, all_of(c(
+              paste0(i, "_", "mean_var_imp"),
+              y)), year) %>% 
+              group_by(year) %>% 
+              get_summary_stats(all_of(paste0(i, "_", "mean_var_imp")), 
+                                type = "mean_sd")
+          }, simplify = FALSE, USE.NAMES = TRUE)
+    }, simplify = FALSE, USE.NAMES = TRUE)
+  }, simplify = FALSE, USE.NAMES = TRUE)
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+
+```
+
+Things above are not super clear. I'll break it down by variable type and try again.
+
+```{r Climate variables}
+
+stat_data <- sapply(unique(out_model$species), function(x)
+  dplyr::filter(out_model, species == x) %>% 
+    dplyr::mutate(
+      year = as.factor(year), 
+      `OOB prediction error (Brier s.)` = as.numeric(`OOB prediction error (Brier s.)`)) %>% 
+    dplyr::select(starts_with(c("climate", "OOB")), 
+                  classif.ce, model, year) %>% 
+    as.data.frame(), simplify = FALSE, USE.NAMES = TRUE)
+
+# Explore differences between climate variable years, and 2019/2020
+
+two_way_climate <- lapply(stat_data, function(x) {
+  # Can't do analysis between climate variable years, so just by whether climate
+  # has an impact or not
+  x <- x %>% 
+    dplyr::group_by(year, climate) %>% 
+    dplyr::mutate(hist_inc = factor(climate_hist_rat > 0),
+                  modern_inc = factor(climate_modern_rat > 0),
+                  id = row_number()) %>% 
+    ungroup() %>% 
+    dplyr::select(id, year, climate, classif.ce, hist_inc, modern_inc)
+  two_way <- anova_test(data = x %>% select(-ends_with("_inc")), 
+                        dv = classif.ce, wid = id, within = c(climate, year)) %>% 
+    get_anova_table()
+  
+  one_way_trt <- x %>% 
+    select(-ends_with("_inc")) %>% 
+    group_by(year) %>% 
+    anova_test(dv = classif.ce, wid = id, within = climate) %>% 
+    get_anova_table() %>% 
+    adjust_pvalue(method = "bonferroni")
+  one_way_time <- x %>% 
+    select(-ends_with("_inc")) %>% 
+    group_by(climate) %>% 
+    anova_test(dv = classif.ce, wid = id, within = year) %>% 
+    get_anova_table() %>% 
+    adjust_pvalue(method = "bonferroni")
+  
+  pwc_trt <- x %>% 
+    select(-ends_with("_inc")) %>% 
+    group_by(year) %>% 
+    pairwise_t_test(classif.ce ~ climate, paired = TRUE, p.adjust.method = "bonferroni")
+  pwc_time <- x %>% 
+    select(-ends_with("_inc")) %>% 
+    group_by(climate) %>% 
+    pairwise_t_test(classif.ce ~ year, paired = TRUE, p.adjust.method = "bonferroni")
+  
+  one_way_clim <- x %>% 
+    # mutate(climate = case_when(
+    #   hist_inc == TRUE & modern_inc == TRUE ~ "both",
+    #   hist_inc == TRUE & modern_inc == FALSE ~ "hist",
+    #   hist_inc == FALSE & modern_inc == TRUE ~ "modern",
+    #   TRUE ~ "NA"
+    # )) %>% 
+    group_by(year) %>% 
+    anova_test(classif.ce ~ hist_inc * modern_inc)
+  
+  # Compute main effects
+  
+  main_fx <- lapply(as.character(unique(x$year)), function(y) {
+    xx <- dplyr::filter(x, year == y) 
+    model <- lm(classif.ce ~ hist_inc * modern_inc, data = xx)
+    modern_effect <- if(length(xx$hist_inc[!(xx$hist_inc == xx$modern_inc)]) > 2) {
+      xx %>% 
+        group_by(hist_inc) %>% 
+        anova_test(classif.ce ~ modern_inc) %>% 
+        mutate(year = y) %>% 
+        relocate(year)
+    } else NULL
+    
+    hist_effect <- if(length(xx$hist_inc[!(xx$hist_inc == xx$modern_inc)]) > 2) {
+      xx %>% 
+        group_by(modern_inc) %>% 
+        anova_test(classif.ce ~ hist_inc, error = model) %>% 
+        mutate(year = y) %>% 
+        relocate(year)
+    } else NULL
+    return(list(modern_effect, hist_effect))
+  })
+    
+  main_fx <- list(
+    modern_effect = do.call(rbind, lapply(main_fx, "[[", 1)),
+    hist_effect = do.call(rbind, lapply(main_fx, "[[", 2)),
+    
+    # pairwise comparisons
+    # in 2019, impossible to compute effect of either historical vs. modern because
+    # they were used the same in all instances
+    
+    # In 2020, there is significant differences: Where modern variables are not used,
+    # we see a difference in classif.ce between when historical variables are used
+    # vs. when they are not used. Same thing for when historical variables are not
+    # used, there is a difference in classif.ce between when modern variables are
+    # used vs. when they are not used.
+    pwc_modern = x %>% 
+      group_by(year, hist_inc) %>% 
+      emmeans_test(classif.ce ~ modern_inc, p.adjust.method = "bonferroni"),
+    pwc_hist = x %>% 
+      group_by(year, modern_inc) %>% 
+      emmeans_test(classif.ce ~ hist_inc, p.adjust.method = "bonferroni")
+  )
+    
+  return(list(two_way = two_way, one_way_trt = one_way_trt, one_way_time = one_way_time,
+              pwc_trt = pwc_trt, pwc_time = pwc_time, main_fx = main_fx))
+})
+
+# Get the importance scores of climate variables when used in modelling
+
+summary_var_imp <- out_imp %>% 
+  pivot_wider(names_from = type, values_from = importance) %>% 
+  dplyr::mutate(climate_all = rowSums(.[, c("climate_hist", "climate_modern")], na.rm = TRUE)) %>% 
+  dplyr::mutate(climate_all = ifelse(is.na(climate_hist) & is.na(climate_modern), 
+                                     NA, climate_all)) %>% 
+  group_by(model, year, species) %>% 
+  summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE), 
+                   .names = "{.col}_mean_var_imp"), .groups = "drop") %>% 
+  merge(out_model, by = c("model", "year", "species"))
+
+clim_var_imp <- sapply(unique(out_model$species), function(x) {
+  stat_data <- summary_var_imp %>% 
+    dplyr::filter(species == x) %>% 
+    dplyr::mutate(id = row_number()) %>% 
+    select(model, year, climate, n_vars, climate_hist_mean_var_imp, 
+           climate_modern_mean_var_imp, climate_all_mean_var_imp, classif.ce) %>% 
+    unnest(n_vars) %>% 
+    dplyr::filter(var %in% c("climate_hist", "climate_modern")) %>% 
+    dplyr::select(-c(ratio, n_in)) %>% 
+    pivot_wider(names_from = var, values_from = n_out) %>% 
+    dplyr::rename(clim_hist_n_vars = climate_hist, 
+                  clim_modern_n_vars = climate_modern) %>% 
+    dplyr::mutate(species = x, 
+                  climate_all_n_vars = clim_hist_n_vars + clim_modern_n_vars) %>% 
+    relocate(model, year, species)
+  
+  var_imp_all <- out_imp %>% 
+    dplyr::filter(species == x) %>% 
+    group_by(model, year) %>% 
+    summarise(mean_all = mean(importance), .groups = "drop") %>% 
+    merge(stat_data)
+  
+  # Only need this for writeup
+  # clim_type <- stat_data %>% 
+  #   dplyr::mutate(hist = clim_hist_n_vars > 0,
+  #                 modern = clim_modern_n_vars > 0)
+  # 
+  # clim_hist <- group_by(clim_type, year, hist) %>% 
+  #   summarise(across(classif.ce, list(mean = ~mean(.x, na.rm = TRUE),
+  #                                     sd = ~sd(.x, na.rm = TRUE))),
+  #             .groups = "drop")
+  # clim_modern <- group_by(clim_type, year, modern) %>% 
+  #   summarise(across(classif.ce, list(mean = ~mean(.x, na.rm = TRUE),
+  #                                     sd = ~sd(.x, na.rm = TRUE))),
+  #             .groups = "drop")
+    
+  # Replace 0's with NA's for consistency
+  summary <- dplyr::mutate(var_imp_all, across(c(clim_hist_n_vars, clim_modern_n_vars,
+                                                 climate_all_n_vars), ~na_if(.x, 0))) %>% 
+    group_by(year, climate) %>% 
+    get_summary_stats(c(climate_hist_mean_var_imp, climate_modern_mean_var_imp, 
+                        climate_all_mean_var_imp, clim_hist_n_vars, clim_modern_n_vars,
+                        climate_all_n_vars, mean_all, classif.ce),
+                      type = "mean_sd") %>% 
+    dplyr::mutate(n_models_input = 14, species = x) %>% 
+    relocate(year, species, variable, n, n_models_input)
+  return(list(stat_data = var_imp_all, summary = summary))
+  
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+two_way_climate_comb <- sapply(names(two_way_climate), function(x) 
+  lapply(two_way_climate[[x]][names(two_way_climate[[x]]) != "main_fx"], data.frame) %>% 
+    lapply(., dplyr::mutate, species = x), simplify = FALSE, USE.NAMES = TRUE) %>% 
+  sapply(X = names(two_way_climate[[1]][names(two_way_climate[[1]]) != "main_fx"]), FUN = function(x, y = .) 
+    do.call(rbind, lapply(y, "[[", x)), simplify = FALSE, USE.NAMES = TRUE)
+
+climate_main_fx_comb <- sapply(names(two_way_climate), function(x) 
+  lapply(two_way_climate[[x]][["main_fx"]], data.frame) %>% 
+    lapply(., dplyr::mutate, species = x), simplify = FALSE, USE.NAMES = TRUE) %>% 
+  sapply(X = names(two_way_climate[[1]][["main_fx"]]), FUN = function(x, y = .) 
+    do.call(rbind, lapply(y, "[[", x)), simplify = FALSE, USE.NAMES = TRUE)
+
+clim_var_imp_data <- do.call(rbind, lapply(clim_var_imp, "[[", "stat_data")) %>% 
+  remove_rownames()
+clim_var_imp_summary <- do.call(rbind, lapply(clim_var_imp, "[[", "summary")) %>% 
+  remove_rownames()
+
+```
+
+Okay, next: does using any type of site series layer impact modelling?
+
+```{r Site series broad compare}
+
+stat_data <- sapply(unique(out_model$species), function(x)
+  dplyr::filter(out_model, species == x) %>% 
+    dplyr::mutate(
+      site_ser_pres = ifelse(is.na(site_ser), FALSE, TRUE),
+      site_ser = ifelse(is.na(site_ser), "NA", site_ser),
+      year = as.factor(year), 
+      `OOB prediction error (Brier s.)` = as.numeric(`OOB prediction error (Brier s.)`)) %>% 
+    dplyr::select(starts_with(c("site_ser", "prob", "class", "OOB")), 
+                  classif.ce, model, year) %>% 
+    dplyr::mutate(type = case_when(
+      site_ser == "dsmart" & prob == TRUE & class == TRUE ~ "dsmart_both",
+      site_ser == "simple" & prob == TRUE & class == TRUE ~ "simple_both",
+      site_ser == "dsmart" & prob == TRUE & class == FALSE ~ "dsmart_prob",
+      site_ser == "simple" & prob == TRUE & class == FALSE ~ "simple_prob",
+      site_ser == "dsmart" & prob == FALSE & class == TRUE ~ "dsmart_class",
+      site_ser == "simple" & prob == FALSE & class == TRUE ~ "simple_class",
+      site_ser == "NA" ~ "NA")) %>% 
+    as.data.frame(), simplify = FALSE, USE.NAMES = TRUE)
+
+
+# Explore differences between using and not using any type of site series, 
+# and 2019/2020
+
+two_way_site_ser_broad <- lapply(stat_data, function(x) {
+
+  x <- x %>% 
+    dplyr::group_by(year, type) %>% 
+    dplyr::mutate(id = row_number()) %>% 
+    ungroup() %>% 
+    dplyr::select(id, year, type, classif.ce)
+  
+  two_way <- anova_test(data = x, 
+                        dv = classif.ce, wid = id, within = c(type, year))
+  
+  one_way_trt <- x %>% 
+    group_by(year) %>% 
+    anova_test(dv = classif.ce, wid = id, within = type) %>% 
+    get_anova_table() %>% 
+    adjust_pvalue(method = "bonferroni")
+  one_way_time <- x %>% 
+    group_by(type) %>% 
+    anova_test(dv = classif.ce, wid = id, within = year) %>% 
+    get_anova_table() %>% 
+    adjust_pvalue(method = "bonferroni")
+  
+  pwc_trt <- x %>% 
+    group_by(year) %>% 
+    pairwise_t_test(classif.ce ~ type, paired = FALSE, p.adjust.method = "bonferroni")
+  pwc_time <- x %>% 
+    group_by(type) %>% 
+    pairwise_t_test(classif.ce ~ year, paired = TRUE, p.adjust.method = "bonferroni")
+  
+  return(list(two_way = two_way, one_way_trt = one_way_trt, one_way_time = one_way_time,
+              pwc_trt = pwc_trt, pwc_time = pwc_time))
+})
+
+# Get the importance scores of site series vs. not using site series
+
+summary_var_imp <- out_imp %>% 
+  pivot_wider(names_from = type, values_from = importance) %>% 
+  group_by(model, year, species) %>% 
+  summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE), 
+                   .names = "{.col}_mean_var_imp"), .groups = "drop") %>% 
+  merge(out_model, by = c("model", "year", "species")) %>% 
+    dplyr::mutate(type = case_when(
+      site_ser == "dsmart" & prob == TRUE & class == TRUE ~ "dsmart_both",
+      site_ser == "simple" & prob == TRUE & class == TRUE ~ "simple_both",
+      site_ser == "dsmart" & prob == TRUE & class == FALSE ~ "dsmart_prob",
+      site_ser == "simple" & prob == TRUE & class == FALSE ~ "simple_prob",
+      site_ser == "dsmart" & prob == FALSE & class == TRUE ~ "dsmart_class",
+      site_ser == "simple" & prob == FALSE & class == TRUE ~ "simple_class",
+      is.na(site_ser) ~ "NA"))
+
+site_ser_pres_var_imp <- sapply(unique(out_model$species), function(x) {
+  stat_data <- summary_var_imp %>% 
+    dplyr::filter(species == x) %>% 
+    dplyr::mutate(id = row_number()) %>% 
+    dplyr::select(model, year, type, n_vars, dsmart_prob_mean_var_imp, 
+           dsmart_class_mean_var_imp, simple_prob_mean_var_imp,
+           simple_class_mean_var_imp, classif.ce) %>% 
+    unnest(n_vars) %>% 
+    dplyr::filter(var %in% c("dsmart_prob", "dsmart_class", 
+                             "simple_prob", "simple_class")) %>% 
+    dplyr::select(-c(ratio, n_in)) %>% 
+    pivot_wider(names_from = var, values_from = n_out) %>% 
+    dplyr::rename(dsmart_prob_n_vars = dsmart_prob, 
+                  dsmart_class_n_vars = dsmart_class,
+                  simple_prob_n_vars = simple_prob,
+                  simple_class_n_vars = simple_class) %>% 
+    dplyr::mutate(
+      species = x, 
+      mean_var_imp = rowMeans(dplyr::select(
+        ., c(simple_class_mean_var_imp, simple_prob_mean_var_imp,
+             dsmart_class_mean_var_imp, dsmart_prob_mean_var_imp)), na.rm = TRUE),
+      n_ss_vars = rowSums(dplyr::select(
+        ., c(simple_class_n_vars, simple_prob_n_vars, dsmart_class_n_vars, 
+             dsmart_prob_n_vars)), na.rm = TRUE),
+      n_ss_vars = ifelse(is.nan(mean_var_imp), NaN, n_ss_vars)) %>% 
+    relocate(model, year, species)
+  
+  var_imp_all <- out_imp %>% 
+    dplyr::filter(species == x) %>% 
+    group_by(model, year) %>% 
+    summarise(mean_all = mean(importance), .groups = "drop") %>% 
+    merge(stat_data) %>% 
+    dplyr::mutate(mean_var_imp = ifelse(type == "NA", mean_all, mean_var_imp),
+                  n_ss_vars = ifelse(is.nan(n_ss_vars) & !is.nan(mean_var_imp), 0, n_ss_vars))
+    
+  # Replace 0's with NA's for consistency
+  summary <- sapply(unique(var_imp_all$type), function(y) {
+    var_imp_all %>% 
+      dplyr::mutate(type = ifelse(is.nan(mean_var_imp), "NA", type)) %>% 
+      dplyr::mutate(mean_var_imp = ifelse(type == "NA", mean_all, mean_var_imp),
+                    n_ss_vars = ifelse(type == "NA", 0, n_ss_vars)) %>% 
+      dplyr::mutate(type = ifelse(type != y | is.nan(mean_var_imp), "other", y)) %>% 
+      group_by(type, year) %>% 
+      get_summary_stats(c(mean_var_imp, n_ss_vars, mean_all, classif.ce), type = "mean_sd") %>% 
+      dplyr::filter(type == y | (type == "other" & variable %in% c("classif.ce", "mean_all")))
+  }, simplify = FALSE, USE.NAMES = TRUE)
+  
+  return(list(stat_data = var_imp_all, summary = summary))
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+two_way_site_ser_broad_comb <- sapply(names(two_way_site_ser_broad), function(x) 
+  lapply(two_way_site_ser_broad[[x]], data.frame) %>% 
+    lapply(., dplyr::mutate, species = x), simplify = FALSE, USE.NAMES = TRUE) %>% 
+  sapply(X = names(two_way_site_ser_broad[[1]]), FUN = function(x, y = .) 
+    do.call(rbind, lapply(y, "[[", x)), simplify = FALSE, USE.NAMES = TRUE)
+
+site_ser_pres_var_imp_data <- do.call(rbind, lapply(site_ser_pres_var_imp, "[[", "stat_data")) %>% 
+  remove_rownames()
+
+```
+
+Still need to do BGC!
+
+```{r bgc}
+
+stat_data <- sapply(unique(out_model$species), function(x)
+  dplyr::filter(out_model, species == x) %>% 
+    dplyr::mutate(
+      year = as.factor(year), 
+      `OOB prediction error (Brier s.)` = as.numeric(`OOB prediction error (Brier s.)`)) %>% 
+    dplyr::select(starts_with("OOB"), classif.ce, model, year, bgc) %>% 
+    as.data.frame(), simplify = FALSE, USE.NAMES = TRUE)
+
+
+# Explore differences between climate variable years, and 2019/2020
+
+two_way_bgc <- lapply(stat_data, function(x) {
+
+  x <- x %>% 
+    dplyr::group_by(year, bgc) %>% 
+    dplyr::mutate(id = row_number()) %>% 
+    ungroup() %>% 
+    dplyr::select(id, year, bgc, classif.ce)
+  
+  two_way <- anova_test(data = x, 
+                        dv = classif.ce, wid = id, within = c(bgc, year))
+  
+  one_way_trt <- x %>% 
+    group_by(year) %>% 
+    anova_test(dv = classif.ce, wid = id, within = bgc) %>% 
+    get_anova_table() %>% 
+    adjust_pvalue(method = "bonferroni")
+  one_way_time <- x %>% 
+    group_by(bgc) %>% 
+    anova_test(dv = classif.ce, wid = id, within = year) %>% 
+    get_anova_table() %>% 
+    adjust_pvalue(method = "bonferroni")
+  
+  pwc_trt <- x %>% 
+    group_by(year) %>% 
+    pairwise_t_test(classif.ce ~ bgc, paired = FALSE, p.adjust.method = "bonferroni")
+  pwc_time <- x %>% 
+    group_by(bgc) %>% 
+    pairwise_t_test(classif.ce ~ year, paired = TRUE, p.adjust.method = "bonferroni")
+  
+  return(list(two_way = two_way, one_way_trt = one_way_trt, one_way_time = one_way_time,
+              pwc_trt = pwc_trt, pwc_time = pwc_time))
+})
+
+bgc_var_imp <- sapply(unique(out_model$species), function(x) {
+  stat_data <- summary_var_imp %>% 
+    dplyr::filter(species == x) %>% 
+    dplyr::mutate(id = row_number()) %>% 
+    select(model, year, bgc, n_vars, bgc_mean_var_imp, classif.ce) %>% 
+    unnest(n_vars) %>% 
+    dplyr::filter(var == "bgc") %>% 
+    dplyr::select(-c(ratio, n_in, var)) %>% 
+    dplyr::rename(bgc_n_vars = n_out) %>% 
+    dplyr::mutate(species = x) %>% 
+    relocate(model, year, species)
+  
+  var_imp_all <- out_imp %>% 
+    dplyr::filter(species == x) %>% 
+    group_by(model, year) %>% 
+    summarise(mean_all = mean(importance), .groups = "drop") %>% 
+    merge(stat_data)
+    
+  # Replace 0's with NA's for consistency
+  summary <- dplyr::mutate(var_imp_all, across(bgc_n_vars, ~na_if(.x, 0))) %>% 
+    group_by(year, bgc) %>% 
+    get_summary_stats(c(bgc_mean_var_imp, bgc_n_vars, mean_all, classif.ce), type = "mean_sd") %>% 
+    dplyr::mutate(n_models_input = 14, species = x) %>% 
+    relocate(year, species, variable, n, n_models_input)
+  return(list(stat_data = var_imp_all, summary = summary))
+}, simplify = FALSE, USE.NAMES = TRUE)
+
+two_way_bgc_comb <- sapply(names(two_way_bgc), function(x) 
+  lapply(two_way_bgc[[x]], data.frame) %>% 
+    lapply(dplyr::mutate, species = x), simplify = FALSE, USE.NAMES = TRUE) %>% 
+  sapply(X = names(two_way_bgc[[1]]), FUN = function(x, y = .) 
+    do.call(rbind, lapply(y, "[[", x)), simplify = FALSE, USE.NAMES = TRUE)
+
+bgc_var_imp_data <- do.call(rbind, lapply(bgc_var_imp, "[[", "stat_data")) %>% 
+  remove_rownames()
+bgc_var_imp_summary <- do.call(rbind, lapply(bgc_var_imp, "[[", "summary")) %>% 
+  remove_rownames()
+
+```
