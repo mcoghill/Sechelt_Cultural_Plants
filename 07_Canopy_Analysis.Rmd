@@ -1,0 +1,19 @@
+---
+title: "07_Canopy_Analysis"
+author: "Matt"
+date: "11/10/2020"
+output: html_document
+---
+
+#Overall Process:
+##1: Reclassify CHM (<10m = subcanopy, >10m = canopy)
+##2: Polygonize reclassified layer
+##3: Remove polygons <10m^2
+##4: Overlay salmonberry maps, analyze models that fall within the defined gaps
+
+```{r}
+
+
+
+```
+
