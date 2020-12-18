@@ -37,8 +37,20 @@ predict_landscape <- function(
     stop("A SpatRaster object of the raster covariates is required to run predictions.
        Additionally, the layers should be the same as the model variables.")
   
+  # Create directories to store results in
+  dir.create(outDir, recursive = TRUE, showWarnings = FALSE)
+  
   # Get the raster file paths for the covariates
   cov <- sources(covariates)[, "source"]
+  
+  # If rasters are loaded in memory, save them as .tif files elsewhere
+  if(length(cov) == 1 && cov == "") {
+    cov_names <- names(covariates)
+    covariates <- terra::writeRaster(
+      covariates, filename = tempfile(pattern = names(covariates), fileext = ".tif")) %>% 
+      magrittr::set_names(cov_names)
+    cov <- sources(covariates)[, "source"]
+  }
   
   # Count NA values in rasters data to determine best layer to use for masking
   mask_layer <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
@@ -49,9 +61,6 @@ predict_landscape <- function(
                data_cells = data.frame(freq(new))$count)
   } %>% mutate(data_cells = ifelse(data_cells == ncell(new), 0, data_cells)) %>% 
     dplyr::slice(which.max(data_cells))
-  
-  # Create directories to store results in
-  dir.create(outDir, recursive = TRUE, showWarnings = FALSE)
   
   # Generate tile index
   tiles <- tile_index(cov[1], tilesize)
@@ -212,15 +221,24 @@ predict_landscape <- function(
       k, pattern = paste0("^", basename(k), "_", tiles_keep, ".tif$", collapse = "|"),
       full.names = TRUE)
     
-    # Mosaic, resample, mask and save as temp file
-    mos <- foreach(i = r_tiles, .final = function(x) do.call(terra::merge, x)) %do% {
+    if(length(r_tiles) > 1) {
+      # Mosaic, resample, mask and save as temp file
+      mos <- foreach(i = r_tiles, .final = function(x) do.call(terra::merge, x)) %do% {
         rast(i)
       } %>% 
-      terra::resample(subset(covariates, mask_layer$layer), method = resamp_method) %>% 
-      magrittr::set_names(basename(k)) %>% 
-      terra::mask(subset(covariates, mask_layer$layer), 
-                  filename = tempfile(pattern = basename(k), fileext = ".tif"), 
-                  overwrite = TRUE)
+        terra::resample(subset(covariates, mask_layer$layer), method = resamp_method) %>% 
+        magrittr::set_names(basename(k)) %>% 
+        terra::mask(subset(covariates, mask_layer$layer), 
+                    filename = tempfile(pattern = basename(k), fileext = ".tif"), 
+                    overwrite = TRUE)
+    } else {
+      mos <- rast(r_tiles) %>% 
+        terra::resample(subset(covariates, mask_layer$layer), method = resamp_method) %>% 
+        magrittr::set_names(basename(k)) %>% 
+        terra::mask(subset(covariates, mask_layer$layer), 
+                    filename = tempfile(pattern = basename(k), fileext = ".tif"), 
+                    overwrite = TRUE)
+    }
     
     # Depending on prediction type, output either a single SpatRaster layer or
     # a list of files
