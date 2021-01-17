@@ -26,8 +26,8 @@ Before getting started, the first thing to do is to load the required packages. 
 ```{r Load Packages, echo=TRUE, results='hide'}
 
 suppressMessages(suppressWarnings({
-  lapply(c("tidyverse", "terra", "xml2", "sf", "lubridate", "foreach", "rvest", 
-           "httr", "tools"), library, character.only = TRUE)[0]
+  lapply(c("tidyverse", "terra"), 
+         library, character.only = TRUE)[0]
   
   source(file.path('_functions', 'get_saga.R'))
   source(file.path("_functions", "derive_terrain.R"))}))
@@ -138,11 +138,10 @@ new_ext <- ext(
 
 # Using the above extent, expand the rasters, write them out, and then load them
 # back into R as a single SpatRaster object.
-lidar <- foreach(x = names(lidar), .final = rast) %do% {
-  expand(lidar[[x]], new_ext) %>% 
-    terra::writeRaster(
-      filename = file.path(AOI_dir, "_original_files", x, paste0(x, ".tif")), 
-      overwrite = TRUE)}
+lidar <- lapply(names(lidar), function(x) {
+  expand(lidar[[x]], new_ext, overwrite = TRUE,
+         filename = file.path(AOI_dir, "_original_files", x, paste0(x, ".tif")))
+}) %>% do.call(c, .)
 
 # Cleanup temp files
 suppressWarnings(tmpFiles(old = TRUE, remove = TRUE))
@@ -215,14 +214,13 @@ if(!dir.exists(dl_dir) || !dir.exists(trim_dir)) {
             "https://pub.data.gov.bc.ca/datasets/175624/92g/092g12_w.dem.zip")
   
   # Merge the files and convert to a raster object
-  trim <- foreach(i = urls, .final = function(x) 
-      do.call(merge, c(x))) %do% { 
-    download.file(url = i, destfile = file.path(dl_dir, basename(i)))
-    z <- unzip(file.path(dl_dir, basename(i)), overwrite = TRUE, 
+  trim <- lapply(urls, function(x) {
+    download.file(url = x, destfile = file.path(dl_dir, basename(x)))
+    z <- unzip(file.path(dl_dir, basename(x)), overwrite = TRUE, 
                exdir = file.path(dl_dir))
-    unlink(file.path(dl_dir, basename(i)))
+    unlink(file.path(dl_dir, basename(x)))
     return(rast(z))
-  } %>% magrittr::set_names("dem")
+  }) %>% Reduce(function(x, y) merge(x, y), .) %>% magrittr::set_names("dem")
   
   # raster package handles weird resolutions better and more accurately. Use
   # to project the merged raster to the new extent
@@ -255,9 +253,9 @@ dem_files <- grep("1m", list.files(covariate_dir, pattern = "dem.tif$",
                                    full.names = TRUE, recursive = TRUE), 
                   value = TRUE, invert = TRUE)
 
-covariates <- foreach(i = dem_files, .final = function(x) 
-  setNames(x, basename(dirname(dem_files)))) %do% {
-  dem_derived_layers(i, saga_cmd = saga_cmd)}
+covariates <- lapply(dem_files, function(x) 
+  dem_derived_layers(x, saga_cmd = saga_cmd)) %>% 
+  magrittr::set_names(basename(dirname(dem_files)))
 
 ```
 
