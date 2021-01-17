@@ -76,10 +76,16 @@ if(.Platform$OS.type == "windows") {
     # Confirm that rtools is installed properly. If it didn't, follow the 
     # instructions on the rtools website: 
     # https://cran.r-project.org/bin/windows/Rtools/
-    if(Sys.which("make") == "") 
-      stop("rtools 4.0 is installed but not registered in your sytem PATH. Did
+    if(Sys.which("make") == "") {
+      
+      # Create environment variable
+      writeLines('PATH="${RTOOLS40_HOME}\\usr\\bin;${PATH}"', con = "~/.Renviron")
+      
+      stop("rtools 4.0 is installed but not registered in your sytem PATH. An
+      \rattempt has now been made to register rtools to the system PATH. Did
       \ryou close and reopen RStudio? If error persists after restarting, follow 
       \rthe instructions at https://cran.r-project.org/bin/windows/Rtools/")
+    }
   }
 } else {
   if(as.numeric(version$major) < 4) {
@@ -107,24 +113,23 @@ if(!rstudioapi::isAvailable()) {
 
 # List of packages used by all scripts
 ls <- c("tidyverse", "raster", "sf", "terra", "foreach", "tools", "bcdata", 
-        "bcmaps", "future.apply", "RStoolbox", "reticulate", "googledrive", 
+        "bcmaps", "RStoolbox", "reticulate", "googledrive", 
         "stringi", "stars", "svSocket", "RODBC", "caret", "ranger", "GSIF",
-        "MLmetrics", "mlr3verse", "mlr3fselect")
+        "MLmetrics", "mlr3verse", "mlr3fselect", "mlr3spatiotempcv", "corrplot")
 
 new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new_packages)) 
   install.packages(new_packages, Ncpus = cpus)
 
-# Standalone packages that require installation from github
-if(!"mlr3spatiotempcv" %in% installed.packages()[, "Package"] || 
-   compareVersion(packageDescription("mlr3spatiotempcv")$Version, "0.0.0.9009") < 0)
-  devtools::install_github("mlr-org/mlr3spatiotempcv", upgrade = TRUE, force = TRUE)
+# Standalone packages that require installation from github go here (none implemented)
 
 # Required minimum versions for certain packages
 if(compareVersion(packageDescription("raster")$Version, "3.3-14") < 0) 
-  devtools::install_github("rspatial/raster", upgrade = TRUE, force = TRUE)
+  install.packages("rspatial/raster", Ncpus = cpus)
 if(compareVersion(packageDescription("terra")$Version, "0.8-5") < 0) 
   install.packages("rspatial/terra", Ncpus = cpus)
+if(compareVersion(packageDescription("mlr3spatiotempcv")$Version, "0.0.0.9009") < 0) 
+  install.packages("mlr-org/mlr3spatiotempcv", Ncpus = cpus)
 
 # Return default option
 options(install.packages.compile.from.source = def_opt)
