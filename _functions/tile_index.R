@@ -17,21 +17,22 @@
 #' mapview::mapview(tiles, alpha = 0.5)
 
 # GSIF requires a GDAL object
-tile_index <- function(rFile, pxCount){
+tile_index <- function(rFile, pxCount) {
   r <- rgdal::GDALinfo(rFile)
   dist <- pxCount * r["res.x"] ## GSIF uses a distance for the tile ... not pixel count
   
   # Generate spatial object and create index
   p_tiles <- GSIF::getSpatialTiles(r, block.x = dist, return.SpatialPolygons = TRUE)
-  p_tiles <- sf::st_as_sf(p_tiles)
-  p_tiles$id <- seq(1:nrow(p_tiles))
+  p_tiles <- sf::st_as_sf(p_tiles) %>% 
+    cbind(do.call(rbind, lapply(sf::st_geometry(.) , sf::st_bbox))) %>% 
+    dplyr::rename(xl = xmin, yl = ymin, xu = xmax, yu = ymax)
   
   # Suppress further messages
   suppressMessages({
-    # Generate associated columns and join with sf dataframe
+    # Generate associated columns and merge with sf dataframe
     t_tiles <- GSIF::getSpatialTiles(r, block.x = dist, return.SpatialPolygons = FALSE)
-    t_tiles$id <- seq(1:nrow(t_tiles))
-    p_tiles <- dplyr::left_join(p_tiles, t_tiles)
+    p_tiles <- merge(p_tiles, t_tiles) %>% 
+      tibble::rowid_to_column("id")
   })
   
   return(p_tiles)
