@@ -17,6 +17,7 @@
 model_gen_mlr3 <- function(
   traindat, 
   target, 
+  filter_correlation = FALSE,
   feature_selection = "filter", 
   type = "response", 
   folds = 10, repeats = 5) {
@@ -106,7 +107,7 @@ model_gen_mlr3 <- function(
                           backend = traindat[[x]], 
                           target = target, positive = positive,
                           extra_args = list(
-                            coords_as_features = FALSE, crs = st_crs(3005)$proj4string, 
+                            coords_as_features = FALSE, crs = "3005", 
                             coordinate_names = coordinate_cols[[x]]
                           ))
       })
@@ -143,6 +144,37 @@ model_gen_mlr3 <- function(
     }
   }
   names(tasks) <- names(traindat)
+  
+  # Create correlation matrix (mandatory output)
+  cor <- lapply(tasks, function(x) {
+    cor(as.data.frame(as.data.table(x)) %>% 
+          dplyr::select(-all_of(target)), method = "pearson")
+  })
+  
+  # Apply a correlation filter based on input data, must remove variables 
+  # with no variation first or calculations fail
+  # Reference for cutoff value being inverse:
+  # https://github.com/mlr-org/mlr3filters/blob/master/R/FilterFindCorrelation.R
+  # Associated pdf:
+  # https://cran.r-project.org/web/packages/mlr3filters/mlr3filters.pdf
+  # Cutoff is 0.1 (opposite of caret::findCorrelation, where cutoff is 0.9)
+  # due to the nature of the mlr3 algorithms:
+  # https://github.com/topepo/caret/blob/master/pkg/caret/R/findCorrelation.R
+  # Chose 0.1 because it is the default value - can adjust it if need be
+  if(filter_correlation) {
+    tasks <- lapply(tasks, function(x) {
+      x <- x$select(
+        names(which(apply(x$data() %>% dplyr::select(-Pres), 2, function(x) 
+          var(x, na.rm = TRUE) != 0))))
+      cor <- flt("find_correlation", method = "pearson")
+      cor$calculate(x)
+      x <- x$select(
+        as.data.table(cor) %>% 
+          dplyr::filter(score >= 0.1) %>% 
+          pull(feature))
+      return(x)
+    })
+  }
   
   # Create pipeop learner, note I had some issues with this, error included 
   # duplicated value in "name" column, but if the mlr3spatiaotempcv package is 
@@ -207,11 +239,13 @@ model_gen_mlr3 <- function(
   } else if(feature_selection == "rfe") {
     # Do recursive feature selection, recursive = TRUE will recalculate importance
     # at each iteration
-    f_select <- fs("rfe", min_features = 2, recursive = TRUE) 
-    
-    # rfe early on had problems with spatial resampling, this fixed the problem
-    # but it is unclear if that is still a lingering issue
-    # resampling_outer <- rsmp("repeated_cv", folds = folds, repeats = repeats) 
+    if(length(tasks[[1]]$feature_names) == 1) {
+      f_select <- fs("sequential", max_features = 1) 
+      trm <- trm("evals", n_evals = 1)
+    } else {
+      f_select <- fs("rfe", min_features = 2, feature_number = 1, recursive = TRUE) 
+      trm <- trm("stagnation", iters = 5, threshold = 1e-5)
+    }
     
     # Create the feature selection learner. Models will be compared at each iteration
     # of a feature being removed. If the models don't improve after 5 iterations, then
@@ -220,8 +254,8 @@ model_gen_mlr3 <- function(
       learner = lrn,
       resampling = resampling_outer,
       measure = msr(measures),
-      terminator = trm("stagnation", iters = 5, threshold = 1e-5),
-      fselect = f_select,
+      terminator = trm,
+      fselector = f_select,
       store_models = TRUE
     )
     
@@ -245,5 +279,5 @@ model_gen_mlr3 <- function(
   })
   names(all_results) <- names(traindat)
   
-  return(list(learners = all_results, tasks = tasks))
+  return(list(learners = all_results, tasks = tasks, cor_matrix = cor))
 }
