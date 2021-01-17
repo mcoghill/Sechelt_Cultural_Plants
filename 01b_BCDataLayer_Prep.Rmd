@@ -10,7 +10,7 @@ The purpose of this script is to download the relevant spatial data for BEC zone
 ```{r Load Packages, echo=TRUE, results='hide'}
 
 suppressMessages(suppressWarnings({
-  lapply(c("bcdata", "bcmaps", "tidyverse", "terra", "future.apply"), 
+  lapply(c("bcdata", "bcmaps", "tidyverse", "terra", "parallel"), 
          library, character.only = TRUE)[0]}))
 
 ```
@@ -44,15 +44,26 @@ cov_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
 
 ```
 
-In order to get accurate polygon edges for each raster resolution, they need to be individually created and saved. The polygonization of a raster will take place using the terra package. It first replaces values in a raster with 0's, and then polygonizes the "grid classes" (of which there would only be a single class, 0). The output shape is saved as a geopackage through the use of the sf package (terra doesn't currently support geopackage saving yet).
+As of January 2021, the terra package doesn't play well with the sf package. This small function is a quick helper from the terra package author to convert SpatVect objects to sf objects
+
+```{r functions}
+
+st_as_sf.SpatVector <- function(x, ...) {
+	sf::st_as_sf(as.data.frame(x, geom = TRUE), wkt = "geometry", crs = crs(x))}
+
+```
+
+In order to get accurate polygon edges for each raster resolution, they need to be individually created and saved. The polygonization of a raster will take place using the terra package. It first replaces values in a raster with 0's, and then polygonizes the "grid classes" (of which there would only be a single class, 0). Care is taken to make sure that the geometries are valid and that the resulting object is a POLYGON class instead of a MULTIPOLYGON.
 
 ```{r Raster to polygon}
 
 # Load DEM files
-dem_files <- list.files(cov_dir, pattern = "dem.tif$", 
-                        full.names = TRUE, recursive = TRUE)
+dem_files <- as.list(list.files(cov_dir, pattern = "dem.tif$", 
+                        full.names = TRUE, recursive = TRUE)) %>% 
+  magrittr::set_names(sapply(., function(x) basename(dirname(x))))
 
-for(i in dem_files) {
+aoi_shapes <- lapply(dem_files, function(i) {
+  cat("\rCreating the", basename(dirname(i)), "AOI polygon\n")
   # Create directory for saving DEM shapes
   shp_subdir <- file.path(shp_dir, basename(dirname(i)))
   dir.create(shp_subdir, recursive = TRUE, showWarnings = FALSE)
@@ -60,354 +71,313 @@ for(i in dem_files) {
   # Load DEM and change all values to be the same
   dem <- rast(i) * 0
   
-  # Convert DEM raster to polygon and save as .gpkg by converting to sfc object
-  dem_shp <- as.polygons(dem, trunc = TRUE, dissolve = TRUE, values = TRUE, 
-                         extent = FALSE, crs = crs(dem)) %>% 
-    as("Spatial") %>% 
-    st_as_sfc() %>% 
-    st_set_crs(crs(dem)) %>% 
-    st_make_valid()
-  st_write(dem_shp, file.path(shp_subdir, "aoi.gpkg"), 
-           delete_dsn = TRUE, quiet = TRUE)
-}
+  # Convert DEM raster to polygon, remove holes but keep the largest hole
+  dem_shp_all <- as.polygons(dem, trunc = TRUE, dissolve = TRUE, values = TRUE) 
+  
+  # Small disjointed polygons have 5 points. Filter those, create a polygon,
+  # buffer it slightly, and union them with the main polygon
+  dem_small <- terra::geom(dem_shp_all, df = TRUE) %>% 
+    group_by(geom, part, hole) %>% 
+    dplyr::filter(n() <= 5, hole < 1) %>% 
+    {if(nrow(.) > 0) {
+      ungroup(.) %>% 
+        dplyr::select(x, y) %>% 
+        as.matrix() %>% 
+        list() %>% 
+        sf::st_polygon() %>% 
+        sf::st_sfc() %>% 
+        sf::st_as_sf() %>% 
+        dplyr::rename(geometry = names(.)) %>% 
+        sf::st_set_crs(crs(dem)) %>% 
+        sf::st_buffer(res(dem)[1] / 10, nQuadSegs = 0) %>% 
+        dplyr::mutate(dem = 0)
+    } else NULL}
+  
+  dem_shp <- st_as_sf(dem_shp_all) %>% 
+    rbind(dem_small) %>% 
+    summarise(do_union = TRUE) %>% 
+    {if(!st_is_valid(.)) {
+      st_make_valid(.)
+    } else .} %>% 
+    {if(nrow(.) > 0) {
+      dplyr::mutate(., poly_id = basename(dirname(i)))
+    } else NULL}
+  
+  # Might need to do something with holes by removing them from a total geometry
+  # If so, think of the sf::st_difference() function
+  
+  return(dem_shp)
+}) %>% do.call(rbind, .) %>% tibble::remove_rownames()
+
+aoi_sfc <- st_geometry(aoi_shapes)
+aoi_sfc_lonlat <- st_transform(aoi_sfc, 4326)
+aoi_sf_lonlat <- sf::st_transform(aoi_shapes, 4326)
+aoi_sfc_bad <- c(aoi_sfc[1:3], aoi_sfc_lonlat[4:6]) # Don't think I can do anything about this...
+aoi_sfc_utm <- st_transform(aoi_sfc, 32610)
 
 ```
 
-A single function is used to download all layers listed above. If multiple AOI's are provided, the layer is downloaded once and then clipped to the respective AOI.
+A single function is used to download all layers listed above. If multiple AOI's are provided, the layer is downloaded once and then clipped to the respective AOI. The function is also able to perform the following checks:
+
+* Checks that an sf or sfc object is loaded
+* Checks that the objects are POLYGON or MULTIPOLYGON class
+* Checks the CRS arguments and performs datum transformations where necessary
+
+Pretty much as long as there is an sf or sfc object within the province of BC, the function should operate properly. Newly added is parallelism to download and perform spatial intersections for each downloaded layer on separate cores, hopefully increasing the efficiency (not explicitly tested yet).
 
 ```{r Function}
 
-get_bc_shapes <- function(in_aoi, out_dir, epsg = 3005) {
+get_bc_shapes <- function(in_aoi, id_col) {
   
   #### Input checks
-  ## Restrict in_aoi to being an sf, sfc, or list of sf or sfc objects 
-  ## (i.e.: polygons only). sfg objects not allowed since they have no CRS
-  ## information. STILL NEED CASE WHEN THERE ARE MULTIPLE OBJECTS, ex: an sf
-  ## dataframe with more than one row. Right now, this works when it is only a
-  ## single row. We only really want a single sfc polygon out, so maybe an
-  ## st_combine call?
+  ## Restrict in_aoi to being an sf or sfc object only. The function will convert
+  ## sfc objects to sf objects where appropriate
+  
+  # First, check for object presence
   if(missing(in_aoi)) stop("'in_aoi' is missing with no default")
-  if(missing(out_dir)) stop("'out_dir' is missing with no default")
-  if(length(out_dir) > 1) stop("Only one file path allowed")
-  if(!is.numeric(epsg)) stop("\rError in epsg: Not a numerical EPSG code")
   
-  # Use list processing throughout. If not initially a list, make into one
-  rand_name <- basename(tempfile())
-  if(all(class(in_aoi) != "list")) 
-    in_aoi <- list(in_aoi) %>% magrittr::set_names(rand_name)
+  # Second, detect object type and convert where necessary
+  if(!inherits(in_aoi, c("sf", "sfc")))
+    stop("'in_aoi' is not an sf or sfc object.")
   
-  if(is.null(names(in_aoi))) stop("List elements must be named")
+  if(!missing(id_col) && class(id_col) != "character")
+    stop("'id_col' is not a character object")
   
-  # If all are sfc, easy peasy
-  if(all(sapply(in_aoi, function(x) 
-    any(class(x) %in% c("sfc_POLYGON", "sfc_MULTIPOLYGON"))))) {
-    study_area <- in_aoi
-    
-    # If all are sf, fairly simple as well
-  } else if(all(sapply(in_aoi, function(x)
-    any(class(x) %in% "sf")))) {
-    if(all(sapply(in_aoi, function(x) {
-      any(class(st_geometry(x)) %in% c("sfc_POLYGON", "sfc_MULTIPOLYGON"))
-    }))) {
-      study_area <- lapply(in_aoi, st_geometry)
-    } else 
-      stop("Not all listed sf features are of POLYGON or MULTIPOLYGON class")
-    
-    # If some are sfc and some are sf...
-  } else if(all(sapply(in_aoi, function(x)
-    any(class(x) %in% c("sf", "sfc_POLYGON", "sfc_MULTIPOLYGON"))))) {
-    in_aoi_sfc <- Filter(function(x) 
-      any(class(x) %in% c("sfc_POLYGON", "sfc_MULTIPOLYGON")), in_aoi)
-    in_aoi_sf <- Filter(function(x) 
-      any(class(x) %in% "sf"), in_aoi)
-    if(all(sapply(in_aoi_sf, function(x) 
-      any(class(st_geometry(x)) %in% c("sfc_POLYGON", "sfc_MULTIPOLYGON"))))) {
-      study_area <- c(lapply(in_aoi_sf, st_geometry), in_aoi_sfc)
-    } else 
-      stop("Not all listed sf features are of POLYGON or MULTIPOLYGON class")
-  } else 
-    stop("Some list elements are not valid sf or sfc obects.")
+  if(!missing(id_col) && length(id_col) > 1)
+    stop("'id_col' needs to have a length of 1")
   
-  # Set out_dir variable
-  if(length(study_area) > 1 || names(study_area)[1] != rand_name) {
-    out_dir <- as.list(file.path(out_dir, names(in_aoi))) %>% 
-      magrittr::set_names(names(study_area))
-  } else out_dir <- as.list(out_dir) %>% magrittr::set_names(names(study_area))
-  sapply(out_dir, dir.create, showWarnings = FALSE, recursive = TRUE)
-  
-  # Create function to remove incorrect geometries from shapes due to clipping
-  st_force_poly <- function(sf) {
-    if(!all(sf::st_geometry_type(sf) %in% c("POLYGON", "MULTIPOLYGON"))) {
-      bec_sfc <- sf::st_geometry(sf) %>% 
-        lapply(function(x) {
-          if(sf::st_geometry_type(x) == "GEOMETRYCOLLECTION") {
-            extr <- sf::st_collection_extract(x, type = "POLYGON", warn = FALSE)
-            if(length(extr) > 1) {
-              sf::st_multipolygon(extr) 
-            } else sf::st_polygon(extr)
-          } else if(!sf::st_geometry_type(x) %in% c("POLYGON", "MULTIPOLYGON")) {
-            x <- NULL
-          } else x
-        }) %>% sf::st_sfc(crs = epsg)
-      st_geometry(sf) <- bec_sfc
+  # If it's an sfc object, convert to sf dataframe
+  if(inherits(in_aoi, "sfc")) {
+    id_col <- "poly_id"
+    in_aoi <- st_as_sf(in_aoi) %>% 
+      dplyr::rename(geometry = x) %>% 
+      dplyr::mutate("{id_col}" := row_number()) %>% 
+      dplyr::relocate(geometry, .after = last_col())
+  } else {
+    # If it's a sf dataframe, use the supplied id column for ID'ing polygons,
+    # or generate a column with a warning
+    if(missing(id_col)) {
+      id_col <- names(which(apply(
+        st_drop_geometry(in_aoi), 2, function(x) 
+          length(unique(x))) == nrow(in_aoi)))[1]
+      
+      # If above evaluates to NULL or NA, use row numbers instead
+      if(is.na(id_col) || is.null(id_col)) {
+        id_col <- "poly_id"
+        in_aoi <- dplyr::mutate(in_aoi, "{id_col}" := row_number())
+      }
     }
-    return(sf)
   }
   
-  #### Function script
-  # Set or transform CRS of input AOI if not provided
-  study_area <- lapply(study_area, function(x) {
-    if(is.na(sf::st_crs(x)$proj4string)) {
-      message(paste("\nNo CRS detected for in_aoi, setting to EPSG", epsg, "\n"))
-      x <- sf::st_set_crs(x, epsg)
-      
-    } else if(sf::st_crs(x) != sf::st_crs(epsg)) {
-      x <- sf::st_transform(x, epsg)
-    }
-    x <- sf::st_make_valid(x)
-  })
+  # Check for polygon/multipolygon geometry type as input only:
+  if(!st_geometry_type(in_aoi, by_geometry = FALSE) %in% c("POLYGON", "MULTIPOLYGON"))
+    stop("Only POLYGON or MULTIPOLYGON geometries allowed")
   
+  # Check for uniqueness of id_col variable against the nrow of the in_aoi
+  if(nrow(in_aoi) != length(unique(dplyr::pull(in_aoi, id_col))))
+    stop("Something is wrong with the 'id_col' variable")
+  
+  # Detect the CRS of the sf object
+  if(is.na(sf::st_crs(in_aoi)))
+    stop("CRS is not assigned. Use sf::st_crs() to assign a valid CRS to in_aoi")
+  
+  if(sf::st_is_longlat(in_aoi)) {
+    cat("Input CRS is Lat/Long format. Transforming to EPSG 3005 (BC Albers) for processing")
+    epsg <- 3005L
+    in_crs <- sf::st_crs(in_aoi)
+    in_aoi <- sf::st_transform(in_aoi, epsg) %>% sf::st_set_agr("constant")
+  } else {
+    in_crs <- sf::st_crs(in_aoi)
+    epsg <- in_crs$epsg
+    in_aoi <- sf::st_set_agr(in_aoi, "constant")
+    if(!is.numeric(epsg)) 
+      stop("There was a problem retrieving the EPSG code from the in_aoi. Is it assigned properly?")
+  }
+  
+  # Detect the location of your polygons. If outside of BC, throw a warning.
+  bc_boundary <- bcmaps::bc_bound(class = "sf", ask = FALSE) %>% 
+    sf::st_bbox() %>% 
+    sf::st_as_sfc() %>% 
+    {if(sf::st_crs(.) != sf::st_crs(in_aoi)) {
+      sf::st_transform(., sf::st_crs(in_aoi))
+    } else .}
+  
+  if(!all(st_intersects(st_centroid(in_aoi), bc_boundary, sparse = FALSE)))
+    warning("One or some of the input polygons may be outside of the BC provincial boundary. 
+            \rIt may be worth it to check your inputs if the results are not expected.
+            \rIgnore this warning if you're confident things are as they should be.")
+  
+  #### Function script
   # Get largest bbox for downloading layers
-  box <- sapply(study_area, st_bbox)
-  box <- st_as_sfc(st_bbox(c(
-    xmin = min(box["xmin", ]), xmax = max(box["xmax", ]), 
-    ymin = min(box["ymin", ]), ymax = max(box["ymax", ])), crs = st_crs(epsg)))
+  box <- sf::st_bbox(in_aoi)
     
   suppressMessages({
-    # Download BEC, transform if necessary, and clip to AOI
-    cat("\nDownloading BEC layer\n")
-    bec_sf <- bcmaps::bec(class = "sf")
-    if(sf::st_crs(bec_sf) != sf::st_crs(study_area[[1]])) 
-      bec_sf <- sf::st_transform(bec_sf, epsg)
-    bec_sf <- lapply(study_area, function(x) {
-      sf::st_set_agr(bec_sf, "constant") %>% 
-        sf::st_intersection(x) %>%
-        dplyr::group_by(MAP_LABEL) %>% 
-        dplyr::summarise(.groups = "drop") %>% 
-        st_force_poly()})
-    
-    # Download TEM polygon
-    cat("Downloading TEM layer\n")
-    tem <- bcdata::bcdc_query_geodata(
-      "0a83163b-a62f-4ce6-a9a1-21c228b0c0a3", crs = epsg) %>%
-      bcdata::filter(bcdata::INTERSECTS(box)) %>%
-      bcdata::collect() %>% 
-      sf::st_set_agr("constant") 
-    
-    # Trim TEM polygon to individual AOI shapes
-    tem <- sapply(names(study_area), function(x) {
-      if(nrow(tem) > 0) {
-        tem <- sf::st_intersection(tem, study_area[[x]]) %>% st_force_poly()
-        sf::st_write(tem, file.path(out_dir[[x]], "tem.gpkg"),
-                     delete_dsn = TRUE, quiet = TRUE)
-      } else tem <- tem
-      return(tem)}, simplify = FALSE, USE.NAMES = TRUE)
-    
-    # Adjust BEC subzone lines to match TEM since TEM is higher accuracy
-    lapply(names(tem), function(x) {
-      
-      if(nrow(tem[[x]]) > 0 && 
-         all(unique(bec_sf[[x]]$MAP_LABEL) %in% 
-             unique(tem[[x]]$BIOGEOCLIMATIC_LBL))) {
-        bec_fix <- tem[[x]] %>% dplyr::select(BIOGEOCLIMATIC_LBL) %>% 
-          dplyr::group_by(BIOGEOCLIMATIC_LBL) %>% 
-          dplyr::summarise(.groups = "drop") %>% st_force_poly()
-        if(any(is.na(bec_fix$BIOGEOCLIMATIC_LBL))) {
-          bec_sf[[x]] <- sf::st_set_agr(bec_fix, "constant") %>% 
-            sf::st_intersection(
-              sf::st_set_agr(bec_sf[[x]][, "MAP_LABEL"], "constant")) %>% 
-            dplyr::mutate(BIOGEOCLIMATIC_LBL = ifelse(
-              is.na(BIOGEOCLIMATIC_LBL), MAP_LABEL, BIOGEOCLIMATIC_LBL)) %>% 
-            dplyr::group_by(BIOGEOCLIMATIC_LBL) %>% 
-            dplyr::summarise(.groups = "drop") %>% 
-            dplyr::rename(MAP_LABEL = BIOGEOCLIMATIC_LBL) %>% st_force_poly()
-        } else bec_sf[[x]] <- dplyr::rename(bec_fix, 
-                                            MAP_LABEL = BIOGEOCLIMATIC_LBL)
-      }
-      sf::st_write(bec_sf[[x]], file.path(out_dir[[x]], "bec.gpkg"), 
-                   delete_dsn = TRUE, quiet = TRUE)
-    })
-    
-    # Download VRI
-    cat("Downloading VRI layer\n")
-    vri <- bcdata::bcdc_query_geodata(
-      "2ebb35d8-c82f-4a17-9c96-612ac3532d55", crs = epsg) %>% 
-      bcdata::filter(bcdata::INTERSECTS(box)) %>%
-      bcdata::collect() %>% 
-      sf::st_set_agr("constant") 
-    
-    # Trim VRI polygon to individual AOI polygons
-    future::plan(sequential)
-    vri <- sapply(names(study_area), function(x) {
-      if(nrow(vri) > 0) {
-        vri <- sf::st_intersection(vri, study_area[[x]]) %>% st_force_poly()
-        sf::st_write(vri, file.path(out_dir[[x]], "vri_full.gpkg"), 
-                     delete_dsn = TRUE, quiet = TRUE)
-        sf::st_write(dplyr::select(vri, "BCLCS_LEVEL_2"), 
-                     file.path(out_dir[[x]], "vri_trees.gpkg"), # Treed sites
-                     delete_dsn = TRUE, quiet = TRUE)
-      } else vri <- vri
-      return(vri)}, simplify = FALSE, USE.NAMES = TRUE)
-    
-    # Download recent cutblocks layer. Uses date filter which filters cutblock 
-    # ages less than 20 years, or 7305 days
-    cat("Downloading cutblock layer\n")
-    cutblocks <- bcdata::bcdc_query_geodata(
-      "b1b647a6-f271-42e0-9cd0-89ec24bce9f7", crs = epsg) %>% 
-      bcdata::filter(bcdata::INTERSECTS(box)) %>%
-      bcdata::collect() %>% 
-      sf::st_set_agr("constant") 
-    
-    # Trim cutblock layer to individual AOI polygons
-    cutblocks <- sapply(names(study_area), function(x) {
-      if(nrow(cutblocks) > 0) {
-        cutblocks <- sf::st_intersection(cutblocks, study_area[[x]]) %>% 
-          st_force_poly() %>% 
-          mutate(DISTURBANCE_START_DATE = as.Date(DISTURBANCE_START_DATE),
-             DISTURBANCE_END_DATE = as.Date(DISTURBANCE_END_DATE)) %>% 
-          dplyr::filter(
-            as.numeric(format(Sys.time(), "%Y")) - HARVEST_YEAR <= 20)
-        sf::st_write(cutblocks, file.path(out_dir[[x]], "young_cutblocks.gpkg"), 
-                     delete_dsn = TRUE, quiet = TRUE)
-      } else cutblocks <- cutblocks
-      return(cutblocks)}, simplify = FALSE, USE.NAMES = TRUE)
-    
-    # Download water layers, requires merging multiple layers
-    cat("Downloading water layers\n")
-    
-    # Use future package to efficiently download multiple water layers
-    water_records <- c(lakes = "cb1e3aba-d3fe-4de1-a2d4-b8b6650fb1f6",
-                       rivers = "f7dac054-efbf-402f-ab62-6fc4b32a619e",
-                       wetlands = "93b413d8-1840-4770-9629-641d74bd1cc6") 
-    
-    # Quickly downloads the different layers
-    future::plan(multisession)
-    waterbodies <- future_lapply(names(water_records), function(x) {
-      bcdata::bcdc_query_geodata(water_records[[x]], crs = epsg) %>%
-        bcdata::filter(bcdata::INTERSECTS(box)) %>%
-        bcdata::collect() 
-    })
-    future::plan(sequential)
-    
-    # Removes list entries with 0 rows of data and then merges them into single
-    # sf dataframe
-    waterbodies <- Filter(function(x) nrow(x) > 0, waterbodies) %>% 
-      do.call(rbind, .) %>% 
+    # Download BEC and clip to AOI. If transformation is necessary, it is much
+    # faster to transform the bounding box to the CRS of the BEC layer, clip
+    # the BEC layer, then transform the resulting BEC layer back to the CRS of 
+    # the bounding box
+    bec_sf <- bcmaps::bec(class = "sf", force = TRUE, ask = FALSE) %>% 
+      sf::st_set_agr("constant")
+    if(sf::st_crs(bec_sf) != sf::st_crs(in_aoi)) {
+      box_trans <- sf::st_as_sfc(box) %>% 
+        sf::st_buffer(10, nQuadSegs = 0) %>% 
+        sf::st_transform(sf::st_crs(bec_sf)) %>% 
+        sf::st_bbox()
+      bec_sf <- sf::st_crop(bec_sf, box_trans) %>% 
+        sf::st_transform(sf::st_crs(in_aoi)) %>% 
+        sf::st_set_agr("constant")
+    } 
+    bec_sf_clip <- sf::st_crop(bec_sf, box) %>% 
       sf::st_set_agr("constant")
     
-    # With all waterbodies merged, trim those to the individual AOI polygons
-    waterbodies <- sapply(names(study_area), function(x) {
-      if(nrow(waterbodies) > 0) {
-        waterbodies <- sf::st_intersection(waterbodies, study_area[[x]]) %>% 
-          st_force_poly()
-        sf::st_write(waterbodies, file.path(out_dir[[x]], "water.gpkg"), 
-             delete_dsn = TRUE, quiet = TRUE)
-      } else waterbodies <- waterbodies
-      return(waterbodies)}, simplify = FALSE, USE.NAMES = TRUE)
+    ## Parallel processing/downloading of BC Data layers
+    # Want to use sockets for parallel processing - carries across all machines,
+    # whereas forking is only used on Macs and Linux.
     
-    # Download road network
-    cat("Downloading Road network\n")
-    road_records <- c(roads = "bb060417-b6e6-4548-b837-f9060d94743e",
-                      fsr = "9e5bfa62-2339-445e-bf67-81657180c682")
+    # Provide list of links to BC Data Catalog polygonal spatial datasets
+    links <- list(
+      TEM = "0a83163b-a62f-4ce6-a9a1-21c228b0c0a3", 
+      VRI = "2ebb35d8-c82f-4a17-9c96-612ac3532d55", 
+      Cutblocks = "b1b647a6-f271-42e0-9cd0-89ec24bce9f7", 
+      Lakes = "cb1e3aba-d3fe-4de1-a2d4-b8b6650fb1f6", 
+      Rivers = "f7dac054-efbf-402f-ab62-6fc4b32a619e", 
+      Wetlands = "93b413d8-1840-4770-9629-641d74bd1cc6", 
+      Roads = "bb060417-b6e6-4548-b837-f9060d94743e", 
+      FSRs = "9e5bfa62-2339-445e-bf67-81657180c682",
+      FireCur = "cdfc2d7b-c046-4bf0-90ac-4897232619e1", 
+      FireHist = "22c7cb44-1463-48f7-8e47-88857f207702")
     
-    # Quickly downlaod multiple layers
-    future::plan(multisession)
-    roads <- future_lapply(names(road_records), function(x) {
-      bcdata::bcdc_query_geodata(road_records[[x]], crs = epsg) %>% 
-        bcdata::filter(bcdata::INTERSECTS(box)) %>% 
-        {if(x == "roads") {
-          # Digital road atlas has too many roads in it, filter to only include
-          # named roads
-          bcdata::filter(., ROAD_NAME_ID > 0) %>% 
-            bcdata::collect() %>% 
-            dplyr::select(id, ROAD_NAME_FULL, FEATURE_LENGTH_M) %>% 
-            dplyr::rename(NAME = ROAD_NAME_FULL)
-          
-        } else {
-          # Filter forest service road layer to only include active roads
-          bcdata::filter(., LIFE_CYCLE_STATUS_CODE == "ACTIVE") %>% 
-            bcdata::collect() %>% 
-            dplyr::select(id, MAP_LABEL, FEATURE_LENGTH_M) %>% 
-            dplyr::rename(NAME = MAP_LABEL)
-        }}
-    }) 
-    future::plan(sequential)
+    # Create the parallel cluster and export variables to each socket
+    cl <- makeCluster(detectCores())
+    clusterExport(cl, c("box", "links", "epsg", "in_aoi"))
     
-    # Filter any list items with 0 rows and combine to a single sf dataframe
-    roads <- Filter(function(x) nrow(x) > 0, roads) %>% 
-      do.call(rbind, .) %>% 
-      sf::st_set_agr("constant")
+    # Load the required libraries on each socket
+    clusterEvalQ(cl, suppressMessages(suppressWarnings({
+      sapply(c("bcdata", "tidyverse", "sf"), 
+             library, character.only = TRUE)[0]})))[0]
     
-    # With all roads combined, trim roads to individual AOI polygons
-    roads <- sapply(names(study_area), function(x) {
-      if(nrow(roads) > 0) {
-        roads <- sf::st_intersection(roads, study_area[[x]])  %>% 
-          sf::st_cast("MULTILINESTRING")
-        sf::st_write(roads, file.path(out_dir[[x]], "road_network.gpkg"), 
-                     delete_dsn = TRUE, quiet = TRUE)
-      } else roads <- roads
-      return(roads)}, simplify = FALSE, USE.NAMES = TRUE)
-    
-    # Download fire polygons
-    cat("Downloading Fire areas\n")
-    fire_records <- c(current = "cdfc2d7b-c046-4bf0-90ac-4897232619e1", 
-                      historical = "22c7cb44-1463-48f7-8e47-88857f207702")
-    
-    # Quickly download multiple layers
-    future::plan(multisession)
-    fires <- future_lapply(fire_records, function(x) {
+    # Download all datasets using a parallelized lapply call
+    dls <- parLapply(cl, links, function(x) {
       bcdata::bcdc_query_geodata(x, crs = epsg) %>%
-        bcdata::filter(bcdata::INTERSECTS(box)) %>%
-        bcdata::collect()
+        bcdata::filter(bcdata::BBOX(box)) %>%
+        bcdata::collect() %>% 
+        {if(sf::st_crs(.) != sf::st_crs(epsg)) {
+          sf::st_transform(., epsg)
+        } else .} %>% 
+        sf::st_set_agr("constant")
     })
-    future::plan(sequential)
     
-    # Remove entries with 0 rows of data and combine to single sf dataframe
-    fires <- Filter(function(x) nrow(x) > 0, fires) %>% 
-      do.call(rbind, .) %>% 
-      sf::st_set_agr("constant")
+    # Update BGC boundaries based on TEM lines
+    tem <- dls[["TEM"]]
+    if(nrow(tem) > 0 && 
+       all(unique(bec_sf_clip$MAP_LABEL) %in% 
+           unique(tem$BIOGEOCLIMATIC_LBL))) {
+      bec_fix <- tem %>% dplyr::select(BIOGEOCLIMATIC_LBL) %>% 
+        dplyr::group_by(BIOGEOCLIMATIC_LBL) %>% 
+        dplyr::summarise(do_union = TRUE, .groups = "drop")
+      if(any(is.na(bec_fix$BIOGEOCLIMATIC_LBL))) {
+        bec_sf_clip <- sf::st_set_agr(bec_fix, "constant") %>% 
+          sf::st_intersection(
+            sf::st_set_agr(bec_sf_clip[, "MAP_LABEL"], "constant")) %>% 
+          dplyr::mutate(BIOGEOCLIMATIC_LBL = ifelse(
+            is.na(BIOGEOCLIMATIC_LBL), MAP_LABEL, BIOGEOCLIMATIC_LBL)) %>% 
+          dplyr::group_by(BIOGEOCLIMATIC_LBL) %>% 
+          dplyr::summarise(do_union = TRUE, .groups = "drop") %>% 
+          dplyr::rename(MAP_LABEL = BIOGEOCLIMATIC_LBL)
+      } else bec_sf_clip <- dplyr::rename(bec_fix, MAP_LABEL = BIOGEOCLIMATIC_LBL)
+    }
+    bec_sf_clip <- list(BEC = sf::st_cast(bec_sf_clip, "MULTIPOLYGON") %>% 
+                          sf::st_set_agr("constant"))
     
-    # Trim merged fire area to individual AOI polygons, also filter fires to 
-    # only include 20 year old fires or less.
-    fires <- sapply(names(study_area), function(x) {
-      if(nrow(fires) > 0) {
-        fires <- sf::st_intersection(fires, study_area[[x]]) %>% 
-          dplyr::select(id, FIRE_NUMBER, VERSION_NUMBER, FIRE_YEAR, 
-                        FIRE_SIZE_HECTARES, LOAD_DATE) %>% 
-          dplyr::filter(as.numeric(format(Sys.time(), "%Y")) - FIRE_YEAR <= 20) %>% 
-          st_force_poly()
-        sf::st_write(fires, file.path(out_dir[[x]], "fires.gpkg"), 
-                     delete_dsn = TRUE, quiet = TRUE)
-      } else fires <- fires
-      return(fires)}, simplify = FALSE, USE.NAMES = TRUE)
+    # Filter cutblocks to be less than 20 years old
+    cutblocks <- list(
+      Cutblocks = dls[["Cutblocks"]] %>% 
+        dplyr::mutate(DISTURBANCE_START_DATE = as.Date(DISTURBANCE_START_DATE),
+                      DISTURBANCE_END_DATE = as.Date(DISTURBANCE_END_DATE)) %>% 
+        dplyr::filter(
+          as.numeric(format(Sys.time(), "%Y")) - HARVEST_YEAR <= 20))
     
-    # Now, refactor final results into proper list for output
-    pre_out <- list(bec = bec_sf, tem = tem, vri = vri, cutblocks = cutblocks, 
-                water = waterbodies, roads = roads, fires = fires)
-    out <- sapply(names(study_area), function(x) {
-      lapply(pre_out, "[[", x)}, simplify = FALSE, USE.NAMES = TRUE)
+    # Combine lakes, rivers, and wetlands to a single Waterbodies layer
+    waterbodies <- list(
+      Waterbodies = do.call(rbind, dls[c("Lakes", "Rivers", "Wetlands")] %>% 
+                              Filter(function(x) nrow(x) > 0, .)))
     
-    if(names(out) == rand_name)
-      out <- magrittr::set_names(out, NULL)
+    # Combine digital road atlas and FSR layer to a single Roads layer
+    roads <- list(
+      Roads = do.call(rbind, list(
+        dls[["Roads"]] %>% 
+          dplyr::filter(ROAD_NAME_ID > 0) %>% 
+          dplyr::select(id, ROAD_NAME_FULL, FEATURE_LENGTH_M) %>% 
+          dplyr::rename(NAME = ROAD_NAME_FULL),
+        dls[["FSRs"]] %>% 
+          dplyr::filter(LIFE_CYCLE_STATUS_CODE == "ACTIVE") %>% 
+          dplyr::select(id, MAP_LABEL, FEATURE_LENGTH_M) %>% 
+          dplyr::rename(NAME = MAP_LABEL)) %>% Filter(function(x) nrow(x) > 0, .)))
     
+    # Combine fire area polygons and filter out fires older than 20 years
+    fires <- list(
+      Fires = do.call(rbind, dls[c("FireCur", "FireHist")] %>% 
+                        Filter(function(x) nrow(x) > 0, .)) %>% 
+        dplyr::select(id, FIRE_NUMBER, VERSION_NUMBER, FIRE_YEAR, 
+                      FIRE_SIZE_HECTARES, LOAD_DATE) %>% 
+        dplyr::filter(as.numeric(format(Sys.time(), "%Y")) - FIRE_YEAR <= 20))
+    
+    # Recombine
+    dls_comb <- lapply(c(bec_sf_clip, dls[c("TEM", "VRI")], cutblocks, 
+                         waterbodies, roads, fires), sf::st_set_agr, "constant")
+    
+    # Export the newly combined list to the sockets
+    clusterExport(cl, "dls_comb")
+    
+    # Perform the spatial intersection with the study area polygons in parallel
+    dls_full <- parLapply(cl, dls_comb, sf::st_intersection, in_aoi)
+    if(sf::st_is_longlat(in_crs)) {
+      clusterExport(cl, c("dls_full", "in_crs"))
+      dls_full <- parLapply(cl, dls_full, sf::st_transform, in_crs)
+    }
+      
+    # Finish parallel processing
+    stopCluster(cl)
+    
+    # Reformat output
+    dls_clips <- sapply(dplyr::pull(in_aoi, id_col), function(x) 
+      lapply(dls_full, dplyr::filter, !!sym(id_col) == x), simplify = FALSE, USE.NAMES = TRUE) %>% 
+      lapply(., function(x) {
+        xx <- c(x, list(forested_sites = dplyr::select(x[["VRI"]], BCLCS_LEVEL_2)))
+        xx[["Roads"]] <- sf::st_cast(xx[["Roads"]], "MULTILINESTRING")
+        y <- lapply(xx[c("BEC", "TEM", "VRI", "Cutblocks", "forested_sites",
+                         "Waterbodies", "Fires")],
+                    sf::st_cast, "MULTIPOLYGON")
+        yy <- c(y, list(Roads = xx[["Roads"]])) %>% 
+          lapply(., dplyr::select, -any_of(id_col))
+      })
   })
-  return(out)
+  return(dls_clips)
 }
 
 ```
 
-The AOI's are read into R and then converted to sfc objects (not necessary, just simpler for me to think about). The function is then ran to process each file. Improvements may be made where files don't get saved in the function but rather get loaded into the R environment, as well as perhaps placing the above function into a .R file of its own, and finally applying filters for which layers I would care to download from the ones coded in there.
+After the function runs, the outputs are saved into the respective folders that they should be in.
 
-```{r Run Function}
-
-# Define the input AOI files
-aoi_shapes <- lapply(
-  list.files(shp_dir, pattern = "aoi.gpkg", full.names = TRUE, recursive = TRUE),
-  st_read, quiet = TRUE) %>% magrittr::set_names(dir(shp_dir)) %>% 
-  lapply(st_geometry)
+```{r Run and export}
 
 # Run the function in a loop for multiple input AOI's (function will default
 # out_dir designation to the folder of in_aoi if in_aoi is a file path)
-bc_shapes <- get_bc_shapes(aoi_shapes, out_dir = shp_dir)
+bc_shapes <- get_bc_shapes(aoi_shapes, "poly_id")
+
+# Diagnostics for proper feature types and geometry validity, takes a short moment
+sapply(bc_shapes, function(x) sapply(x, st_geometry_type, FALSE))
+sapply(bc_shapes, function(x) sapply(x, function(y) all(st_is_valid(y))))
+
+# Save files as geopackages
+for(i in aoi_shapes$poly_id) {
+  st_write(aoi_shapes[aoi_shapes$poly_id == i, ], file.path(shp_dir, i, "aoi.gpkg"),
+           delete_layer = TRUE, quiet = TRUE)
+}
+
+sapply(names(bc_shapes), function(x) {
+  sapply(names(bc_shapes[[x]]), function(y) {
+     st_write(bc_shapes[[x]][[y]], file.path(shp_dir, x, paste0(y, ".gpkg")),
+              delete_layer = TRUE, quiet = TRUE)})[0]})[0]
 
 ```
