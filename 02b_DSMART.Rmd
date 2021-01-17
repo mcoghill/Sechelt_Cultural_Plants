@@ -28,7 +28,7 @@ Next, file paths are defined. There are two major branches: First, what resoluti
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- "TRIM"
+map_res <- 4
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
@@ -126,6 +126,13 @@ if(run == "site_ser") {
   tem_rast <- terra::rasterize(tem, covariates[[1]], field = "MapUnit1_num", 
                                filename = file.path(dsmart_dir, "simple", "site_series_simple.tif"), 
                                overwrite = TRUE)
+  
+  tem_rast_index <- data.frame(name = tem$MapUnit1, code = tem$MapUnit1_num) %>% 
+    unique() %>% 
+    arrange(code)
+  
+  write.table(tem_rast_index, file.path(dsmart_dir, "simple", "site_ser_simple_lookup.txt"),
+              row.names = FALSE, quote = FALSE, sep = ",")
   
   # Generate probabilities based on composition
   ss_calls <- unique(composition$MapUnit)
