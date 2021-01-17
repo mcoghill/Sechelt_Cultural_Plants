@@ -123,6 +123,10 @@ dem_derived_layers <- function(
   # Note: All SAGA tools and associated documentation can be found here:
   # http://www.saga-gis.org/saga_tool_doc/7.3.0/index.html
   
+  # List of packages required for function to work
+  lapply(c("tidyverse", "terra", "xml2", "lubridate", "rvest", "httr"), 
+         require, character.only = TRUE)[0]
+  
   # Data input checks/error handling
   if(missing(dem_input)) stop("dem_input is missing with no default")
   if(missing(saga_cmd)) stop("A path to saga_cmd is missing with no default")
@@ -156,13 +160,12 @@ dem_derived_layers <- function(
   
   ## Sunrise/sunset time calculation for solar radiation tool:
   base::suppressWarnings(base::suppressMessages({
-    centroid <- data.frame(x = mean(c(terra::xmax(reference), terra::xmin(reference))),
-                           y = mean(c(terra::ymax(reference), terra::ymin(reference)))) %>%
-      sf::st_as_sf(coords = c("x", "y"), crs = crs(reference)) %>%
-      sf::st_transform(4326) %>% # needs lat/long for calculating sunlight times
-      sf::st_coordinates() %>%
-      as.data.frame() %>% 
-      dplyr::rename_at(vars(names(.)), ~c("Lon", "Lat"))
+    centroid <- terra::as.polygons(reference, extent = TRUE) %>% 
+      terra::centroids() %>% 
+      terra::project("epsg:4326") %>% 
+      terra::geom(df = TRUE) %>% 
+      dplyr::select(x, y) %>% 
+      dplyr::rename(Lon = x, Lat = y)
     
     # Using rvest to gather sunset/sunrise information
     # Use previous year to calculate full year of data
@@ -185,7 +188,7 @@ dem_derived_layers <- function(
     result$response$content <- result$response$content[lb : length(result$response$content)]
     
     response <- httr::content(result$response, type = "text/csv") %>% 
-      na.omit() %>%
+      tidyr::drop_na() %>% 
       dplyr::mutate(Month = base::match(trimws(gsub("[[:digit:]]+|/", "", Date)), month.abb),
                     Day = readr::parse_number(Date)) %>%
       dplyr::mutate(rise = lubridate::as_datetime(paste0(
@@ -523,23 +526,22 @@ dem_derived_layers <- function(
       unique(unlist(x$inputs)[!unlist(x$inputs) %in% unlist(x$outputs)])
     )
     
-    x$out_files <- foreach(k = x$outputs) %do% {
-      tempfile(pattern = paste0("spat_", k, "_"), fileext = ".tif")
-    }
+    x$out_files <- lapply(x$outputs, function(k) {
+      tempfile(pattern = paste0("spat_", k, "_"), fileext = ".tif")})
     
-    x$input_xml <- foreach(i = x$inputs, .combine = paste) %do% {
+    x$input_xml <- lapply(x$inputs, function(i) {
       paste0("<input varname='", i, "' type='grid' parent='GRID_SYSTEM'>
           <name>", i, "</name>
-      </input>\n", collapse = " ")}
+      </input>\n", collapse = " ")}) %>% do.call(paste, .)
     
-    x$output_xml <- foreach(k = 1:length(unlist(x$outputs)), .combine = paste) %do% {
+    x$output_xml <- lapply(1:length(unlist(x$outputs)), function(k) {
       paste0(
         "<tool library='io_gdal' tool='2' name='Export GeoTIFF'>
         <input id='GRIDS'>", unlist(x$outputs)[k], "</input>
         <option id='FILE'>", unlist(x$out_files)[k], "</option>
         
-      </tool>\n", collapse = " ")
-    }
+      </tool>\n", collapse = " ")}) %>% do.call(paste, .)
+    
     x$header <- paste0(
       "<?xml version='1.0' encoding='UTF-8'?>
       <toolchain saga-version='7.3.0'>
@@ -569,7 +571,7 @@ dem_derived_layers <- function(
   
   # Define text for cmd input
   cmd_text <- lapply(xml_layout, function(x) {
-    foreach(k = unlist(x$inputs), .combine = paste) %do% {
+    lapply(unlist(x$inputs), function(k) {
       if(k != "dem") {
         k_out_id <- unlist(sapply(xml_layout, function(x) which(x$outputs[[1]] == k)))
         k_dir <- xml_layout[[names(k_out_id)]]$out_files[[1]][k_out_id]
@@ -577,8 +579,7 @@ dem_derived_layers <- function(
       } else {
         paste0("-dem ", dem_input)
       }
-    }
-  })
+    }) %>% do.call(paste, .)})
   
   # Determine the toolchain directory based on your system
   dem_derived_xml <- ifelse(
@@ -590,7 +591,7 @@ dem_derived_layers <- function(
   
   # Process SAGA toolchains in the list
   for(p in 1:length(xml_layout)) {
-    write_xml(read_xml(xml_layout[[p]]$call), dem_derived_xml)
+    xml2::write_xml(xml2::read_xml(xml_layout[[p]]$call), dem_derived_xml)
     sys_cmd <- paste("toolchains Derived", cmd_text[[p]])
     system2(saga_cmd, sys_cmd)
   }
@@ -604,10 +605,9 @@ dem_derived_layers <- function(
     out_names <- unlist(x$outputs)[!unlist(x$outputs) %in% unlist(x$outputs)[rem_id]]
     list(out_files = out_files, out_names = out_names)
   })
-  out_list <- foreach(i = 1:length(rem), .combine = rbind) %do% {
-    data.frame(out_files = rem[[i]]$out_files, 
-               out_names = rem[[i]]$out_names)
-  }
+  out_list <- lapply(1:length(rem), function(x) {
+    data.frame(out_files = rem[[x]]$out_files, 
+               out_names = rem[[x]]$out_names)}) %>% do.call(rbind, .)
   
   out <- terra::rast(out_list$out_files) %>% magrittr::set_names(out_list$out_names)
   crs(out) <- terra::crs(reference)
