@@ -44,12 +44,18 @@ cov_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
 
 ```
 
-As of January 2021, the terra package doesn't play well with the sf package. This small function is a quick helper from the terra package author to convert SpatVect objects to sf objects
+As of January 2021, the terra package doesn't play well with the sf package. The first small function is a quick helper from the terra package author to convert SpatVect objects to sf objects. The second one creates bounding boxes for each row of polygonal data in an sf dataframe.
 
 ```{r functions}
 
 st_as_sf.SpatVector <- function(x, ...) {
 	sf::st_as_sf(as.data.frame(x, geom = TRUE), wkt = "geometry", crs = crs(x))}
+
+st_bbox_by_feature = function(x) {
+  x <- sf::st_geometry(x)
+  f <- function(y) sf::st_as_sfc(sf::st_bbox(y))
+  do.call("c", lapply(x, f)) %>% sf::st_set_crs(sf::st_crs(x))
+}
 
 ```
 
@@ -72,48 +78,39 @@ aoi_shapes <- lapply(dem_files, function(i) {
   dem <- rast(i) * 0
   
   # Convert DEM raster to polygon, remove holes but keep the largest hole
-  dem_shp_all <- as.polygons(dem, trunc = TRUE, dissolve = TRUE, values = TRUE) 
+  dem_shp_all <- terra::as.polygons(dem, trunc = TRUE, dissolve = TRUE, values = TRUE) 
   
-  # Small disjointed polygons have 5 points. Filter those, create a polygon,
-  # buffer it slightly, and union them with the main polygon
+  # Small disjointed polygons have 5 points. Filter those, create an sf polygon,
+  # buffer them slightly, and extract each of the bounding boxes
   dem_small <- terra::geom(dem_shp_all, df = TRUE) %>% 
     group_by(geom, part, hole) %>% 
     dplyr::filter(n() <= 5, hole < 1) %>% 
     {if(nrow(.) > 0) {
-      ungroup(.) %>% 
-        dplyr::select(x, y) %>% 
-        as.matrix() %>% 
-        list() %>% 
-        sf::st_polygon() %>% 
-        sf::st_sfc() %>% 
-        sf::st_as_sf() %>% 
-        dplyr::rename(geometry = names(.)) %>% 
-        sf::st_set_crs(crs(dem)) %>% 
+      sf::st_as_sf(., coords = c("x", "y"), crs = crs(dem)) %>% 
+        summarise(do_union = TRUE, .groups = "drop") %>% 
+        sf::st_cast("POLYGON") %>% 
+        {if(!sf::st_is_valid(.)) {
+          sf::st_make_valid(.)
+        } else .} %>% 
         sf::st_buffer(res(dem)[1] / 10, nQuadSegs = 0) %>% 
-        dplyr::mutate(dem = 0)
+        dplyr::select(geometry) %>% 
+        dplyr::mutate(dem = 0, geometry = st_bbox_by_feature(.))
     } else NULL}
   
-  dem_shp <- st_as_sf(dem_shp_all) %>% 
+  # Union disjointed polygons to the main polygon - this allows for a singular
+  # POLYGON object to be created, rather than a MULTIPOLYGON
+  dem_shp <- sf::st_as_sf(dem_shp_all) %>% 
     rbind(dem_small) %>% 
     summarise(do_union = TRUE) %>% 
-    {if(!st_is_valid(.)) {
-      st_make_valid(.)
+    {if(!sf::st_is_valid(.)) {
+      sf::st_make_valid(.)
     } else .} %>% 
     {if(nrow(.) > 0) {
       dplyr::mutate(., poly_id = basename(dirname(i)))
     } else NULL}
   
-  # Might need to do something with holes by removing them from a total geometry
-  # If so, think of the sf::st_difference() function
-  
   return(dem_shp)
 }) %>% do.call(rbind, .) %>% tibble::remove_rownames()
-
-aoi_sfc <- st_geometry(aoi_shapes)
-aoi_sfc_lonlat <- st_transform(aoi_sfc, 4326)
-aoi_sf_lonlat <- sf::st_transform(aoi_shapes, 4326)
-aoi_sfc_bad <- c(aoi_sfc[1:3], aoi_sfc_lonlat[4:6]) # Don't think I can do anything about this...
-aoi_sfc_utm <- st_transform(aoi_sfc, 32610)
 
 ```
 
@@ -140,6 +137,7 @@ get_bc_shapes <- function(in_aoi, id_col) {
   if(!inherits(in_aoi, c("sf", "sfc")))
     stop("'in_aoi' is not an sf or sfc object.")
   
+  # Check properties of the id_col variable, used to uniquely identify each polygon
   if(!missing(id_col) && class(id_col) != "character")
     stop("'id_col' is not a character object")
   
@@ -175,14 +173,14 @@ get_bc_shapes <- function(in_aoi, id_col) {
   
   # Check for uniqueness of id_col variable against the nrow of the in_aoi
   if(nrow(in_aoi) != length(unique(dplyr::pull(in_aoi, id_col))))
-    stop("Something is wrong with the 'id_col' variable")
+    stop("Something is wrong with the 'id_col' variable. If error persists, don't use.")
   
   # Detect the CRS of the sf object
   if(is.na(sf::st_crs(in_aoi)))
     stop("CRS is not assigned. Use sf::st_crs() to assign a valid CRS to in_aoi")
   
   if(sf::st_is_longlat(in_aoi)) {
-    cat("Input CRS is Lat/Long format. Transforming to EPSG 3005 (BC Albers) for processing")
+    cat("Input CRS is Lat/Long format. Transforming to EPSG 3005 (BC Albers) for processing\n")
     epsg <- 3005L
     in_crs <- sf::st_crs(in_aoi)
     in_aoi <- sf::st_transform(in_aoi, epsg) %>% sf::st_set_agr("constant")
@@ -202,157 +200,164 @@ get_bc_shapes <- function(in_aoi, id_col) {
       sf::st_transform(., sf::st_crs(in_aoi))
     } else .}
   
-  if(!all(st_intersects(st_centroid(in_aoi), bc_boundary, sparse = FALSE)))
-    warning("One or some of the input polygons may be outside of the BC provincial boundary. 
-            \rIt may be worth it to check your inputs if the results are not expected.
-            \rIgnore this warning if you're confident things are as they should be.")
-  
-  #### Function script
-  # Get largest bbox for downloading layers
-  box <- sf::st_bbox(in_aoi)
+  if(!all(st_intersects(st_centroid(in_aoi), bc_boundary, sparse = FALSE))) {
+    warning("One or some of the input polygons was found outside of the BC provincial boundary. 
+            \rNo data will be downloaded. Returning NULL.\n")
+    return(NULL)
+  } else {
     
-  suppressMessages({
-    # Download BEC and clip to AOI. If transformation is necessary, it is much
-    # faster to transform the bounding box to the CRS of the BEC layer, clip
-    # the BEC layer, then transform the resulting BEC layer back to the CRS of 
-    # the bounding box
-    bec_sf <- bcmaps::bec(class = "sf", force = TRUE, ask = FALSE) %>% 
-      sf::st_set_agr("constant")
-    if(sf::st_crs(bec_sf) != sf::st_crs(in_aoi)) {
-      box_trans <- sf::st_as_sfc(box) %>% 
-        sf::st_buffer(10, nQuadSegs = 0) %>% 
-        sf::st_transform(sf::st_crs(bec_sf)) %>% 
-        sf::st_bbox()
-      bec_sf <- sf::st_crop(bec_sf, box_trans) %>% 
-        sf::st_transform(sf::st_crs(in_aoi)) %>% 
+    #### Function script
+    # Get largest bbox for downloading layers
+    box <- sf::st_bbox(in_aoi)
+    
+    suppressMessages({
+      # Download BEC and clip to AOI. If transformation is necessary, it is much
+      # faster to transform the bounding box to the CRS of the BEC layer, clip
+      # the BEC layer, then transform the resulting BEC layer back to the CRS of 
+      # the bounding box
+      bec_sf <- bcmaps::bec(class = "sf", force = TRUE, ask = FALSE) %>% 
         sf::st_set_agr("constant")
-    } 
-    bec_sf_clip <- sf::st_crop(bec_sf, box) %>% 
-      sf::st_set_agr("constant")
-    
-    ## Parallel processing/downloading of BC Data layers
-    # Want to use sockets for parallel processing - carries across all machines,
-    # whereas forking is only used on Macs and Linux.
-    
-    # Provide list of links to BC Data Catalog polygonal spatial datasets
-    links <- list(
-      TEM = "0a83163b-a62f-4ce6-a9a1-21c228b0c0a3", 
-      VRI = "2ebb35d8-c82f-4a17-9c96-612ac3532d55", 
-      Cutblocks = "b1b647a6-f271-42e0-9cd0-89ec24bce9f7", 
-      Lakes = "cb1e3aba-d3fe-4de1-a2d4-b8b6650fb1f6", 
-      Rivers = "f7dac054-efbf-402f-ab62-6fc4b32a619e", 
-      Wetlands = "93b413d8-1840-4770-9629-641d74bd1cc6", 
-      Roads = "bb060417-b6e6-4548-b837-f9060d94743e", 
-      FSRs = "9e5bfa62-2339-445e-bf67-81657180c682",
-      FireCur = "cdfc2d7b-c046-4bf0-90ac-4897232619e1", 
-      FireHist = "22c7cb44-1463-48f7-8e47-88857f207702")
-    
-    # Create the parallel cluster and export variables to each socket
-    cl <- makeCluster(detectCores())
-    clusterExport(cl, c("box", "links", "epsg", "in_aoi"))
-    
-    # Load the required libraries on each socket
-    clusterEvalQ(cl, suppressMessages(suppressWarnings({
-      sapply(c("bcdata", "tidyverse", "sf"), 
-             library, character.only = TRUE)[0]})))[0]
-    
-    # Download all datasets using a parallelized lapply call
-    dls <- parLapply(cl, links, function(x) {
-      bcdata::bcdc_query_geodata(x, crs = epsg) %>%
-        bcdata::filter(bcdata::BBOX(box)) %>%
-        bcdata::collect() %>% 
-        {if(sf::st_crs(.) != sf::st_crs(epsg)) {
-          sf::st_transform(., epsg)
-        } else .} %>% 
+      if(sf::st_crs(bec_sf) != sf::st_crs(in_aoi)) {
+        box_trans <- sf::st_as_sfc(box) %>% 
+          sf::st_buffer(10, nQuadSegs = 0) %>% 
+          sf::st_transform(sf::st_crs(bec_sf)) %>% 
+          sf::st_bbox()
+        bec_sf <- sf::st_crop(bec_sf, box_trans) %>% 
+          sf::st_transform(sf::st_crs(in_aoi)) %>% 
+          sf::st_set_agr("constant")
+      } 
+      bec_sf_clip <- sf::st_crop(bec_sf, box) %>% 
         sf::st_set_agr("constant")
-    })
-    
-    # Update BGC boundaries based on TEM lines
-    tem <- dls[["TEM"]]
-    if(nrow(tem) > 0 && 
-       all(unique(bec_sf_clip$MAP_LABEL) %in% 
-           unique(tem$BIOGEOCLIMATIC_LBL))) {
-      bec_fix <- tem %>% dplyr::select(BIOGEOCLIMATIC_LBL) %>% 
-        dplyr::group_by(BIOGEOCLIMATIC_LBL) %>% 
-        dplyr::summarise(do_union = TRUE, .groups = "drop")
-      if(any(is.na(bec_fix$BIOGEOCLIMATIC_LBL))) {
-        bec_sf_clip <- sf::st_set_agr(bec_fix, "constant") %>% 
-          sf::st_intersection(
-            sf::st_set_agr(bec_sf_clip[, "MAP_LABEL"], "constant")) %>% 
-          dplyr::mutate(BIOGEOCLIMATIC_LBL = ifelse(
-            is.na(BIOGEOCLIMATIC_LBL), MAP_LABEL, BIOGEOCLIMATIC_LBL)) %>% 
-          dplyr::group_by(BIOGEOCLIMATIC_LBL) %>% 
-          dplyr::summarise(do_union = TRUE, .groups = "drop") %>% 
-          dplyr::rename(MAP_LABEL = BIOGEOCLIMATIC_LBL)
-      } else bec_sf_clip <- dplyr::rename(bec_fix, MAP_LABEL = BIOGEOCLIMATIC_LBL)
-    }
-    bec_sf_clip <- list(BEC = sf::st_cast(bec_sf_clip, "MULTIPOLYGON") %>% 
-                          sf::st_set_agr("constant"))
-    
-    # Filter cutblocks to be less than 20 years old
-    cutblocks <- list(
-      Cutblocks = dls[["Cutblocks"]] %>% 
-        dplyr::mutate(DISTURBANCE_START_DATE = as.Date(DISTURBANCE_START_DATE),
-                      DISTURBANCE_END_DATE = as.Date(DISTURBANCE_END_DATE)) %>% 
-        dplyr::filter(
-          as.numeric(format(Sys.time(), "%Y")) - HARVEST_YEAR <= 20))
-    
-    # Combine lakes, rivers, and wetlands to a single Waterbodies layer
-    waterbodies <- list(
-      Waterbodies = do.call(rbind, dls[c("Lakes", "Rivers", "Wetlands")] %>% 
-                              Filter(function(x) nrow(x) > 0, .)))
-    
-    # Combine digital road atlas and FSR layer to a single Roads layer
-    roads <- list(
-      Roads = do.call(rbind, list(
-        dls[["Roads"]] %>% 
-          dplyr::filter(ROAD_NAME_ID > 0) %>% 
-          dplyr::select(id, ROAD_NAME_FULL, FEATURE_LENGTH_M) %>% 
-          dplyr::rename(NAME = ROAD_NAME_FULL),
-        dls[["FSRs"]] %>% 
-          dplyr::filter(LIFE_CYCLE_STATUS_CODE == "ACTIVE") %>% 
-          dplyr::select(id, MAP_LABEL, FEATURE_LENGTH_M) %>% 
-          dplyr::rename(NAME = MAP_LABEL)) %>% Filter(function(x) nrow(x) > 0, .)))
-    
-    # Combine fire area polygons and filter out fires older than 20 years
-    fires <- list(
-      Fires = do.call(rbind, dls[c("FireCur", "FireHist")] %>% 
-                        Filter(function(x) nrow(x) > 0, .)) %>% 
-        dplyr::select(id, FIRE_NUMBER, VERSION_NUMBER, FIRE_YEAR, 
-                      FIRE_SIZE_HECTARES, LOAD_DATE) %>% 
-        dplyr::filter(as.numeric(format(Sys.time(), "%Y")) - FIRE_YEAR <= 20))
-    
-    # Recombine
-    dls_comb <- lapply(c(bec_sf_clip, dls[c("TEM", "VRI")], cutblocks, 
-                         waterbodies, roads, fires), sf::st_set_agr, "constant")
-    
-    # Export the newly combined list to the sockets
-    clusterExport(cl, "dls_comb")
-    
-    # Perform the spatial intersection with the study area polygons in parallel
-    dls_full <- parLapply(cl, dls_comb, sf::st_intersection, in_aoi)
-    if(sf::st_is_longlat(in_crs)) {
-      clusterExport(cl, c("dls_full", "in_crs"))
-      dls_full <- parLapply(cl, dls_full, sf::st_transform, in_crs)
-    }
       
-    # Finish parallel processing
-    stopCluster(cl)
-    
-    # Reformat output
-    dls_clips <- sapply(dplyr::pull(in_aoi, id_col), function(x) 
-      lapply(dls_full, dplyr::filter, !!sym(id_col) == x), simplify = FALSE, USE.NAMES = TRUE) %>% 
-      lapply(., function(x) {
-        xx <- c(x, list(forested_sites = dplyr::select(x[["VRI"]], BCLCS_LEVEL_2)))
-        xx[["Roads"]] <- sf::st_cast(xx[["Roads"]], "MULTILINESTRING")
-        y <- lapply(xx[c("BEC", "TEM", "VRI", "Cutblocks", "forested_sites",
-                         "Waterbodies", "Fires")],
-                    sf::st_cast, "MULTIPOLYGON")
-        yy <- c(y, list(Roads = xx[["Roads"]])) %>% 
-          lapply(., dplyr::select, -any_of(id_col))
+      ## Parallel processing/downloading of BC Data layers
+      # Want to use sockets for parallel processing - carries across all machines,
+      # whereas forking is only used on Macs and Linux.
+      
+      # Provide list of links to BC Data Catalog polygonal spatial datasets
+      links <- list(
+        TEM = "0a83163b-a62f-4ce6-a9a1-21c228b0c0a3", 
+        VRI = "2ebb35d8-c82f-4a17-9c96-612ac3532d55", 
+        Cutblocks = "b1b647a6-f271-42e0-9cd0-89ec24bce9f7", 
+        Lakes = "cb1e3aba-d3fe-4de1-a2d4-b8b6650fb1f6", 
+        Rivers = "f7dac054-efbf-402f-ab62-6fc4b32a619e", 
+        Wetlands = "93b413d8-1840-4770-9629-641d74bd1cc6", 
+        Roads = "bb060417-b6e6-4548-b837-f9060d94743e", 
+        FSRs = "9e5bfa62-2339-445e-bf67-81657180c682",
+        FireCur = "cdfc2d7b-c046-4bf0-90ac-4897232619e1", 
+        FireHist = "22c7cb44-1463-48f7-8e47-88857f207702")
+      
+      # Create the parallel cluster and export variables to each socket
+      env <- new.env()
+      cl <- makeCluster(detectCores())
+      clusterExport(cl, c("box", "links", "epsg", "in_aoi"), envir = env)
+      
+      # Load the required libraries on each socket
+      clusterEvalQ(cl, suppressMessages(suppressWarnings({
+        sapply(c("bcdata", "tidyverse", "sf"), 
+               library, character.only = TRUE)[0]})))[0]
+      
+      # Download all datasets using a parallelized lapply call
+      cat("Downloading all layers...")
+      dls <- parLapply(cl, links, function(x) {
+        bcdata::bcdc_query_geodata(x, crs = epsg) %>%
+          bcdata::filter(bcdata::BBOX(box)) %>%
+          bcdata::collect() %>% 
+          {if(sf::st_crs(.) != sf::st_crs(epsg)) {
+            sf::st_transform(., epsg)
+          } else .} %>% 
+          sf::st_set_agr("constant")
       })
-  })
-  return(dls_clips)
+      cat("Done!\n")
+      
+      # Update BGC boundaries based on TEM lines
+      tem <- dls[["TEM"]]
+      if(nrow(tem) > 0 && 
+         all(unique(bec_sf_clip$MAP_LABEL) %in% 
+             unique(tem$BIOGEOCLIMATIC_LBL))) {
+        bec_fix <- tem %>% dplyr::select(BIOGEOCLIMATIC_LBL) %>% 
+          dplyr::group_by(BIOGEOCLIMATIC_LBL) %>% 
+          dplyr::summarise(do_union = TRUE, .groups = "drop")
+        if(any(is.na(bec_fix$BIOGEOCLIMATIC_LBL))) {
+          bec_sf_clip <- sf::st_set_agr(bec_fix, "constant") %>% 
+            sf::st_intersection(
+              sf::st_set_agr(bec_sf_clip[, "MAP_LABEL"], "constant")) %>% 
+            dplyr::mutate(BIOGEOCLIMATIC_LBL = ifelse(
+              is.na(BIOGEOCLIMATIC_LBL), MAP_LABEL, BIOGEOCLIMATIC_LBL)) %>% 
+            dplyr::group_by(BIOGEOCLIMATIC_LBL) %>% 
+            dplyr::summarise(do_union = TRUE, .groups = "drop") %>% 
+            dplyr::rename(MAP_LABEL = BIOGEOCLIMATIC_LBL)
+        } else bec_sf_clip <- dplyr::rename(bec_fix, MAP_LABEL = BIOGEOCLIMATIC_LBL)
+      }
+      bec_sf_clip <- list(BEC = sf::st_cast(bec_sf_clip, "MULTIPOLYGON") %>% 
+                            sf::st_set_agr("constant"))
+      
+      # Filter cutblocks to be less than 20 years old
+      cutblocks <- list(
+        Cutblocks = dls[["Cutblocks"]] %>% 
+          dplyr::mutate(DISTURBANCE_START_DATE = as.Date(DISTURBANCE_START_DATE),
+                        DISTURBANCE_END_DATE = as.Date(DISTURBANCE_END_DATE)) %>% 
+          dplyr::filter(
+            as.numeric(format(Sys.time(), "%Y")) - HARVEST_YEAR <= 20))
+      
+      # Combine lakes, rivers, and wetlands to a single Waterbodies layer
+      waterbodies <- list(
+        Waterbodies = do.call(rbind, dls[c("Lakes", "Rivers", "Wetlands")] %>% 
+                                Filter(function(x) nrow(x) > 0, .)))
+      
+      # Combine digital road atlas and FSR layer to a single Roads layer
+      roads <- list(
+        Roads = do.call(rbind, list(
+          dls[["Roads"]] %>% 
+            dplyr::filter(ROAD_NAME_ID > 0) %>% 
+            dplyr::select(id, ROAD_NAME_FULL, FEATURE_LENGTH_M) %>% 
+            dplyr::rename(NAME = ROAD_NAME_FULL),
+          dls[["FSRs"]] %>% 
+            dplyr::filter(LIFE_CYCLE_STATUS_CODE == "ACTIVE") %>% 
+            dplyr::select(id, MAP_LABEL, FEATURE_LENGTH_M) %>% 
+            dplyr::rename(NAME = MAP_LABEL)) %>% Filter(function(x) nrow(x) > 0, .)))
+      
+      # Combine fire area polygons and filter out fires older than 20 years
+      fires <- list(
+        Fires = do.call(rbind, dls[c("FireCur", "FireHist")] %>% 
+                          Filter(function(x) nrow(x) > 0, .)) %>% 
+          dplyr::select(id, FIRE_NUMBER, VERSION_NUMBER, FIRE_YEAR, 
+                        FIRE_SIZE_HECTARES, LOAD_DATE) %>% 
+          dplyr::filter(as.numeric(format(Sys.time(), "%Y")) - FIRE_YEAR <= 20))
+      
+      # Recombine
+      dls_comb <- lapply(c(bec_sf_clip, dls[c("TEM", "VRI")], cutblocks, 
+                           waterbodies, roads, fires), sf::st_set_agr, "constant")
+      
+      # Export the newly combined list to the sockets
+      clusterExport(cl, "dls_comb", envir = env)
+      
+      # Perform the spatial intersection with the study area polygons in parallel
+      cat("Performing spatial intersections in parallel...")
+      dls_full <- parLapply(cl, dls_comb, sf::st_intersection, in_aoi)
+      if(sf::st_is_longlat(in_crs)) {
+        clusterExport(cl, c("dls_full", "in_crs"), envir = env)
+        dls_full <- parLapply(cl, dls_full, sf::st_transform, in_crs)
+      }
+      cat("Done!\n")
+      
+      # Finish parallel processing
+      stopCluster(cl)
+      
+      # Reformat output
+      dls_clips <- sapply(dplyr::pull(in_aoi, id_col), function(x) 
+        lapply(dls_full, dplyr::filter, !!sym(id_col) == x), simplify = FALSE, USE.NAMES = TRUE) %>% 
+        lapply(., function(x) {
+          xx <- c(x, list(forested_sites = dplyr::select(x[["VRI"]], BCLCS_LEVEL_2)))
+          xx[["Roads"]] <- sf::st_cast(xx[["Roads"]], "MULTILINESTRING")
+          y <- lapply(xx[c("BEC", "TEM", "VRI", "Cutblocks", "forested_sites",
+                           "Waterbodies", "Fires")],
+                      sf::st_cast, "MULTIPOLYGON")
+          yy <- c(y, list(Roads = xx[["Roads"]])) %>% 
+            lapply(., dplyr::select, -any_of(id_col))
+        })
+    })
+    return(dls_clips)
+  }
 }
 
 ```
