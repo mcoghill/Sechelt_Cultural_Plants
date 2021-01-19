@@ -16,7 +16,7 @@ This script uses the mlr3 package (machine learning R) in order to make models. 
 ```{r Load Packages, echo=TRUE, results='hide'}
 
 suppressMessages(suppressWarnings({
-  lapply(c("tidyverse", "tools", "terra", "sf", "mlr3verse", "foreach"), 
+  lapply(c("tidyverse", "sf", "terra", "mlr3verse"), 
          library, character.only = TRUE)[0]}))
 
 # Load custom functions
@@ -174,47 +174,43 @@ covariates <- c(rast(c(terrain_covariates, sentinel_covariates,
                 site_series, struct_stg)
 
 # Find the best masking layer to use in the predict_landscape algorithm
-mask_layers <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
-    cat(paste0("\rCounting NA values in ", names(covariates[[i]]), 
-               " [", i, " of ", nlyr(covariates), "]\n"))
-    new <- subset(covariates, i) * 0
-    data.frame(layer = names(new), 
-               data_cells = data.frame(freq(new))$count)
-  } %>% arrange(desc(data_cells))
+mask_layers <- sapply(names(covariates), function(x) {
+  cat(paste0("\rCounting NA values in ", x, " [", 
+             which(x == names(covariates)), 
+             " of ", nlyr(covariates), "]\n"))
+    unname(freq(subset(covariates, x) * 0)[, "count"])}) %>% 
+    data.frame(data_cells = .) %>% 
+    rownames_to_column("layer")
 
 # Attributed point data - limit to only CORNCAN and RUBUSPE
 pres_abs_points <- sapply(c("CORNCAN", "RUBUSPE"), function(x) {
   st_read(file.path(input_dir, "pres_abs.gpkg"), layer = x, quiet = TRUE) %>% 
-    cbind(st_coordinates(.)) %>% 
     {if(!is.null(site_series)) {
       cbind(., terra::extract(c(site_series, struct_stg), st_coordinates(.)))
     } else .} %>% 
     {if(!is.null(bgc_layer)) {
       cbind(., terra::extract(rast(bgc_layer), st_coordinates(.)))
     } else .} %>% 
-    st_drop_geometry() %>%
     mutate(across(c("Pres", "simple_site_ser_class", "dsmart_site_ser_class", 
                     "dsmart_struct_stg_class", "bgc"), as.factor)) %>%
-    dplyr::select(Pres, any_of(names(covariates)), X, Y)
+    dplyr::select(Pres, any_of(names(covariates)))
   }, simplify = FALSE, USE.NAMES = TRUE)
 
 cover_points <- sapply(c("CORNCAN", "RUBUSPE"), function(x) {
   st_read(file.path(input_dir, "cover.gpkg"), layer = x, quiet = TRUE) %>% 
-    cbind(st_coordinates(.)) %>% 
     {if(!is.null(site_series)) {
       cbind(., terra::extract(site_series, st_coordinates(.)))
     } else .} %>% 
     {if(!is.null(bgc_layer)) {
       cbind(., terra::extract(rast(bgc_layer), st_coordinates(.)))
     } else .} %>% 
-    st_drop_geometry() %>% 
     mutate(across(c("simple_site_ser_class", 
                     "dsmart_site_ser_class", "bgc"), as.factor)) %>%
-    dplyr::select(Cover, any_of(names(covariates)), X, Y)
+    dplyr::select(Cover, any_of(names(covariates)))
   }, simplify = FALSE, USE.NAMES = TRUE)
 
 # Create list of variable names to be selected 
-var_list <- foreach(i = 1:nrow(perms), .combine = c) %do% {
+var_list <- lapply(1:nrow(perms), function(i) {
   
   # Generate output ID
   id <- paste0(
@@ -268,7 +264,7 @@ var_list <- foreach(i = 1:nrow(perms), .combine = c) %do% {
     }
     return(variables)
   }) %>% magrittr::set_names(id)
-}
+}) %>% do.call(c, .)
 
 ```
 
@@ -276,24 +272,22 @@ The following chunk builds full datasets to be used in modelling later on. These
 
 ```{r mlr3 Presence probability modelling}
 
-# Create the list of input datasets
-pres_abs <- foreach(i = names(var_list)) %do% {
-  lapply(pres_abs_points, function(x) {
-    x %>% dplyr::select(any_of(c("Pres", var_list[[i]], "x", "y", "X", "Y"))) %>% 
-      drop_na() %>% 
-      dplyr::rename_with(toupper, c("X", "x", "Y", "y")
-                         [c("X", "x", "Y", "y") %in% names(.)])
-  }) %>% magrittr::set_names(paste0(names(.), i))
-} %>% unlist(recursive = FALSE)
-
-# Write input data
+# Create the list of input datasets and write them to a single geopackage as
+# separate layers
 dir_out <- file.path(output_dir, "pres_abs_predictions")
 dir.create(dir_out, showWarnings = FALSE, recursive = TRUE)
-lapply(names(pres_abs), function(x) {
-  y <- st_as_sf(pres_abs[[x]], coords = c("X", "Y"), crs = crs(covariates))
-  st_write(y, file.path(dir_out, paste0("pres_abs_input_data.gpkg")), 
-           layer = x, delete_layer = TRUE, quiet = TRUE)
-})[0]
+
+pres_abs <- lapply(names(var_list), function(i) {
+  sapply(names(pres_abs_points), function(x) {
+    out <- pres_abs_points[[x]] %>% 
+      dplyr::select(any_of(c("Pres", var_list[[i]]))) %>% 
+      drop_na()
+    st_write(out, file.path(dir_out, paste0("pres_abs_input_data.gpkg")),
+             layer = paste0(x, i), delete_layer = TRUE, quiet = TRUE)
+    return(out)
+  }, simplify = FALSE, USE.NAMES = TRUE) %>% 
+    magrittr::set_names(paste0(names(.), i))
+}) %>% unlist(recursive = FALSE)
 
 # To save a bit of memory and in order to see results as they are generated, 
 # iterate through the list of input data to model and predict
@@ -310,35 +304,39 @@ for(i in 1:length(pres_abs)) {
   # Extract and write performance metrics
   pres_performance <- sapply(names(pres_models$learners), function(x) {
     
+    # Some model diagnostics
     folds <- pres_models$learners[[x]]$instance_args$resampling$param_set$values$folds
     reps <- pres_models$learners[[x]]$instance_args$resampling$param_set$values$repeats
     n_iters <- pres_models$learners[[x]]$archive$benchmark_result$n_resample_results
     
+    # Classif.ce of each model iteration
     tune_results <- data.frame(
       filter_fraction = pres_models$learners[[x]]$archive$data()$importance.filter.frac, 
       classif.ce = pres_models$learners[[x]]$archive$data()$classif.ce
     ) %>% dplyr::arrange(classif.ce)
     
+    # Confusion matrix of the best model
     confusion <- as.data.frame(
       pres_models$learners[[x]]$model$tuning_instance$archive$benchmark_result$
         resample_results$resample_result[[
           pres_models$learners[[x]]$model$tuning_instance$archive$best()$batch_nr]]$
         prediction()$confusion)
     
-    model_data <- foreach(j = 1:n_iters) %do% {
+    # Testing and training datasets for each model run
+    model_data <- lapply(1:n_iters, function(j) {
       test_data <- pres_models$learners[[x]]$archive$benchmark_result$resample_result(j)$
         resampling$instance %>% 
         cbind(batch_nr = j)
-      train_data <- foreach(k = 1:reps, .combine = rbind) %do% { 
-        foreach(l = 1:folds, .combine = rbind) %do% {
+      train_data <- lapply(1:reps, function(k) {
+        lapply(1:folds, function(l) {
           test_rows <- dplyr::filter(test_data, rep == k, fold == l)
           missing <- as.numeric(rownames(pres_abs[[i]])[
             !as.numeric(rownames(pres_abs[[i]])) %in% test_rows$row_id])
           data.frame(row_id = missing, rep = k, fold = l, batch_nr = j)
-        }
-      }
+        }) %>% do.call(rbind, .)
+      }) %>% do.call(rbind, .)
       return(list(test_data = test_data, train_data = train_data))
-    } %>% magrittr::set_names(paste0(
+    }) %>% magrittr::set_names(paste0(
       "filter_frac = ", 
       pres_models$learners[[x]]$model$tuning_instance$archive$data()$
         importance.filter.frac))
@@ -388,14 +386,15 @@ for(i in 1:length(pres_abs)) {
   # Run the map predictions
   pres_abs_predictions <- sapply(names(pres_models$learners), function(x) {
     
+    # Subset raster data used in the model run
     cov_sub <- subset(covariates, pres_models$tasks[[x]]$col_roles$feature)
     
-    for(j in 1:nrow(mask_layers)) {
-      if(mask_layers[j, "layer"] %in% names(cov_sub)) {
-        pred_mask <- mask_layers[j, "layer"]
-        break
-      }
-    }
+    # Find the best mask layer to use from the covariates left
+    pred_mask <- mask_layers %>% 
+      dplyr::filter(layer %in% names(cov_sub)) %>% 
+      dplyr::arrange(layer) %>% 
+      dplyr::slice_max(data_cells, n = 1, with_ties = FALSE) %>% 
+      dplyr::pull(layer)
     
     out <- predict_landscape_mlr3(
       learner = pres_models$learners[[x]],
@@ -407,13 +406,11 @@ for(i in 1:length(pres_abs)) {
       mask_layer = pred_mask
     )
     
-    # with predict_landscape_mlr3 type set to "prob", the output is a list of files
-    for(j in out) {
-      file.copy(
-        from = j,
-        to = file.path(dir_out, paste0(x, "_", gsub("_.*", "", basename(j)), ".tif")),
-        overwrite = TRUE)
-    }
+    # Write the raster mosaics
+    out <- writeRaster(out, file.path(
+      dir_out, paste0(x, "_", gsub("_.*", "", names(out)), ".tif")),
+      overwrite = TRUE)
+    
     return(out)
   }, simplify = FALSE, USE.NAMES = TRUE)
 }
@@ -421,18 +418,18 @@ for(i in 1:length(pres_abs)) {
 # Using the available cover model results, find the best models for each species
 # First, collect all of that data together and then use an upper percentile or top
 # number of models from the entire collection for a single species
-best_model_sets <- foreach(x = c("CORNCAN", "RUBUSPE"), .combine = rbind) %do% {
+best_model_sets <- lapply(c("CORNCAN", "RUBUSPE"), function(x) {
   
   sp_dirs <- dir(file.path(output_dir, "pres_abs_predictions"), pattern = x, 
                  full.names = TRUE)
   
-  result_list <- foreach(i = sp_dirs, .combine = rbind) %do% {
+  result_list <- lapply(sp_dirs, function(i) {
     
     read.csv(file.path(i, list.files(i, pattern = "_tune_results.csv$"))) %>% 
       dplyr::slice(which.min(classif.ce)) %>% 
       mutate(model = basename(i))
-  } %>% arrange(classif.ce)
-}
+  }) %>% do.call(rbind, .) %>% arrange(classif.ce)
+}) %>% do.call(rbind, .)
 
 write.csv(best_model_sets, file.path(output_dir, "pres_abs_predictions", "model_performance_index.csv"), 
           row.names = FALSE)
