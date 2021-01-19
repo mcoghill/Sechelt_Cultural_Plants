@@ -24,8 +24,8 @@ predict_landscape_mlr3 <- function(
   
   source('./_functions/tile_index.R')
   
-  lapply(c("tidyverse", "stars", "GSIF", "foreach", "terra"), 
-         require, character.only = TRUE)
+  sapply(c("tidyverse", "stars", "terra"), 
+         require, character.only = TRUE)[0]
   
   if(!is.character(mask_layer) || missing(mask_layer)) 
     stop("The mask_layer variable needs to be a character vector of length 1 
@@ -37,25 +37,32 @@ predict_landscape_mlr3 <- function(
   # Create directories to store results in
   dir.create(outDir, recursive = TRUE, showWarnings = FALSE)
   
-  # Generate tile index
-  tiles <- tile_index(cov[1], tilesize)
+  # Create a polygon of the masking layer
+  mask_poly <- terra::as.polygons(subset(covariates, mask_layer) * 0) %>% 
+    as("Spatial") %>% 
+    st_as_sfc() %>% 
+    st_make_valid()
+  
+  # Generate tile index and intersect with polygon to generate area for sampling
+  tiles <- tile_index(covariates, tilesize) %>% 
+    st_intersection(mask_poly)
   
   # Set up progress messaging
   # Get total area of all tiles
-  a <- 0
   ta <- sum(as.numeric(sf::st_area(tiles)))
   
   # Create index of which tiles have data in them
   tiles_keep <- NULL
   
   # Begin loop through tiles
-  tile_files <- foreach(i = 1:nrow(tiles), .combine = c) %do% {
+  tile_files <- sapply(1:nrow(tiles), function(i) {
     
     # Subset a tile
     t <- tiles[i, ]
     
     # Get total area of processed area + new tile area
-    a <- a + as.numeric(sf::st_area(t))
+    # a <<- a + as.numeric(sf::st_area(t))
+    a <- sum(as.numeric(sf::st_area(tiles[i:1, ])))
     cat(paste("\nWorking on tile", i, "of", nrow(tiles), "\n"))
     
     # Do a test run on a single layer, if any variable is all NA then return to
@@ -64,7 +71,8 @@ predict_landscape_mlr3 <- function(
       cov[1], RasterIO = list(nXOff  = t$offset.x[1] + 1, 
                               nYOff  = t$offset.y[1] + 1,
                               nXSize = t$region.dim.x[1],
-                              nYSize = t$region.dim.y[1]))
+                              nYSize = t$region.dim.y[1]),
+      proxy = FALSE)
     
     if(!any(sapply(r, function(x) all(is.na(x))))) {
       # Load all tile data from each raster, if any variable is all NA then
@@ -98,7 +106,7 @@ predict_landscape_mlr3 <- function(
       
     } else {
       # If tile has data in all variables, then add this to the "keep" index
-      tiles_keep <- c(tiles_keep, i)
+      tiles_keep <<- c(tiles_keep, i)
       
       # Convert tile to sf dataframe, only keep rows that are not all NA, 
       # and replace any NA values with 0
@@ -109,8 +117,9 @@ predict_landscape_mlr3 <- function(
         replace(is.na(.), 0)
       
       # Carry out model prediction and format depending on predict type
-      cat("\r...Predicting outcomes...\n")
+      cat("\r...Predicting outcomes...")
       pred <- learner$predict_newdata(newdata = sf::st_drop_geometry(rsf), task = task)
+      cat("done!\n")
       
       if(type == "prob") {
         pred_dat <- as.data.frame(pred$prob)
@@ -151,13 +160,13 @@ predict_landscape_mlr3 <- function(
       cat("\r...Exporting raster tiles...\n")
       
       # Save tile (each pred item saved)
-      out_files <- foreach(j = 1:length(keep), .combine = c) %do% {
+      out_files <- sapply(1:length(keep), function(j) {
         dir.create(file.path(outDir, keep[j]), showWarnings = FALSE)
         write_dir <- file.path(outDir, keep[j], paste0(keep[j], "_", i, ".tif"))
         if(file.exists(write_dir)) unlink(write_dir)
         out <- stars::st_rasterize(r_out[j], template = r[1], file = write_dir)
         return(write_dir)
-      }
+      })
     }
     
     # Report progress
@@ -165,7 +174,7 @@ predict_landscape_mlr3 <- function(
                format(Sys.time(), "%X %b %d %Y"), "\n"))
     return(out_files)
     
-  }
+  }) %>% as.character()
   
   cat("\nAll predicted tiles generated\n")
   
@@ -177,24 +186,20 @@ predict_landscape_mlr3 <- function(
   def_ops <- capture.output(terraOptions())
   terraOptions(progress = 0)
   
-  pred_out <- foreach(k = unique(dirname(tile_files)), .combine = c) %do% {
+  pred_out <- lapply(unique(dirname(tile_files)), function(k) {
     
     cat(paste("\rMosaicking", basename(k), "tiles", "\n"))
     
     # In order to properly mask the layer, the CRS and extents need to match 
     # perfectly, hence the resampling step
-    resamp_method <- if(basename(k) == "pred") {
-      "near"
-    } else "bilinear"
+    resamp_method <- ifelse(basename(k) == "pred", "near", "bilinear")
     
     r_tiles <- list.files(
       k, pattern = paste0("^", basename(k), "_", tiles_keep, ".tif$", collapse = "|"),
       full.names = TRUE)
     
     # Mosaic, resample, mask and save as temp file
-    mos <- foreach(i = r_tiles, .final = function(x) do.call(terra::merge, x)) %do% {
-      rast(i)
-    } %>% 
+    mos <- Reduce(function(x, y) terra::merge(x, y), lapply(r_tiles, terra::rast)) %>% 
       terra::resample(subset(covariates, mask_layer), method = resamp_method) %>% 
       magrittr::set_names(basename(k)) %>% 
       terra::mask(subset(covariates, mask_layer), 
@@ -202,13 +207,13 @@ predict_landscape_mlr3 <- function(
                   overwrite = TRUE)
     
     # Depending on prediction type, output either a single SpatRaster layer or
-    # a list of files
-    if(length(keep) == 1) {
-      return(mos)
-    } else {
-      return(terra::sources(mos)[, "source"])
-    }
-  }
+    # a list of files. Maybe in future change to consistently output SpatRaster though
+    # if(type == "raw") {
+    #   return(mos)
+    # } else {
+    #   return(terra::sources(mos)[, "source"])
+    # }
+  }) %>% do.call(c, .)
   
   # Reapply default progress bar options
   terraOptions(progress = readr::parse_number(grep("progress", def_ops, value = TRUE)))
