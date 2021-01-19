@@ -14,6 +14,9 @@
 # 10 fold cross validation repeated 5 times is performed on each of the data 
 # subsets in order to generate the final models and metrics
 
+# This function requires a list of sf dataframes to perform spatial analyses
+# (note: will need to put stops in place that require that as an input)
+
 model_gen_mlr3 <- function(
   traindat, 
   target, 
@@ -22,7 +25,10 @@ model_gen_mlr3 <- function(
   type = "response", 
   folds = 10, repeats = 5) {
   
-  library(mlr3verse)
+  require(tidyverse)
+  require(mlr3verse)
+  require(mlr3spatiotempcv)
+  require(sf)
   #traindat <- pres_abs
   #target <- "Pres"
   #feature_selection = "filter"
@@ -42,23 +48,24 @@ model_gen_mlr3 <- function(
     if(!("mlr3fselect" %in% installed.packages()[, "Package"]))
       install.packages("mlr3fselect")
     
-    library(mlr3fselect)
+    require(mlr3fselect)
     
   } else if(feature_selection != "filter") {
-    stop("Feature selection variable is not properly set. Choose one of 'filter' or 'rfe'")
+    stop("Feature selection variable is not properly set. Choose one of 'filter', 'rfe', or 'none'")
   }
   
   # Check target data column for determining regression vs classification
   if(all(sapply(traindat, function(x) 
-    class(x[, target])) == "factor")) {
+    class(x[, target][[1]])) == "factor")) {
     mod_type <- "classif.ranger"
   } else {
     mod_type <- "regr.ranger"
   }
   
+  # If there are only 2 levels that are either true or false, create a positive true result
   if(all(sapply(traindat, function(x) 
-    nlevels(x[, target])) <= 2)) {
-    if(any(c(TRUE, FALSE) %in% levels(traindat[[1]][, target]))) {
+    nlevels(x[, target][[1]])) <= 2)) {
+    if(any(c(TRUE, FALSE) %in% levels(traindat[[1]][, target][[1]]))) {
       positive <- "TRUE"
     } else {
       positive <- NULL
@@ -67,83 +74,54 @@ model_gen_mlr3 <- function(
   
   measures <- ifelse(mod_type == "regr.ranger", "regr.mse", "classif.ce")
   
-  # Check for X and Y columns. If present, a spatial cv will be performed
-  if(all(sapply(traindat, function(x) 
-    length(which(names(x) %in% c("X", "x"))) == 1 && 
-    length(which(names(x) %in% c("Y", "y"))) == 1))) {
-    spatial <- TRUE
-    traindat <- lapply(traindat, function(z) {
-      if("X" %in% names(z)) 
-        z <- dplyr::rename(z, x = X)
-      if("Y" %in% names(z))
-        z <- dplyr::rename(z, y = Y)
-      return(z)
-    })
-      
-    coordinate_cols <- lapply(traindat, function(x) 
-      names(x)[names(x) %in% c("X", "x", "Y", "y")])
+  # Check for sf inheritance. If true, a spatial cv will be performed
+  if(all(sapply(traindat, inherits, "sf"))) {
+    coordinate_cols <- lapply(traindat, function(x) colnames(st_coordinates(x)))
     
-    if(!("mlr3spatiotempcv" %in% installed.packages()[, "Package"]))
-      devtools::install_github("mlr-org/mlr3spatiotempcv", force = TRUE)
-    
-    library(mlr3spatiotempcv)
     message("Performing spatial sampling")
     
     resampling_outer <- rsmp("repeated_spcv_coords", folds = folds, repeats = repeats)
     
-    if(mod_type == "regr.ranger") {
-      tasks <- lapply(seq_along(traindat), function(x) {
-        TaskRegrST$new(id = gsub(".gpkg$", "", basename(names(traindat[x]))), 
-                       backend = traindat[[x]], 
-                       target = target, 
-                       extra_args = list(
-                         coords_as_features = FALSE, crs = "3005", 
-                         coordinate_names = coordinate_cols[[x]]
-                       ))
-      })
-    } else {
-      tasks <- lapply(seq_along(traindat), function(x) {
-        TaskClassifST$new(id = gsub(".gpkg$", "", basename(names(traindat[x]))), 
-                          backend = traindat[[x]], 
-                          target = target, positive = positive,
-                          extra_args = list(
-                            coords_as_features = FALSE, crs = "3005", 
-                            coordinate_names = coordinate_cols[[x]]
-                          ))
-      })
-    }
+    traindat <- lapply(traindat, function(x) {
+      fct <- names(Filter(is.factor, x))
+      fct <- fct[!fct %in% c(target, attr(x, "sf_column"))]
+      if(length(fct)) {
+        message("Converting factor variables to their respective integer values")
+        x <- dplyr::mutate(x, across(all_of(fct), ~as.numeric(levels(.x))[.x]))
+      }
+      return(x)
+    })
     
+    if(mod_type == "regr.ranger") {
+      tasks <- sapply(names(traindat), function(x) {
+        TaskRegrST$new(
+          id = gsub(".gpkg$", "", basename(x)), 
+          backend = cbind(sf::st_drop_geometry(traindat[[x]]), 
+                          sf::st_coordinates(traindat[[x]])), 
+          target = target, 
+          extra_args = list(
+            coords_as_features = FALSE, coordinate_names = coordinate_cols[[x]],
+            crs = as.character(sf::st_crs(traindat[[x]])$epsg)
+          ))
+      }, simplify = FALSE, USE.NAMES = TRUE)
+      
+    } else {
+      tasks <- sapply(names(traindat), function(x) {
+        TaskClassifST$new(
+          id = gsub(".gpkg$", "", basename(x)), 
+          backend = cbind(sf::st_drop_geometry(traindat[[x]]), 
+                          sf::st_coordinates(traindat[[x]])), 
+          target = target, positive = positive,
+          extra_args = list(
+            coords_as_features = FALSE, coordinate_names = coordinate_cols[[x]],
+            crs = as.character(sf::st_crs(traindat[[x]])$epsg)
+          ))
+      }, simplify = FALSE, USE.NAMES = TRUE)
+    }
   } else {
-    # remove any x and y columns if it isn't spatial
-    spatial <- FALSE
-    
-    message("Performing non-spatial sampling")
-    
-    sp_index <- which(sapply(traindat, function(x) 
-      length(which(names(x) %in% c("X", "Y"))) == 2 || 
-        length(which(names(x) %in% c("x", "y")))))
-    
-    traindat <- lapply(traindat, function(x) 
-      x[, names(x)[!names(x) %in% c("X", "Y", "x", "y")]])
-    
-    resampling_outer <- rsmp("repeated_cv", folds = folds, repeats = repeats)
-    
-    if(mod_type == "regr.ranger") {
-      tasks <- lapply(seq_along(traindat), function(x) {
-        TaskRegr$new(id = gsub(".gpkg$", "", basename(names(traindat[x]))), 
-                     backend = traindat[[x]], 
-                     target = target)
-      })
-    } else {
-      tasks <- lapply(seq_along(traindat), function(x) {
-        TaskClassif$new(id = gsub(".gpkg$", "", basename(names(traindat[x]))), 
-                        backend = traindat[[x]], 
-                        positive = positive,
-                        target = target)
-      })
-    }
+    # Throw error if both X and Y columns are present
+    stop("Spatial input is required.")
   }
-  names(tasks) <- names(traindat)
   
   # Create correlation matrix (mandatory output)
   cor <- lapply(tasks, function(x) {
@@ -164,14 +142,14 @@ model_gen_mlr3 <- function(
   if(filter_correlation) {
     tasks <- lapply(tasks, function(x) {
       x <- x$select(
-        names(which(apply(x$data() %>% dplyr::select(-Pres), 2, function(x) 
-          var(x, na.rm = TRUE) != 0))))
+        names(which(apply(x$data() %>% dplyr::select(-Pres), 2, function(y) 
+          var(y, na.rm = TRUE) != 0))))
       cor <- flt("find_correlation", method = "pearson")
       cor$calculate(x)
       x <- x$select(
         as.data.table(cor) %>% 
           dplyr::filter(score >= 0.1) %>% 
-          pull(feature))
+          dplyr::pull(feature))
       return(x)
     })
   }
