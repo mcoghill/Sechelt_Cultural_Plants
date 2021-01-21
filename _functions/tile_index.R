@@ -61,6 +61,7 @@ tile_index <- function(SpatRaster, pxCount) {
     dplyr::rename(geometry = all_of(attr(., "sf_column"))) %>% 
     dplyr::relocate(geometry, .after = last_col()) %>% 
     tibble::rownames_to_column("id") %>% 
+    sf::st_set_crs(crs(SpatRaster)) %>% 
     sf::st_set_agr("constant")
   
   return(tiles)
