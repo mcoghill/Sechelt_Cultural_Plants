@@ -11,9 +11,198 @@ output: html_document
 ##3: Remove polygons <10m^2
 ##4: Overlay salmonberry maps, analyze models that fall within the defined gaps
 
-```{r}
+This file creates an output polygon shape of the canopy gaps from the 1m CHM. Since most computers have difficulty with creating polygons from a 1GB raster, an alternative process needed to be constructed. I'll explain this process below. First, load the required packages.
 
+```{r package setup}
 
+suppressMessages(suppressWarnings({
+  lapply(c("tidyverse", "terra", "stars", "parallel"), library, character.only = TRUE)[0]
+  source('./_functions/tile_index.R')}))
 
 ```
+
+Next, set up the directories for the required files. At this stage, we need to load the 1m CHM and the associated AOI shape for that resolution
+
+```{r Directory setup}
+
+AOI <- "Sechelt"
+AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
+epsg <- 3005
+map_res <- 4
+res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
+
+input_dir <- file.path(
+  AOI_dir, "1_map_inputs/field_data/processed_2020", res_dir)
+output_dir <- file.path(AOI_dir, "7_canopy_gap_analysis")
+dir.create(output_dir, showWarnings = FALSE)
+covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
+cov_1m <- file.path(covariate_dir, "1m")
+chm_1m <- rast(file.path(cov_1m, "chm.tif"))
+chm_poly <- st_as_sf(as(as.polygons(chm_1m * 0, dissolve = TRUE), "Spatial")) %>% 
+  st_set_crs(crs(chm_1m)) %>% 
+  {if(!all(st_is_valid(.))) {
+    st_make_valid(.)
+  } else .}
+
+tiles <- tile_index(chm_1m, 500) %>% 
+  dplyr::filter(st_intersects(., chm_poly, sparse = FALSE)) %>% 
+  mutate(touches = as.list(st_touches(., sparse = TRUE))) %>% 
+  as_tibble() %>% 
+  st_as_sf() %>% 
+  st_set_agr("constant")
+
+```
+
+Now, there is an existing canopy closure calculation that looks at the LiDAR's proportion of first returns <3m. We have a CHM which is the result of first returns, so can create a raster filter to look at areas on the landscape <3m (or whatever we want) and then polygonize those areas afterwards.
+
+The polygonizing step operates across each tile. The process is as follows:
+
+1. Reclassify the CHM heights where less than the height cutoff is NA, and everything above that cutoff is 1
+2. Load in a raster tile of the reclassified grid using the stars package
+3. Create a polygon (sf dataframe) of that stars object and buffer the shape slightly. Buffering allows polygons separated by corners to join as a contiguous polygon.
+4. Load in the tiles surrounding the main tile, also buffering their polygons by the same amount
+5. Perform a spatial union/dissolve each polygon. Split the resulting singular MULTIPOLYGON object into separate POLYGON objects
+6. Remove polygon holes that are smaller than a cutoff area (if specified)
+7. Filter the POLYGON objects that have an area greater than the area cutoff value
+8. Perform a spatial intersection to limit the resulting polygons to be within the main tile boundaries only. Repeat this process for each tile.
+9. Perform a spatial union/dissolve on the final spatial tiles
+
+This process was borne out of necessity - the terra::as.polygons() function did not appear to work, and this way allows for some kind of progress to be printed as it processes. There may also be a way to parallelize this process by creating unique tempfiles throughout. This may be necessary since it takes ~2.5 hours to process currently. It also appears that it doesn't use much RAM so it could work, it just depends on the sf/stars/terra package details for if it's possible.
+
+```{r filter heights}
+
+# Create cutoffs
+height_cutoff <- 3
+area_cutoff <- units::set_units(1000, m^2)
+rm_holes <- TRUE
+hole_cutoff <- 50
+
+# Create tempfile names so that tiles are overwritten during processing
+tmp_chm <- tempfile(pattern = "spat_", fileext = ".tif")
+
+# Reclassify CHM raster
+rcl <- matrix(c(-Inf, height_cutoff, 1L, height_cutoff, Inf, NA), ncol = 3, byrow = TRUE)
+chm_cutoff <- terra::classify(chm_1m, rcl, filename = tmp_chm, wopt = list(
+  datatype = "INT1U"), overwrite = TRUE)
+
+# Create cluster for parallel processing
+cl <- makeCluster(detectCores())
+clusterExport(cl, c("area_cutoff", "rm_holes", "hole_cutoff", "chm_cutoff",
+                    "tmp_chm", "tiles"))
+clusterEvalQ(cl, suppressMessages(suppressWarnings({
+        sapply(c("tidyverse", "stars"), 
+               library, character.only = TRUE)[0]})))[0]
+
+# Create polygon shape of canopy gaps. Time this function.
+gaps <- parLapply(cl, 1:nrow(tiles), function(x) {
+  cat("Processing tile", x, "of", nrow(tiles), "\n")
+  
+  # Load tile and surrounding tiles
+  t <- tiles[x, ]
+  t_touch <- tiles[unlist(t$touches), ]
+  
+  # Define tempfiles
+  tmp_tile <- tempfile(pattern = "spat_", fileext = ".tif")
+  tmp_surr <- tempfile(pattern = "spat_", fileext = ".tif")
+  
+  # Read CHM tile as a stars object
+  chm_stars <- stars::read_stars(
+    tmp_chm, proxy = FALSE, 
+    RasterIO = list(nXOff = t$offset.x[1] + 1, nYOff = t$offset.y[1] + 1,
+                    nXSize = t$region.dim.x[1], nYSize = t$region.dim.y[1]))
+  
+  # Check for data presence, and if no data then skip tile
+  if(!all(is.na(chm_stars[[1]]))) {
+    
+    # stars is finnicky, can't convert raster to polygon from the original CHM.
+    # Save tile as a raster first, then load that back into R and convert it
+    # to an sf dataframe after loading it back in.
+    write_stars(chm_stars, tmp_tile, type = "Byte", update = FALSE)
+    polys_t <- stars::read_stars(tmp_tile, NA_value = 0, proxy = FALSE) %>% 
+      st_as_sf(merge = TRUE) %>%
+      dplyr::select(attr(., "sf_column"))
+    
+    # Now, iterate through the surrounding tiles in a similar manner - load tile,
+    # save it, reload it, and then convert to an sf dataframe. 
+    polys_touch <- do.call(rbind, lapply(1:nrow(t_touch), function(y) {
+      chm_stars_touch <- stars::read_stars(
+        tmp_chm, proxy = FALSE,
+        RasterIO = list(nXOff  = t_touch[y, ]$offset.x[1] + 1,
+                        nYOff  = t_touch[y, ]$offset.y[1] + 1,
+                        nXSize = t_touch[y, ]$region.dim.x[1],
+                        nYSize = t_touch[y, ]$region.dim.y[1]))
+      
+      # Check for data presence, and if no data then skip tile
+      if(!all(is.na(chm_stars_touch[[1]]))) {
+        
+        write_stars(chm_stars_touch, tmp_surr, type = "Byte", update = FALSE)
+        touch <- stars::read_stars(tmp_surr, NA_value = 0, proxy = FALSE) %>% 
+          st_as_sf(merge = TRUE) %>%
+          dplyr::select(attr(., "sf_column"))
+      } else NULL
+    }))
+    
+    # Combine main tile and surrounding tile polygons, union them, convert them 
+    # back to POLYGON
+    polys <- rbind(polys_t, polys_touch) %>%
+      st_buffer(0.1, joinStyle = "MITRE", mitreLimit = 2) %>%
+      summarise(do_union = TRUE) %>%
+      st_cast("POLYGON")
+    
+    # If specified to remove small holes, do so here
+    if(rm_holes & nrow(polys) > 0) {
+      geom <- st_geometry(polys)
+      for(i in 1:length(geom)) {
+        if(length(geom[i][[1]]) > 1){
+          if(hole_cutoff > 0) {
+            holes <- lapply(geom[i][[1]], function(x) {st_polygon(list(x))})[-1]
+            areas <- c(Inf, sapply(holes, st_area))
+            geom[i] <- st_polygon(geom[i][[1]][which(areas > hole_cutoff)])
+          } else {
+            geom[i] <- st_polygon(geom[i][[1]][1])
+          }
+        }
+      }
+      st_geometry(polys) <- geom
+    }
+    
+    # Filter the resulting polygons by area and only return polygons within the
+    # main tile area. Ensure that the final result is a POLYGON geometry type
+    polys <- polys %>%
+      dplyr::filter(st_area(.) >= area_cutoff) %>% 
+      st_intersection(st_geometry(t)) %>% 
+      {if(st_geometry_type(., by_geometry = FALSE) != "POLYGON" & nrow(.) > 0) {
+        summarise(., do_union = FALSE) %>% 
+          st_cast("POLYGON")
+      } else .}
+      
+    # Return NULL if there are no canopy gaps left after area filtering
+    if(nrow(polys) > 0) {
+      return(polys)
+    } else return(NULL)
+  } else return(NULL)
+})
+stopCluster(cl)
+
+gaps_union <- do.call(rbind, gaps) %>% st_union() %>% st_cast("POLYGON")
+
+# Write output
+st_write(gaps_union, file.path(output_dir, "canopy_gaps.gpkg"), delete_layer = TRUE,
+         quiet = TRUE)
+
+```
+
+With the canopy gaps identified it's time to load in the collected Rubuspe point data
+
+```{r Load point data}
+
+# Read in attributed point data
+pres_abs <- st_read(file.path(input_dir, "pres_abs.gpkg"), layer = "Rubu spe",
+                    quiet = TRUE) %>%
+  dplyr::select(Pres) %>% 
+  dplyr::mutate(across("Pres", as.factor),
+                inside = st_intersects(., chm_polys_sf, sparse = FALSE))
+
+```
+
 
