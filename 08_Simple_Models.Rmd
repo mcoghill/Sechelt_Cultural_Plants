@@ -320,21 +320,32 @@ for(j in names(covariates)) {
   }
 }
 
+```
+
+Now it's just a matter of tabulating the results of each model run
+
+```{r Results}
+
 # Using the available model results, find the best models for each species
-best_model_sets <- lapply(c("Corn can", "Rubu spe"), function(x) {
+best_model_sets <- bind_rows(lapply(c("Corn can", "Rubu spe"), function(x) {
   sp_dirs <- list.dirs(file.path(output_dir, "pres_abs_predictions", x), recursive = FALSE)
-  result_list <- lapply(sp_dirs, function(y) {
-    read.csv(file.path(y, list.files(y, pattern = "_tune_results.csv$"))) %>% 
+  result_list <- bind_rows(lapply(sp_dirs, function(y) {
+    r <- read.csv(file.path(y, list.files(y, pattern = "_tune_results.csv$"))) %>% 
       dplyr::slice(which.min(classif.ce)) %>% 
       mutate(model = basename(y)) %>% 
       dplyr::select(model, classif.ce)
-  }) %>% do.call(rbind, .) %>% 
-    dplyr::mutate(species = x) %>% 
+    t <- read.csv(file.path(y, list.files(y, pattern = "_model_metrics.csv$"))) %>% 
+      pivot_wider(names_from = "metric", values_from = "result")
+    r <- cbind(r, t)})) %>% 
     dplyr::arrange(classif.ce)
-}) %>% do.call(rbind, .)
+  write.csv(result_list, file.path(
+    output_dir, "pres_abs_predictions", x, paste0("model_performance_", x, "_", res_dir, ".csv")),
+    row.names = FALSE)
+  dplyr::mutate(result_list, species = x)})) %>% 
+  dplyr::relocate(species, model)
 
 write.csv(best_model_sets, file.path(
-  output_dir, "pres_abs_predictions", "model_performance_index.csv"), 
+  output_dir, "pres_abs_predictions", paste0("model_performance_index", "_", res_dir, ".csv")), 
   row.names = FALSE)
 
 ```
