@@ -156,7 +156,7 @@ disaggregate <- function(
   output <- base::list()
   
   # Save start time
-  output$timing <- base::list(start = base::date())
+  output$timing <- base::list(start = Sys.time())
   
   # Check arguments before proceeding
   messages <- c("Attention is required with the following arguments:\n")
@@ -221,6 +221,19 @@ disaggregate <- function(
     stub <- ""
   }  else if(!(substr(stub, nchar(stub), nchar(stub)) == "_")) {
     stub <- paste0(stub, "_")
+  }
+  
+  # Get masking layer if not specified already
+  if(is.null(mask)) {
+    mask <- sapply(names(covariates), function(x) {
+      cat(paste0("\rCounting NA values in ", x, " [", 
+                 which(x == names(covariates)), 
+                 " of ", nlyr(covariates), "]\n"))
+      unname(freq(subset(covariates, x) * 0)[, "count"])}) %>% 
+      data.frame(data_cells = .) %>% 
+      rownames_to_column("layer") %>% 
+      dplyr::slice_max(data_cells, with_ties = FALSE) %>% 
+      dplyr::pull(layer)
   }
   
   # Save function call
@@ -450,10 +463,10 @@ disaggregate <- function(
             model, covariates, tilesize = 500,
             outDir = file.path(outputdir, "tiles"), type = "prob", mask = mask)
           r1 <- writeRaster(r1, file.path(
-              outputdir, subdir, "realisations",
-              paste0(stub, "realisation_", formatC(j, width = nchar(reals), 
-                                                   format = "d", flag = "0"), ".tif")),
-              overwrite = TRUE)
+            outputdir, subdir, "realisations",
+            paste0(stub, "realisation_", formatC(j, width = nchar(reals), 
+                                                 format = "d", flag = "0"), ".tif")),
+            overwrite = TRUE)
           
         } else {
           # If levels were dropped from soil_class in order to use the train 
@@ -495,7 +508,7 @@ disaggregate <- function(
   }
   
   # Save finish time
-  output$timing$finish <- base::date()
+  output$timing$finish <- Sys.time()
   
   # Return output
   return(output)

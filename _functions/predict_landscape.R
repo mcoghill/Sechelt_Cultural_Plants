@@ -30,24 +30,14 @@ predict_landscape <- function(
   lapply(c("tidyverse", "stars", "terra"), 
          require, character.only = TRUE)
   
-  if(missing(model) || class(model) != "train") 
+  if(missing(model) || !class(model) %in% c("train", "C5.0")) 
     stop("A valid 'model' object from the caret package is required to proceed.")
   
   if(missing(model) || (!class(covariates) %in% "SpatRaster"))
     stop("A SpatRaster object of the raster covariates is required to run predictions.
        Additionally, the layers should be the same as the model variables.")
   
-  if(is.null(mask)) {
-    mask <- sapply(names(covariates), function(x) {
-      cat(paste0("\rCounting NA values in ", x, " [", 
-                 which(x == names(covariates)), 
-                 " of ", nlyr(covariates), "]\n"))
-      unname(freq(subset(covariates, x) * 0)[, "count"])}) %>% 
-      data.frame(data_cells = .) %>% 
-      rownames_to_column("layer") %>% 
-      dplyr::slice_max(data_cells, with_ties = FALSE) %>% 
-      dplyr::pull(layer)
-  }
+  if(is.null(mask)) mask <- 1
   
   # Create a polygon of the masking layer
   mask_poly <- terra::as.polygons(subset(covariates, mask) * 0) %>% 
@@ -62,7 +52,7 @@ predict_landscape <- function(
   cov <- sources(covariates)[, "source"]
   
   # If rasters are loaded in memory, save them as .tif files elsewhere
-  if(length(cov) == 1 && cov == "") {
+  if(any(cov == "")) {
     cov_names <- names(covariates)
     covariates <- terra::writeRaster(
       covariates, filename = tempfile(pattern = names(covariates), fileext = ".tif")) %>% 
@@ -147,7 +137,7 @@ predict_landscape <- function(
       #   sf::st_as_sf(coords = c("x", "y")) %>%
       #   dplyr::filter_at(vars(names(r)), any_vars(!is.na(.))) %>%
       #   replace(is.na(.), 0)
-
+      
       # Carry out model prediction and format depending on predict type
       cat("\r...Predicting outcomes...")
       if(type != "prob") {
@@ -204,7 +194,7 @@ predict_landscape <- function(
     cat(paste0("\r", round(a / ta * 100, 1), "% completed at ", 
                format(Sys.time(), "%X %b %d %Y"), "\n"))
     return(out_files)
-      
+    
   }) %>% as.character()
   
   cat("\nAll predicted tiles generated\n")
@@ -238,14 +228,6 @@ predict_landscape <- function(
       terra::mask(subset(covariates, mask), 
                   filename = tempfile(pattern = basename(k), fileext = ".tif"), 
                   overwrite = TRUE)
-    
-    # Depending on prediction type, output either a single SpatRaster layer or
-    # a list of files
-    # if(length(keep) == 1) {
-    #   return(mos)
-    # } else {
-    #   return(terra::sources(mos)[, "source"])
-    # }
   }))
   
   # Reapply default progress bar options
