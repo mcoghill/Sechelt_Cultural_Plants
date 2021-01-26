@@ -10,11 +10,11 @@ Following the meeting on Wednesday, December 16, we felt that some simplified ba
 
 This will use the same scripting setup as the other modelling scripts, just more directed. First, we want to just see terrain variables on salmonberry and see what kind of output that produces. Just focus on the 2020 data for now as well.
 
-```{r}
+```{r Load Packages}
 
-suppressMessages(suppressWarnings({
-  lapply(c("tidyverse", "tools", "terra", "sf", "mlr3verse", "foreach", "corrplot"), 
-         library, character.only = TRUE)[0]}))
+invisible(suppressPackageStartupMessages(
+  lapply(c("tidyverse", "tools", "terra", "sf", "mlr3verse", "corrplot"), 
+         library, character.only = TRUE)))
 
 # Load custom scripts
 source("./_functions/model_gen_mlr3.R")
@@ -28,7 +28,7 @@ Next, define the locations and options for where files are located and how to co
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 4
+map_res <- 10
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 input_dir <- file.path(
@@ -74,20 +74,20 @@ covariates <- list(
   # DSMART layers
   site_ser_dsmart_probs = rast(list.files(
     file.path(dsmart_site_ser_dir, "output", "probabilities"), full.names = TRUE)) %>% 
-    magrittr::set_names(paste0("dsmart_site_ser_probability_", names(.))),
+    setNames(paste0("dsmart_site_ser_probability_", names(.))),
   
   site_ser_dsmart_class = rast(file.path(dsmart_site_ser_dir, "site_ser_dsmart.tif")) %>% 
-    magrittr::set_names("dsmart_site_ser_class"),
+    setNames("dsmart_site_ser_class"),
   
   # Simple site series layers
   site_ser_simple_probs = rast(grep(
     "site_series_simple.tif", 
     list.files(file.path(dsmart_site_ser_dir, "simple"), full.names = TRUE, pattern = ".tif$"),
     invert = TRUE, value = TRUE)) %>% 
-    magrittr::set_names(paste0("simple_site_ser_", names(.))),
+    setNames(paste0("simple_site_ser_", names(.))),
   
   site_ser_simple_class = rast(file.path(dsmart_site_ser_dir, "simple", "site_series_simple.tif")) %>% 
-    magrittr::set_names("simple_site_ser_class")
+    setNames("simple_site_ser_class")
 )
 
 # Find the best masking layer to use in the predict_landscape algorithm
@@ -101,17 +101,15 @@ mask_layers <- lapply(covariates, function(x) {
     rownames_to_column("layer")}) %>% 
   do.call(rbind, .) %>% 
   arrange(desc(data_cells)) %>% 
-  remove_rownames() %>% 
-  dplyr::filter(data_cells > quantile(data_cells, 0.01))
+  remove_rownames()
 
-cov_atts <- mask_layers$layer
+cov_atts <- unlist(sapply(covariates, names), use.names = FALSE)
 
 # Read in attributed point data
 pres_abs <- sapply(c("Corn can", "Rubu spe"), function(x) {
   st_read(file.path(input_dir, "pres_abs.gpkg"), layer = x, quiet = TRUE) %>% 
-    cbind(st_coordinates(.)) %>% 
     mutate(across("Pres", as.factor)) %>%
-    dplyr::select(Pres, cov_atts[cov_atts %in% names(.)], X, Y)
+    dplyr::select(Pres, cov_atts[cov_atts %in% names(.)])
   }, simplify = FALSE, USE.NAMES = TRUE)
 
 # Determine missing covariates and create a SpatRaster of those
@@ -122,17 +120,15 @@ missing_covs <- cov_atts[!cov_atts %in% names(pres_abs[[1]])] %>%
 
 # Extract missing data to pres_abs
 pres_abs <- lapply(pres_abs, function(x) {
-  x %>% cbind(terra::extract(missing_covs, st_coordinates(.))) %>% 
-    st_drop_geometry()})
+  x %>% cbind(terra::extract(missing_covs, st_coordinates(.)))})
 
 # Write input data
 dir_out <- file.path(output_dir, "pres_abs_predictions")
 dir.create(dir_out, showWarnings = FALSE, recursive = TRUE)
-lapply(names(pres_abs), function(x) {
-  y <- st_as_sf(pres_abs[[x]], coords = c("X", "Y"), crs = crs(covariates))
-  st_write(y, file.path(dir_out, paste0("pres_abs_input_data.gpkg")), 
+invisible(lapply(names(pres_abs), function(x) {
+  st_write(pres_abs[[x]], file.path(dir_out, paste0("pres_abs_input_data.gpkg")), 
            layer = x, delete_layer = TRUE, quiet = TRUE)
-})[0]
+}))
 
 ```
 
@@ -151,18 +147,19 @@ for(j in names(covariates)) {
   # Only select the point columns containing the covariate names, and omit rows
   # containing NA values
   pres_abs_flt <- lapply(pres_abs, function(x) 
-    dplyr::select(x, any_of(c("Pres", names(covariates_flt), "X", "Y"))) %>% 
+    dplyr::select(x, any_of(c("Pres", names(covariates_flt)))) %>% 
       drop_na())
   
   # Filter down the covariates to only include the ones that weren't filtered 
   # out based on the mask_layer variable
-  covariates_flt <- subset(covariates_flt, names(pres_abs_flt[[1]])
-                           [!names(pres_abs_flt[[1]]) %in% c("Pres", "X", "Y")])
+  covariates_flt <- subset(
+    covariates_flt, names(pres_abs_flt[[1]])[
+      !names(pres_abs_flt[[1]]) %in% c("Pres", attr(pres_abs_flt[[1]], "sf_column"))])
   
   for(i in 1:length(pres_abs_flt)) {
     
     dir_out <- file.path(output_dir, "pres_abs_predictions", names(pres_abs_flt[i]), j)
-    dir.create(dir_out, showWarnings = FALSE)
+    dir.create(dir_out, showWarnings = FALSE, recursive = TRUE)
     
     # Create models for each dataset. Each model is a 10-fold spatial cross validation
     # repeated 5 times.
@@ -217,20 +214,20 @@ for(j in names(covariates)) {
         )
       )
       
-      model_data <- foreach(j = 1:n_iters) %do% {
+      model_data <- lapply(1:n_iters, function(j) {
         test_data <- pres_models$learners[[x]]$archive$benchmark_result$resample_result(j)$
           resampling$instance %>% 
           cbind(batch_nr = j)
-        train_data <- foreach(k = 1:reps, .combine = rbind) %do% { 
-          foreach(l = 1:folds, .combine = rbind) %do% {
+        train_data <- do.call(rbind, lapply(1:reps, function(k) {
+          do.call(rbind, lapply(1:folds, function(l) {
             test_rows <- dplyr::filter(test_data, rep == k, fold == l)
             missing <- as.numeric(rownames(pres_abs_flt[[i]])[
               !as.numeric(rownames(pres_abs_flt[[i]])) %in% test_rows$row_id])
             data.frame(row_id = missing, rep = k, fold = l, batch_nr = j)
-          }
-        }
+          }))
+        }))
         return(list(test_data = test_data, train_data = train_data))
-      } %>% magrittr::set_names(paste0(
+      }) %>% setNames(paste0(
         "batch_nr = ", 
         pres_models$learners[[x]]$model$fselect_instance$archive$data()$
           batch_nr))
@@ -298,13 +295,13 @@ for(j in names(covariates)) {
       
       cov_sub <- subset(covariates_flt, pres_models$tasks[[x]]$col_roles$feature)
       
-      for(j in 1:nrow(mask_layers)) {
-        if(mask_layers[j, "layer"] %in% names(cov_sub)) {
-          pred_mask <- mask_layers[j, "layer"]
-          break
-        }
-      }
-      # source("./_functions/predict_landscape_mlr3.R")
+      # Find the best mask layer to use from the covariates left
+      pred_mask <- mask_layers %>% 
+        dplyr::filter(layer %in% names(cov_sub)) %>% 
+        dplyr::arrange(layer) %>% 
+        dplyr::slice_max(data_cells, n = 1, with_ties = FALSE) %>% 
+        dplyr::pull(layer)
+      
       out <- predict_landscape_mlr3(
         learner = pres_models$learners[[x]],
         task = pres_models$tasks[[x]], 
@@ -312,17 +309,13 @@ for(j in names(covariates)) {
         covariates = cov_sub,
         tilesize = 500, 
         outDir = tile_dir, 
-        mask_layer = pred_mask
-      )
+        mask_layer = pred_mask)
       
-      # with predict_landscape_mlr3 type set to "prob", the output is a list of files
-      for(j in out) {
-        file.copy(
-          from = j,
-          to = file.path(dir_out, paste0(x, "_", gsub("_.*", "", basename(j)), ".tif")),
-          overwrite = TRUE)
-      }
-      return(out)
+      # Write the raster mosaics
+      out <- writeRaster(out, file.path(
+        dir_out, paste0(x, "_", gsub("_.*", "", names(out)), ".tif")),
+        overwrite = TRUE)
+      
     }, simplify = FALSE, USE.NAMES = TRUE)
   }
 }
