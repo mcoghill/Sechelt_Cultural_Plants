@@ -121,11 +121,11 @@ dem_derived_layers <- function(
   saga_cmd # path to saga_cmd
 ) {
   # Note: All SAGA tools and associated documentation can be found here:
-  # http://www.saga-gis.org/saga_tool_doc/7.3.0/index.html
+  # http://www.saga-gis.org/saga_tool_doc/7.7.0/index.html
   
   # List of packages required for function to work
-  lapply(c("tidyverse", "terra", "xml2", "lubridate", "rvest", "httr"), 
-         require, character.only = TRUE)[0]
+  invisible(lapply(c("tidyverse", "terra", "xml2", "lubridate", "rvest", "httr"), 
+                   require, character.only = TRUE))
   
   # Data input checks/error handling
   if(missing(dem_input)) stop("dem_input is missing with no default")
