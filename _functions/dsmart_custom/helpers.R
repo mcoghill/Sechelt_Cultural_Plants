@@ -149,9 +149,6 @@
     names(composition) <- c("poly", "mapunit", "stratum", "soil_class", "proportion")
   } else stop("Map unit composition in unknown format.")
   
-  # Need to add cell number to ouput. Easiest way is to create a raster of
-  # cell values
-  
   # Process each polygon in polygons
   samples <- dplyr::bind_rows(lapply(1:length(polygons), function(x) {
     poly.id = as.data.frame(polygons[x, 1])[, 1]
