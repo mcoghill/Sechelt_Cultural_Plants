@@ -80,7 +80,7 @@ summarise <- function(
   output <- base::list()
   
   # Save start time
-  output$timing <- base::list(start = base::date())
+  output$timing <- base::list(start = Sys.time())
   
   # Check arguments before proceeding
   messages <- c("Attention is required with the following arguments:\n")
@@ -259,7 +259,7 @@ summarise <- function(
   suppressWarnings(terra::tmpFiles(old = TRUE, remove = TRUE))
   
   # Save finish time
-  output$timing$finish <- base::date()
+  output$timing$finish <- Sys.time()
   
   # Reapply default progress bar options
   terraOptions(progress = readr::parse_number(grep("progress", def_ops, value = TRUE)))
