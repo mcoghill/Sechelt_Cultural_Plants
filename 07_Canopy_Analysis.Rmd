@@ -15,9 +15,10 @@ This file creates an output polygon shape of the canopy gaps from the 1m CHM. Si
 
 ```{r package setup}
 
-suppressMessages(suppressWarnings({
-  lapply(c("tidyverse", "terra", "stars", "parallel"), library, character.only = TRUE)[0]
-  source('./_functions/tile_index.R')}))
+invisible(suppressPackageStartupMessages(
+  lapply(c("tidyverse", "terra", "stars", "parallel"), library, character.only = TRUE)))
+
+source('./_functions/tile_index.R')
 
 ```
 
@@ -73,8 +74,8 @@ This process was borne out of necessity - the terra::as.polygons() function did 
 
 # Create cutoffs
 height_cutoff <- 3
-area_cutoff <- units::set_units(1000, m^2)
-rm_holes <- TRUE
+area_cutoff <- units::set_units(16, m^2)
+rm_holes <- FALSE
 hole_cutoff <- 50
 
 # Create tempfile names so that tiles are overwritten during processing

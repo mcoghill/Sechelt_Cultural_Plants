@@ -9,8 +9,8 @@ This file is very similar in style to the 03 file, just using models that were r
 
 ```{r Load Packages, echo=TRUE, results='hide'}
 
-suppressMessages(suppressWarnings({
-  lapply(c("tidyverse", "terra"), library, character.only = TRUE)[0]}))
+invisible(suppressPackageStartupMessages(
+  lapply(c("tidyverse", "terra"), library, character.only = TRUE)))
 
 ```
 

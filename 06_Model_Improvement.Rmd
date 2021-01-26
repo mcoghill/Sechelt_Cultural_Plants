@@ -7,9 +7,9 @@ output: html_document
 
 ```{r}
 
-suppressMessages(suppressWarnings({
+invisible(suppressPackageStartupMessages(
   lapply(c("tidyverse", "sf", "rstatix", "emmeans"), 
-         library, character.only = TRUE)[0]}))
+         library, character.only = TRUE)))
 
 ```
 

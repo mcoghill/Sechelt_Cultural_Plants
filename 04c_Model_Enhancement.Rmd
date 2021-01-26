@@ -9,9 +9,9 @@ The purpose of this document is to once again run modelling using similar machin
 
 ```{r Load Packages, echo=TRUE, results='hide'}
 
-suppressMessages(suppressWarnings({
+invisible(suppressPackageStartupMessages(
   lapply(c("tidyverse", "tools", "terra", "sf", "mlr3verse"), 
-         library, character.only = TRUE)[0]}))
+         library, character.only = TRUE)))
 
 # Load custom scripts
 source("./_functions/model_gen_mlr3.R")
