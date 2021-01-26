@@ -44,21 +44,15 @@
   covariates, polygons, composition, n.realisations = 100, 
   rate = 15, method.sample = "by_polygon", method.allocate = "weighted") {
   
-  # Need to add cell number to ouput. Easiest way is to create a raster of
-  # cell values
-  cell <- covariates[[1]] %>% magrittr::set_names("cell")
-  values(cell) <- 1:ncell(cell)
-  covariates <- c(cell, covariates)
-  
   # Get samples for a polygon
-  samples <- foreach::foreach(x = 1:length(polygons), .combine = rbind) %do% {
-    poly.id <- as.data.frame(polygons)[, 1][x]
+  samples <- dplyr::bind_rows(lapply(1:length(polygons), function(x) {
+    poly.id <- as.data.frame(polygons[x, 1])[, 1]
     cat(paste0(
       "\nGenerating samples for polygon ", 
       poly.id, " [", x, "/", length(polygons), "]"))
     
     # Subset a polygon
-    poly <- base::subset(polygons, as.data.frame(polygons)[, 1] == poly.id)
+    poly <- polygons[x, 1]
     
     # If sample = "area", determine the correct number of samples to take
     n.samples <- 0
@@ -82,11 +76,11 @@
     
     # Extract covariates of all grid cells that intersect with the polygon
     # Retain only those cells that do not have NA in their covariates
-    poly.samples <- as.data.frame(terra::extract(covariates, poly)) %>% 
+    poly.samples <- terra::extract(covariates, poly, cells = TRUE) %>% 
       dplyr::select(-ID) %>% 
-      dplyr::filter(complete.cases(.)) %>% 
+      tidyr::drop_na() %>% 
       {if(nrow(.) > 0) {
-        dplyr::sample_n(., size = (n.samples * n.realisations), replace = TRUE)
+        dplyr::slice_sample(., n = (n.samples * n.realisations), replace = TRUE)
       } else . }
     
     # Allocate all samples to a soil class
@@ -128,6 +122,7 @@
       }
     } else stop("Allocation method is unknown")
     
+    
     # Add realisation id, spatial coordinates, soil class to sampled grid cells
     xy <- as.data.frame(terra::xyFromCell(covariates, poly.samples$cell))
     meta <- list(realisation = base::rep(1:n.realisations, times = n.samples)[0:nrow(xy)], 
@@ -136,9 +131,10 @@
                  allocation = base::rep(method.allocate, base::nrow(xy)))
     poly.samples <- cbind(as.data.frame(meta), xy, 
                           soil_class = soil_class[0:nrow(xy)], 
-                          poly.samples[, 2:base::ncol(poly.samples)])
+                          poly.samples[, -which(names(poly.samples) == "cell")])
     return(poly.samples)
-  }
+      
+  }))
   return(samples)
 }
 
@@ -155,19 +151,16 @@
   
   # Need to add cell number to ouput. Easiest way is to create a raster of
   # cell values
-  cell <- covariates[[1]] %>% magrittr::set_names("cell")
-  values(cell) <- 1:ncell(cell)
-  covariates <- c(cell, covariates)
   
   # Process each polygon in polygons
-  samples <- foreach::foreach(x = 1:length(polygons), .combine = rbind) %do% {
-    poly.id = as.data.frame(polygons)[, 1][x]
+  samples <- dplyr::bind_rows(lapply(1:length(polygons), function(x) {
+    poly.id = as.data.frame(polygons[x, 1])[, 1]
     cat(paste0(
       "\nGenerating stratified samples for polygon ", 
       poly.id, " [", x, "/", length(polygons), "]"))
     
     # Subset a polygon
-    poly <- subset(polygons, as.data.frame(polygons)[, 1] == poly.id)
+    poly <- polygons[x, 1]
     
     # If sample = "area", determine the correct number of samples to take
     n.samples <- 0
@@ -190,11 +183,11 @@
     
     # Extract covariates of all grid cells that intersect with the polygon
     # Retain only those cells that do not have NA in their covariates
-    poly.samples <- as.data.frame(terra::extract(covariates, poly)) %>% 
+    poly.samples <- terra::extract(covariates, poly, cells = TRUE) %>% 
       dplyr::select(-ID) %>% 
-      dplyr::filter(complete.cases(.)) %>%
+      tidyr::drop_na() %>%
       {if(nrow(.) > 0) {
-        dplyr::sample_n(., size = (n.samples * n.realisations), replace = TRUE)
+        dplyr::slice_sample(., n = (n.samples * n.realisations), replace = TRUE)
       } else . }
     
     # Get coordinates of sampled grid cells
@@ -204,10 +197,10 @@
     poly.samples.strata <- terra::extract(strata, xy)
     
     # Allocate soils within strata
-    poly.samples <- cbind(poly.samples.strata, poly.samples[, 2:ncol(poly.samples)])
+    poly.samples <- cbind(poly.samples.strata, 
+                          poly.samples[, -which(names(poly.samples) == "cell")])
     names(poly.samples)[names(poly.samples) == colnames(poly.samples.strata)] <- "stratum"
     poly.samples <- poly.samples[order(poly.samples$stratum), ]
-    
     
     soil_class <- character()
     for(stratum in unique(poly.samples[, 1])) {
@@ -255,7 +248,7 @@
                  allocation = base::rep(method.allocate, nrow(xy)))
     poly.samples <- cbind(as.data.frame(meta), poly.samples)
     return(poly.samples)
-  }
+  }))
   return(samples)
 }
 
@@ -335,8 +328,7 @@
   
   # Extract covariates at observation locations
   o.covariates <- observations %>% 
-    cbind(terra::extract(covariates, observations[, c("x", "y")])) %>% 
-    dplyr::select(-ID)
+    cbind(terra::extract(covariates, observations[, c("x", "y")]))
   
   # Join covariates back to observations
   meta <- list(realisation = numeric(length = nrow(observations)), 
@@ -346,6 +338,6 @@
   
   # Return only those observations with no NA in the covariates
   obs <- cbind(as.data.frame(meta), o.covariates) %>% 
-    dplyr::filter(complete.cases(.))
+    tidyr::drop_na()
   return(obs)
 }

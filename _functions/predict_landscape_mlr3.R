@@ -199,7 +199,9 @@ predict_landscape_mlr3 <- function(
       full.names = TRUE)
     
     # Mosaic, resample, mask and save as temp file
-    mos <- Reduce(function(x, y) terra::merge(x, y), lapply(r_tiles, terra::rast)) %>% 
+    mos <- {if(length(r_tiles) > 1) {
+      do.call(merge, lapply(r_tiles, terra::rast))
+    } else terra::rast(r_tiles)} %>% 
       terra::resample(subset(covariates, mask_layer), method = resamp_method) %>% 
       magrittr::set_names(basename(k)) %>% 
       terra::mask(subset(covariates, mask_layer), 
