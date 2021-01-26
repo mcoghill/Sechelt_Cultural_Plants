@@ -21,9 +21,9 @@ Using the RMarkdown format, I'll walk through the scripting process used to crea
 
 ```{r Load Packages, echo=TRUE, results='hide'}
 
-suppressMessages(suppressWarnings({
-  lapply(c("tidyverse", "readxl", "svSocket", "RODBC", "sf", "terra", "foreach"), 
-         library, character.only = TRUE, quietly = TRUE)[0]}))
+invisible(suppressPackageStartupMessages(
+  lapply(c("tidyverse", "readxl", "svSocket", "RODBC", "sf", "terra"), 
+         library, character.only = TRUE, quietly = TRUE)))
 
 ```
 
@@ -35,7 +35,7 @@ Additionally, we need to set the directory for where the 32-bit version of R is 
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- "TRIM"
+map_res <- 10
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 poi <- c("RUBUSPE", "CORNCAN", "VERAVIR", "LEDUGRO") # plants of interest
 
@@ -68,7 +68,8 @@ access_query_32 <- function(db_dir = NULL) {
       new.packages <- ls[!(ls %in% installed.packages()[, "Package"])]
       if(length(new.packages)) 
         install.packages(new.packages, repos = "https://cloud.r-project.org")
-      lapply(ls, library, character.only = TRUE)[0]
+      invisible(suppressPackageStartupMessages(
+        lapply(ls, library, character.only = TRUE)))
       a32_con <- RODBC::odbcConnectAccess(.(db_dir))
       tbl_list <- RODBC::sqlTables(a32_con) %>% 
         dplyr::filter(TABLE_TYPE != "SYSTEM TABLE")
@@ -132,8 +133,8 @@ sheets <- excel_sheets(spreadsheet)
 
 # Load BEC information
 sechelt_bec <- read_excel(spreadsheet, sheet = "sechelt_site") %>% 
-  dplyr::rename(subzone = `BGC Subzone / Variant`) %>% 
-  magrittr::set_names(make.names(names(.))) %>% 
+  dplyr::rename(subzone = `BGC Subzone / Variant`, point_id = `Point ID`) %>% 
+  stats::setNames(make.names(names(.))) %>% 
   dplyr::mutate(MapUnit = ifelse(is.na(Forested.Site.Series), Nonforested.Class,
                                  paste0(subzone, ".", Forested.Site.Series))) %>% 
   st_as_sf(coords = c("Long", "Lat"), crs = 4326, remove = FALSE) %>% 
@@ -152,11 +153,12 @@ sechelt_plants <- read_excel(spreadsheet, sheet = "sechelt_plants") %>%
   dplyr::mutate(
     Cover = rowSums(.[, c("A1", "A2", "A3", "B1", "B2", "C", "D")], na.rm = TRUE),
     Species = ifelse(nchar(Species) > 2, toupper(Species), Species)) %>% 
-  dplyr::mutate(Pres = Cover > 0.1) %>% 
+  dplyr::mutate(Pres = Cover > 0) %>% 
   dplyr::filter(Comments != "*not recorded" | is.na(Comments)) %>% 
   dplyr::rename(point_id = `Point ID`) %>% 
-  left_join(sechelt_bec, by = c("point_id" = "Point.ID")) %>% 
-  dplyr::select(point_id, Species, Lat, Long, Pres, Cover) %>% 
+  left_join(sechelt_bec, by = "point_id", suffix = c("", ".y")) %>% 
+  dplyr::select(point_id, Species, MapUnit, Lat, Long, A1, A2, A3, B1, B2, C, D, 
+                Flowers, Fruit, Pres, Cover, Comments) %>% 
   st_as_sf(coords = c("Long", "Lat"), crs = 4326) %>% 
   st_transform(3005)
 
@@ -184,7 +186,7 @@ For reference: https://a100.gov.bc.ca/pub/acat/public/viewReport.do?reportId=358
 
 # Download TEM Spreadsheet
 download.file(
-  "http://a100.gov.bc.ca/appsdata/acat/documents/r35895/tem_4678_eci_1363698000276_6de51d6c988801e3369406fe9a22713aa4dca27f63de77d54bf44b70a246813b.xls", 
+  "http://a100.gov.bc.ca/pub/acat/documents/r35895/tem_4678_eci_1363698000276_6de51d6c988801e3369406fe9a22713aa4dca27f63de77d54bf44b70a246813b.xls", 
   destfile = file.path(field_data_dir, "raw", "tem_data.xls"), 
   mode = "wb", quiet = TRUE)
 
@@ -273,19 +275,21 @@ tem_xls_bec <- dplyr::select(
   tem_xls[[1]], Poly_Nbr, ECI_Tag, subzone,
   Sser1, Sser2, Sser3, SDec1, Sdec2, Sdec3, `Str. Stg.`) %>% 
   dplyr::rename(StructuralStage = `Str. Stg.`) %>% 
-  dplyr::filter(ifelse(is.na(Sdec3), SDec1 >= 6, SDec1 >= 5)) %>% 
+  # dplyr::filter(ifelse(is.na(Sdec3), SDec1 >= 6, SDec1 >= 5)) %>% 
   drop_na(SDec1) %>% 
   dplyr::mutate(Sser1 = substr(Sser1, start = 1, stop = 2)) %>% 
   dplyr::mutate(across(c(Sser1, Sser2, Sser3), ~ sub("MA", "SW", .x))) %>% 
   dplyr::mutate(MapUnit = as.factor(
     ifelse(Sser1 %in% non_veg$map_code, Sser1, paste0(subzone, ".", Sser1)))) %>% 
+  unite(point_id, c(Poly_Nbr, ECI_Tag), sep = "_", remove = TRUE) %>% 
   st_sf()
 
 # MDB_tblPlotData has way too many columns, keep only important ones for BEC
 tem_mdb_bec <- dplyr::select(
-  tem_mdb$MDB_tblPlotData, PlotID, PlotNumber, BECUnit, SiteSeriesSymbol, 
+  tem_mdb$MDB_tblPlotData, PlotID, PlotNumber, PolygonNumber, BECUnit, SiteSeriesSymbol, 
   UTMNorthing, UTMEasting, StructuralStage, SiteNotes) %>% 
-  separate(BECUnit, into = c("subzone", "site_series")) %>% 
+  tidyr::separate(BECUnit, into = c("subzone", "site_series")) %>% 
+  unite(point_id, c(PolygonNumber, PlotNumber), sep = "_", remove = TRUE) %>% 
   dplyr::mutate(MapUnit = as.factor(
     ifelse(site_series == "00" & SiteSeriesSymbol %in% non_veg$map_code, 
            as.character(SiteSeriesSymbol), ifelse(
@@ -301,9 +305,13 @@ Further data wrangling is applied to plant data from the TEM datasets.
 ```{r TEM Data - Plants}
 
 tem_xls_pres <- lapply(tem_xls, function(x) {
-  dplyr::select(x, Poly_Nbr, ECI_Tag, Pres) %>% 
+  dplyr::select(x, Poly_Nbr, ECI_Tag, Pres, Comments) %>% 
     unite(point_id, c(Poly_Nbr, ECI_Tag), sep = "_", remove = TRUE) %>% 
-    {if(!any(.$Pres)) return(.[0, ]) else return(.)}
+    dplyr::mutate(Cover = NA_real_, A1 = NA_real_, A2 = NA_real_, A3 = NA_real_, 
+                  B1 = NA_real_, B2 = NA_real_, C = NA_real_, D = NA_real_, 
+                  Flowers = NA_character_, Fruit = NA_character_) %>% 
+    merge(dplyr::select(st_drop_geometry(tem_xls_bec), point_id, MapUnit), all.x = TRUE) %>% 
+    {if(!any(.$Pres)) .[0, ] else .}
   })
 
 # Merge all 3 .mdb tables and filter plants of interest
@@ -315,18 +323,23 @@ tem_mdb_merge <- expand.grid(
           tem_mdb$MDB_tblVegSpecies[, c("VegLayerID", "Species", "Cover")]), 
     all = TRUE) %>% 
   merge(tem_mdb$MDB_tblPlotData[, c("PlotID", "PlotNumber", "PolygonNumber", 
-                                    "UTMEasting", "UTMNorthing")]) %>% 
+                                    "SiteNotes", "UTMEasting", "UTMNorthing")]) %>% 
   unite(point_id, c(PolygonNumber, PlotNumber), sep = "_", remove = TRUE) %>% 
-  group_by(point_id, Species, UTMEasting, UTMNorthing) %>% 
+  merge(dplyr::select(st_drop_geometry(tem_mdb_bec), point_id, MapUnit), all = TRUE) %>% 
+  group_by(point_id, Species, MapUnit, SiteNotes, UTMEasting, UTMNorthing) %>% 
   dplyr::summarise(across(Cover, sum), .groups = "drop") %>% 
-  dplyr::mutate(Pres = Cover > 0.1) %>% 
+  dplyr::mutate(Pres = Cover > 0, A1 = NA_real_, A2 = NA_real_, A3 = NA_real_, 
+                  B1 = NA_real_, B2 = NA_real_, C = NA_real_, D = NA_real_, 
+                  Flowers = NA_character_, Fruit = NA_character_) %>% 
   replace_na(list(Pres = FALSE, Cover = 0)) %>% 
   st_as_sf(coords = c("UTMEasting", "UTMNorthing"), crs = 26910) %>% 
   st_transform(3005)
 
 tem_mdb_pres_cov <- sapply(poi, function(x)
   dplyr::filter(tem_mdb_merge, Species == x) %>% 
-    dplyr::select(point_id, Pres, Cover), simplify = FALSE, USE.NAMES = TRUE)
+    dplyr::select(point_id, MapUnit, A1, A2, A3, B1, B2, C, D, Flowers, Fruit, 
+                  Pres, Cover, SiteNotes) %>% 
+    dplyr::rename(Comments = SiteNotes), simplify = FALSE, USE.NAMES = TRUE)
 
 ```
 
@@ -467,10 +480,9 @@ dsmart_strata <- group_by(dsmart_site_ser_polys, Subzone) %>%
 # Subzone filtering occurs at this step as I suspect a certain amount of human
 # error is incurred in some of the datasets, so non-matching points (i.e.: points
 # that are clearly in the wrong subzone) are removed.
-dsmart_site_ser_observations <- lapply(
-  list(sechelt_bec, tem_xls_bec, tem_mdb_bec), function(x)
-    dplyr::select(x, MapUnit, subzone)) %>% 
-  do.call(rbind, .) %>% 
+dsmart_site_ser_observations <- bind_rows(lapply(
+  list(sechelt_bec, tem_xls_bec, tem_mdb_bec), 
+  dplyr::select, point_id, MapUnit, subzone)) %>% 
   sf::st_set_agr("constant") %>% 
   sf::st_transform(crs = st_crs(tem_sf)) %>% 
   sf::st_intersection(aoi_sf) %>% 
@@ -478,30 +490,29 @@ dsmart_site_ser_observations <- lapply(
   sf::st_join(dsmart_site_ser_polys) %>% 
   dplyr::mutate(across(c(MapUnit, Subzone), as.character)) %>% 
   cbind(
-    foreach(i = 1:nrow(.), .combine = rbind) %do% {
-      st_distance(.[i, ], dsmart_strata[dsmart_strata$Subzone == .[i, ]$subzone, ]) %>% 
-        as.data.frame() %>% 
-        magrittr::set_names("dist")
-    }) %>% 
-  dplyr::filter(dist <= units::as_units(100, "m")) %>%
+    bind_rows(lapply(1:nrow(.), function(i) {
+      o <- .[i, ]
+      s <- dplyr::filter(dsmart_strata, Subzone == o$subzone)
+      data.frame(dist = st_distance(o, s))}))) %>% 
+  dplyr::filter(dist <= units::set_units(100, m)) %>%
   cbind(st_coordinates(.)) %>% 
   sf::st_drop_geometry() %>% 
-  dplyr::select(X, Y, MapUnit) %>% 
+  dplyr::select(X, Y, point_id, MapUnit) %>% 
   dplyr::mutate(MapUnit = as.factor(make.names(MapUnit)))
 
 # Write DSMART outputs
 dso <- file.path(dsmart_dir, "site_ser", "inputs")
 dir.create(dso, recursive = TRUE, showWarnings = FALSE)
 
-sapply(c("dsmart_site_ser_polys", "dsmart_strata"), function(x) st_write(
+invisible(sapply(c("dsmart_site_ser_polys", "dsmart_strata"), function(x) st_write(
   eval(parse(text = x)), file.path(dso, paste0(x, ".gpkg")), 
-  delete_layer = TRUE, quiet = TRUE))[0]
+  delete_layer = TRUE, quiet = TRUE)))
 
-sapply(
+invisible(sapply(
   c("dsmart_site_ser_composition", "dsmart_site_ser_observations"), function(x) 
     write.csv(
       eval(parse(text = x)), 
-      file.path(dso, paste0(x, ".csv")), row.names = FALSE))[0]
+      file.path(dso, paste0(x, ".csv")), row.names = FALSE)))
 
 # Write output as processed points in separate folder
 proc_dir <- file.path(field_data_dir, "processed_2019", res_dir)
@@ -532,11 +543,14 @@ covariates <- terra::rast(list.files(covariate_dir, full.names = TRUE))
 
 # Preliminary check of covariate data to eliminate any outlying rasters
 # containing less data than normal
-cov_check <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
-  new <- subset(covariates, i) * 0
-  data.frame(layer = names(new), 
-             data_cells = data.frame(freq(new))$count)
-} %>% dplyr::filter(data_cells >= 0.95 * median(.$data_cells))
+cov_check <- sapply(names(covariates), function(x) {
+  cat(paste0("\rCounting NA values in ", x, " [", 
+             which(x == names(covariates)), 
+             " of ", nlyr(covariates), "]\n"))
+  unname(freq(subset(covariates, x) * 0)[, "count"])}) %>% 
+  data.frame(data_cells = .) %>% 
+  rownames_to_column("layer") %>% 
+  dplyr::filter(data_cells >= 0.95 * median(.$data_cells))
 if(nrow(cov_check) != nlyr(covariates)) 
   covariates <- subset(covariates, cov_check$layer)
 
@@ -546,7 +560,7 @@ pres_abs <- sapply(poi, function(x) {
   # Create unattributed points and write those
   out <- dplyr::bind_rows(sechelt_pres_cov[[x]], tem_xls_pres[[x]], 
                           tem_mdb_pres_cov[[x]]) %>% 
-    dplyr::select(point_id, Pres) %>% 
+    dplyr::select(point_id, MapUnit, Pres, A1, A2, A3, B1, B2, C, D, Flowers, Fruit, Cover, Comments) %>% 
     st_set_agr("constant") %>% 
     st_transform(crs = st_crs(aoi_sf)) %>% 
     st_intersection(aoi_sf)
@@ -554,11 +568,11 @@ pres_abs <- sapply(poi, function(x) {
            delete_layer = TRUE, quiet = TRUE)
   
   # Attribute the points and write those separately
-  out_att <- cbind(out, terra::extract(covariates, st_coordinates(out))) %>% 
-    Filter(function(y) !all(is.na(y)), .) %>% 
-    dplyr::select(Pres, names(covariates)) %>% 
+  out_att <- cbind(out, terra::extract(covariates, st_coordinates(out))) %>%
+    Filter(function(y) !all(is.na(y)), .) %>%
+    dplyr::select(Pres, any_of(names(covariates))) %>%
     drop_na()
-  st_write(out_att, file.path(pto, "pres_abs.gpkg"), layer = x, 
+  st_write(out_att, file.path(pto, "pres_abs.gpkg"), layer = x,
            delete_layer = TRUE, quiet = TRUE)
   return(out_att)
 }, simplify = FALSE, USE.NAMES = TRUE)
@@ -574,7 +588,7 @@ cover <- sapply(poi, function(x) {
   
   out_att <- cbind(out, terra::extract(covariates, st_coordinates(out))) %>% 
     Filter(function(y) !all(is.na(y)), .) %>% 
-    dplyr::select(Cover, names(covariates)) %>% 
+    dplyr::select(Cover, any_of(names(covariates))) %>% 
     drop_na()
   st_write(out_att, file.path(pto, "cover.gpkg"), layer = x, 
            delete_layer = TRUE, quiet = TRUE)
@@ -831,11 +845,11 @@ st_write(
   dsmart_struct_stg_polys, file.path(dso, paste0("dsmart_struct_stg_polys.gpkg")), 
   delete_layer = TRUE, quiet = TRUE)
 
-sapply(c("dsmart_struct_stg_composition", "dsmart_struct_stg_observations"), 
-       function(x) 
-         write.csv(
-           eval(parse(text = x)), file.path(dso, paste0(x, ".csv")), 
-           row.names = FALSE))[0]
+invisible(sapply(
+  c("dsmart_struct_stg_composition", "dsmart_struct_stg_observations"), function(x) 
+    write.csv(
+      eval(parse(text = x)), file.path(dso, paste0(x, ".csv")), 
+      row.names = FALSE)))
 
 st_write(struct_stg, file.path(pto, "struct_stg_pts.gpkg"), 
          delete_layer = TRUE, quiet = TRUE)

@@ -11,9 +11,9 @@ First, R packages need to be loaded.
 
 ```{r Load Packages, echo=TRUE, results='hide'}
 
-suppressMessages(suppressWarnings({
-  lapply(c("tidyverse", "readxl", "foreach", "sf", "terra"), 
-         library, character.only = TRUE)[0]}))
+invisible(suppressPackageStartupMessages(
+  lapply(c("tidyverse", "readxl", "sf", "terra"), 
+         library, character.only = TRUE)))
 
 ```
 
@@ -25,7 +25,7 @@ Since 2019, I've edited the original field data Excel spreadsheet. Instead of ha
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 4
+map_res <- 10
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
@@ -49,8 +49,16 @@ data_2020 <- file.path(
   field_data_dir, "raw", "Sechelt_FieldSampling_Aug2020.xlsx")
 sheets <- excel_sheets(data_2019)
 
-bgc_2019 <- read_excel(data_2019, sheet = "sechelt_site")
-bgc_2020 <- read_excel(data_2020, sheet = "sechelt_site")
+bgc_2019 <- read_excel(data_2019, sheet = "sechelt_site") %>% 
+  dplyr::rename(subzone = `BGC Subzone / Variant`, point_id = `Point ID`) %>% 
+  stats::setNames(make.names(names(.))) %>% 
+  dplyr::mutate(MapUnit = ifelse(is.na(Forested.Site.Series), Nonforested.Class,
+                                 paste0(subzone, ".", Forested.Site.Series))) 
+bgc_2020 <- read_excel(data_2020, sheet = "sechelt_site") %>% 
+  dplyr::rename(subzone = `BGC Subzone / Variant`, point_id = `Point ID`) %>% 
+  stats::setNames(make.names(names(.))) %>% 
+  dplyr::mutate(MapUnit = ifelse(is.na(Forested.Site.Series), Nonforested.Class,
+                                 paste0(subzone, ".", Forested.Site.Series))) 
 
 ```
 
@@ -61,9 +69,10 @@ This chunk will combine the two field data sets into a single plant data datafra
 # Plant species names in 2019 were concatenated, add space at the 4th character
 # to be consistent with the 2020 naming
 plants_2019 <- read_excel(data_2019, sheet = "sechelt_plants") %>% 
-  left_join(bgc_2019[, c("Point ID", "Lat", "Long")], by = "Point ID") %>% 
+  merge(bgc_2019[, c("point_id", "MapUnit", "Lat", "Long")], by.x = "Point ID", by.y = "point_id") %>% 
   dplyr::mutate(Species = ifelse(nchar(Species) > 2, 
-                                 gsub('(.{4})', '\\1 ', Species), Species))
+                                 gsub('(.{4})', '\\1 ', Species), Species)) %>% 
+  dplyr::rename(point_id = `Point ID`)
 plant_list_2019 <- unique(plants_2019$Species)
 
 # In 2020, we only marked where plants were present at a site, not where they
@@ -72,46 +81,50 @@ plant_list_2019 <- unique(plants_2019$Species)
 # filled in. Extra points that were opportunistically collected are appended
 # since a whole site description wasn't filled out and they are simply just
 # plant observations.
-plants_2020 <- read_excel(data_2020, sheet = "sechelt_plants")
+plants_2020 <- read_excel(data_2020, sheet = "sechelt_plants") %>% 
+  merge(bgc_2020[, c("point_id", "MapUnit")], by.x = "Point ID", by.y = "point_id") %>% 
+  dplyr::rename(point_id = `Point ID`)
 plant_list_2020 <- unique(plants_2020$Species)
 
-plants_2020_fix <- foreach(i = unique(bgc_2020$`Point ID`), .combine = rbind) %do% {
+plants_2020_fix <- do.call(rbind, lapply(unique(bgc_2020$point_id), function(i) {
   site <- plants_2020 %>% 
-    dplyr::filter(`Point ID` == i) %>% 
+    dplyr::filter(point_id == i) %>% 
     as.data.frame()
   if(nrow(site) == 0) {
-    site[1, c("Point ID", "Lat", "Long")] <- c(
-      i, bgc_2020[bgc_2020$`Point ID` == i, ]$Lat,
-      bgc_2020[bgc_2020$`Point ID` == i, ]$Long)
+    site[1, c("point_id", "Lat", "Long")] <- c(
+      i, bgc_2020[bgc_2020$point_id == i, ]$Lat,
+      bgc_2020[bgc_2020$point_id == i, ]$Long)
   }
   sp_add <- plant_list_2020[!plant_list_2020 %in% site$Species]
   
   out <- if(length(sp_add) > 0) {
     rbind(site, data.frame(
-      Point.ID = i, 
+      point_id = i, 
       Lat = site$Lat[1], 
       Long = site$Long[1], 
       Species = sp_add, 
-      A1 = NA, A2 = NA, A3 = NA, B1 = NA, B2 = NA, C = NA, D = NA, 
-      Flowers = NA, Fruit = NA, Comments = NA) %>% 
-        magrittr::set_names(gsub("\\.", " ", names(.)))) %>% 
+      A1 = NA_real_, A2 = NA_real_, A3 = NA_real_, 
+      B1 = NA_real_, B2 = NA_real_, C = NA_real_, D = NA_real_,
+      Flowers = NA_character_, Fruit = NA_character_, Comments = NA_character_) %>% 
+        merge(dplyr::select(bgc_2020, point_id, MapUnit)) %>% 
+        stats::setNames(gsub("\\.", " ", names(.)))) %>% 
       drop_na(Species)
   } else site
-} %>% rbind(dplyr::filter(plants_2020, !`Point ID` %in% bgc_2020$`Point ID`))
+})) %>% rbind(dplyr::filter(plants_2020, !point_id %in% bgc_2020$point_id))
 
 # Only consider points that had greater than 0.1% cover in a plot
 plants_merge <- rbind(plants_2019, plants_2020_fix) %>% 
   dplyr::mutate(
-    Pres = rowSums(.[, c("A1", "A2", "A3", "B1", "B2", "C", "D")], na.rm = TRUE) > 0.1) %>% 
-  magrittr::set_names(make.names(names(.))) %>% 
-  dplyr::filter(!Comments %in% "*not recorded") %>% 
-  dplyr::rename(point_id = Point.ID)
+    Cover = rowSums(.[, c("A1", "A2", "A3", "B1", "B2", "C", "D")], na.rm = TRUE),
+    Pres = Cover > 0) %>% 
+  stats::setNames(make.names(names(.))) %>% 
+  dplyr::filter(!Comments %in% "*not recorded") 
 
 # Use a list of dataframes for each plant species
 plant_data <- lapply(unique(plants_merge$Species), function(x) {
   dplyr::filter(plants_merge, Species == x) %>% 
-    dplyr::select(point_id, Lat, Long, Pres)
-}) %>% magrittr::set_names(unique(plants_merge$Species)) %>% 
+    dplyr::select(-Species)
+}) %>% stats::setNames(unique(plants_merge$Species)) %>% 
   lapply(function(x) {
     st_as_sf(x, coords = c("Long", "Lat"), crs = 4326) %>% 
       st_transform(3005) %>% 
@@ -134,7 +147,7 @@ The next chunk will load in processed points from the 02a script, i.e.: unattrib
 old_pto <- file.path(field_data_dir, "processed_2019", res_dir)
 old_points <- lapply(c("RUBUSPE", "CORNCAN", "VERAVIR", "LEDUGRO"), function(x) {
   st_read(file.path(old_pto, "pres_abs_no_atts.gpkg"), layer = x, quiet = TRUE)
-}) %>% magrittr::set_names(c("Rubu spe", "Corn can", "Vera vir", "Ledu gro"))
+}) %>% stats::setNames(c("Rubu spe", "Corn can", "Vera vir", "Ledu gro"))
 
 # Need to filter away the 2019 processed points and keep just the points from 
 # TEM processing. 2019 points start with either M or Op, and end with _2019, so
@@ -150,6 +163,8 @@ points_comb <- c(sapply(
   plant_data[!names(plant_data) %in% names(old_points)], 
   old_points[!names(old_points) %in% names(plant_data)])
 
+
+
 ```
 
 Now that the points are brought together from all data sources, the extraction from the rasters on them can once again be performed.
@@ -159,16 +174,27 @@ Now that the points are brought together from all data sources, the extraction f
 pto <- file.path(field_data_dir, "processed_2020", res_dir)
 dir.create(pto, recursive = TRUE, showWarnings = FALSE)
 
+invisible(sapply(names(points_comb), function(x) {
+  points_comb[[x]] %>% 
+    dplyr::select(point_id, MapUnit, Pres) %>% 
+    cbind(st_coordinates(.)) %>% 
+    st_write(file.path(pto, "pres_abs_bec_merge.gpkg"), layer = x, 
+           delete_layer = TRUE, quiet = TRUE)}))
+
 # Create the raster stack (terra package) which will be used for data extraction
 covariates <- terra::rast(list.files(covariate_dir, full.names = TRUE))
 
 # Preliminary check of covariate data to eliminate any outlying rasters
 # containing less data than normal
-cov_check <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
-  new <- subset(covariates, i) * 0
-  data.frame(layer = names(new), 
-             data_cells = data.frame(freq(new))$count)
-} %>% dplyr::filter(data_cells >= 0.95 * median(.$data_cells))
+cov_check <- sapply(names(covariates), function(x) {
+  cat(paste0("\rCounting NA values in ", x, " [", 
+             which(x == names(covariates)), 
+             " of ", nlyr(covariates), "]\n"))
+  unname(freq(subset(covariates, x) * 0)[, "count"])}) %>% 
+  data.frame(data_cells = .) %>% 
+  rownames_to_column("layer") %>% 
+  dplyr::filter(data_cells >= 0.95 * median(.$data_cells))
+
 if(nrow(cov_check) != nlyr(covariates)) 
   covariates <- subset(covariates, cov_check$layer)
 
@@ -190,6 +216,14 @@ pres_abs_2020 <- sapply(names(points_comb), function(x) {
   return(out_att)
 }, simplify = FALSE, USE.NAMES = TRUE)
 
+pres_abs_2020_focal <- sapply(c("Rubu spe", "Corn can"), function(x) {
+  
+  # Create unattributed points and write those
+  st_write(points_comb[[x]], paste0(x, "_pres_abs_raw.shp"), delete_layer = TRUE,
+           quiet = TRUE)
+  
+}, simplify = FALSE, USE.NAMES = TRUE)
+
 ```
 
 Lastly, we need to add the new site series and structural stage points from 2020 to the respective datasets. At the end, these points get saved to the processed_2020 folder.
@@ -201,17 +235,17 @@ site_ser_old <- st_read(file.path(old_pto, "site_ser_pts.gpkg"), quiet = TRUE)
 
 # Combine all site series data together
 site_ser_pts <- dplyr::select(
-  bgc_2020, `BGC Subzone / Variant`, `Forested Site Series`,
-  `Nonforested Class`, Long, Lat) %>% 
-  dplyr::mutate(across(c(`Forested Site Series`, `Nonforested Class`), toupper)) %>% 
+  bgc_2020, point_id, subzone, Forested.Site.Series,
+  Nonforested.Class, Long, Lat) %>% 
+  dplyr::mutate(across(c(Forested.Site.Series, Nonforested.Class), toupper)) %>% 
   dplyr::mutate(
     MapUnit = ifelse(
-      is.na(`Forested Site Series`), `Nonforested Class`, 
-      paste0(`BGC Subzone / Variant`, ".", `Forested Site Series`))) %>% 
+      is.na(Forested.Site.Series), Nonforested.Class, 
+      paste0(subzone, ".", Forested.Site.Series))) %>% 
   st_as_sf(coords = c("Long", "Lat"), crs = 4326) %>% 
   st_transform(crs = st_crs(site_ser_old)) %>% 
   dplyr::rename(geom = geometry) %>% 
-  dplyr::select(MapUnit) %>% 
+  dplyr::select(point_id, MapUnit) %>% 
   rbind(site_ser_old) %>% 
   st_set_agr("constant") %>% 
   st_intersection(aoi_sf)
@@ -222,20 +256,19 @@ struct_stg_old <- st_read(file.path(old_pto, "struct_stg_pts.gpkg"),
   dplyr::select(StructuralStage)
 
 # Combine all structural stage data together
-struct_stg_pts <- dplyr::select(bgc_2020, `Structural Stage`, Long, Lat) %>% 
-  drop_na(`Structural Stage`) %>% 
+struct_stg_pts <- dplyr::select(bgc_2020, Structural.Stage, Long, Lat) %>% 
+  drop_na(Structural.Stage) %>% 
   st_as_sf(coords = c("Long", "Lat"), crs = 4326) %>% 
   st_transform(crs = st_crs(struct_stg_old)) %>% 
-  dplyr::mutate(`Structural Stage` = make.names(`Structural Stage`)) %>% 
-  dplyr::rename(StructuralStage = `Structural Stage`, 
-                geom = geometry) %>% 
+  dplyr::mutate(Structural.Stage = make.names(Structural.Stage)) %>% 
+  dplyr::rename(StructuralStage = Structural.Stage, geom = geometry) %>% 
   rbind(struct_stg_old) %>% 
   st_set_agr("constant") %>% 
   st_intersection(aoi_sf)
 
 # Write outputs
-sapply(c("site_ser_pts", "struct_stg_pts"), function(x) st_write(
+invisible(sapply(c("site_ser_pts", "struct_stg_pts"), function(x) st_write(
   eval(parse(text = x)), file.path(pto, paste0(x, ".gpkg")), 
-  delete_layer = TRUE, quiet = TRUE))[0]
+  delete_layer = TRUE, quiet = TRUE)))
 
 ```
