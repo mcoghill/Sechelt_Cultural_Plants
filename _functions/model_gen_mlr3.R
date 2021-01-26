@@ -221,7 +221,7 @@ model_gen_mlr3 <- function(
       f_select <- fs("sequential", max_features = 1) 
       trm <- trm("evals", n_evals = 1)
     } else {
-      f_select <- fs("rfe", min_features = 2, feature_number = 1, recursive = TRUE) 
+      f_select <- fs("rfe", min_features = 1, feature_number = 1, recursive = TRUE) 
       trm <- trm("stagnation", iters = 5, threshold = 1e-5)
     }
     
