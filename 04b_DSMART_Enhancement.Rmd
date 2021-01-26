@@ -9,9 +9,8 @@ The purpose of this document is to create a new DSMART site series and structura
 
 ```{r Load Packages, echo=TRUE, results='hide'}
 
-suppressMessages(suppressWarnings({
-  lapply(c("tidyverse", "terra", "sf", "foreach", "caret"), 
-         library, character.only = TRUE)[0]}))
+invisible(suppressPackageStartupMessages(
+  lapply(c("tidyverse", "terra", "sf"), library, character.only = TRUE)))
 
 # Load custom DSMART files
 source("./_functions/dsmart_custom/dsmart.R")
@@ -24,7 +23,7 @@ Next, set the directories and processing options used in this DSMART run.
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 4
+map_res <- 10
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
@@ -66,13 +65,15 @@ covariates <- terra::rast(
 
 # Preliminary check of covariate data to eliminate any outlying rasters
 # containing less data than normal
-cov_check <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
-  new <- subset(covariates, i) * 0
-  data.frame(layer = names(new), 
-             data_cells = data.frame(freq(new))$count)
-} %>% dplyr::filter(data_cells >= 0.95 * median(.$data_cells))
-if(nrow(cov_check) != nlyr(covariates)) 
-  covariates <- subset(covariates, cov_check$layer)
+cov_check <- sapply(names(covariates), function(x) {
+  cat(paste0("\rCounting NA values in ", x, " [", 
+             which(x == names(covariates)), 
+             " of ", nlyr(covariates), "]\n"))
+  unname(freq(subset(covariates, x) * 0)[, "count"])}) %>% 
+  data.frame(data_cells = .) %>% 
+  rownames_to_column("layer") %>% 
+  dplyr::filter(data_cells >= 0.95 * median(.$data_cells))
+covariates <- subset(covariates, cov_check$layer)
 
 # Load the polygons and associated observations. The polygons are unchanged
 # from 2019
@@ -127,7 +128,7 @@ composition <- read.csv(file.path(old_dsmart_dir, "inputs", paste0(
 observations <- st_read(file.path(pto, paste0(run, "_pts.gpkg")), quiet = TRUE) %>% 
   cbind(st_coordinates(.)) %>% 
   st_drop_geometry() %>% 
-  dplyr::select(X, Y, everything())
+  dplyr::select(any_of(c("X", "Y", "MapUnit", "StructuralStage")))
 
 # Write the DSMART inputs to the 2020 DSMART inputs folder
 as(polygons, "Spatial") %>% st_as_sf() %>% st_set_crs(crs(polygons)) %>% 
@@ -159,9 +160,16 @@ if(run == "site_ser") {
     tem, covariates[[1]], field = "MapUnit1_num", overwrite = TRUE, 
     filename = file.path(dsmart_dir, "simple", "site_series_simple.tif"))
   
+  tem_rast_index <- data.frame(name = tem$MapUnit1, code = tem$MapUnit1_num) %>% 
+    unique() %>% 
+    arrange(code)
+  
+  write.table(tem_rast_index, file.path(dsmart_dir, "simple", "site_ser_simple_lookup.txt"),
+              row.names = FALSE, quote = FALSE, sep = ",")
+  
   # Generate probabilities based on composition
   ss_calls <- unique(composition$MapUnit)
-  composition_remake <- foreach(i = unique(composition$POLY_NO), .combine = rbind) %do% {
+  composition_remake <- dplyr::bind_rows(lapply(unique(composition$POLY_NO), function(i) {
     composition %>% dplyr::filter(POLY_NO == i) %>% 
       dplyr::select(POLY_NO, MapUnit, proportion) %>% 
       rbind(data.frame(
@@ -169,7 +177,7 @@ if(run == "site_ser") {
         MapUnit = ss_calls[!ss_calls %in% .$MapUnit],
         proportion = 0
       ))
-  }
+  }))
   
   tem_remake <- values(tem) %>% 
     dplyr::select(POLY_NO) %>% 
@@ -177,14 +185,14 @@ if(run == "site_ser") {
     mutate(proportion = proportion / 100) %>% 
     merge(tem, .)
   
-  tem_props <- foreach(i = unique(tem_remake$MapUnit), .combine = c) %do% {
+  tem_props <- do.call(c, lapply(unique(tem_remake$MapUnit), function(i) {
     tem_remake[tem_remake$MapUnit == i] %>% 
       magrittr::set_names(c(names(.)[names(.) != "proportion"], 
                             paste0("probability_", i))) %>% 
       rasterize(
         covariates[[1]], field = paste0("probability_", i), overwrite = TRUE, 
         filename = file.path(dsmart_dir, "simple", paste0("probability_", i, ".tif")))
-  }
+  }))
 }
 
 ```
@@ -198,6 +206,7 @@ After the input data is loaded, run the DSMART algorithm. Pretty much the only d
 # value needs to be changed to TRUE and "type" in the disaggregate function 
 # needs to be changed to "prob".
 if(use_caret) {
+  suppressPackageStartupMessages(library(caret))
   method.model <- "ranger"
   args.model <- list(
     trControl = trainControl(
@@ -217,6 +226,7 @@ if(use_caret) {
     )
   )
 } else {
+  suppressPackageStartupMessages(library(C50))
   method.model <- NULL
   args.model <- NULL
 }
@@ -242,7 +252,9 @@ dsm <- try(dsmart(
   outputdir = dsmart_dir, 
   factors = factors,
   type = "prob", 
-  nprob = 1))
+  nprob = 1,
+  mask = dplyr::slice_max(cov_check, data_cells, with_ties = FALSE) %>% 
+    dplyr::pull(layer)))
 
 # Save the file to a better location
 out <- rast(list.files(dsm$summarise$locations$mostprobable, 

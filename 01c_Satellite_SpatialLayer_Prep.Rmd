@@ -11,9 +11,9 @@ The first thing that will be done is load in the required packages.
 
 ```{r Load Packages, echo=TRUE, results='hide'}
 
-suppressMessages(suppressWarnings({
+invisible(suppressPackageStartupMessages(
   lapply(c("raster", "RStoolbox", "terra", "sf", "googledrive", "tidyverse", 
-           "stringi", "rstudioapi", "foreach"), library, character.only = TRUE)[0]}))
+           "stringi", "rstudioapi"), library, character.only = TRUE)))
 
 ```
 
@@ -370,7 +370,7 @@ bands_to_indices <- function(
     f_names <- tolower(paste0("sentinel2_", names(satellite_indices), "_",
                               basename(dirname(satellite_files[1]))))
     
-    out <- foreach(i = reference_raster) %do% {
+    out <- lapply(reference_raster, function(i) {
       ref <- terra::rast(i)
       cat(paste(
         "\nResampling to", res(ref)[1], "m^2, masking, and writing outputs"))
@@ -381,7 +381,7 @@ bands_to_indices <- function(
         terra::writeRaster(
           filename = file.path(dirname(i), paste0(f_names, ".tif")),
           overwrite = TRUE)
-    } %>% magrittr::set_names(basename(dirname(reference_raster)))}))
+    }) %>% setNames(basename(dirname(reference_raster)))}))
   return(out)
 }
 

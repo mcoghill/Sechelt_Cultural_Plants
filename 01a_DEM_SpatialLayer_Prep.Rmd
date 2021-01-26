@@ -25,12 +25,11 @@ Before getting started, the first thing to do is to load the required packages. 
 
 ```{r Load Packages, echo=TRUE, results='hide'}
 
-suppressMessages(suppressWarnings({
-  lapply(c("tidyverse", "terra"), 
-         library, character.only = TRUE)[0]
-  
-  source(file.path('_functions', 'get_saga.R'))
-  source(file.path("_functions", "derive_terrain.R"))}))
+invisible(suppressPackageStartupMessages(
+  lapply(c("tidyverse", "terra"), library, character.only = TRUE)))
+
+source(file.path('_functions', 'get_saga.R'))
+source(file.path("_functions", "derive_terrain.R"))
 
 ```
 

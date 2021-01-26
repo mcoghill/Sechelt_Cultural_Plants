@@ -10,7 +10,7 @@ The purpose of this document is to once again run modelling using similar machin
 ```{r Load Packages, echo=TRUE, results='hide'}
 
 suppressMessages(suppressWarnings({
-  lapply(c("tidyverse", "tools", "terra", "sf", "mlr3verse", "foreach"), 
+  lapply(c("tidyverse", "tools", "terra", "sf", "mlr3verse"), 
          library, character.only = TRUE)[0]}))
 
 # Load custom scripts
@@ -141,13 +141,14 @@ covariates <- c(rast(c(terrain_covariates, sentinel_covariates,
                 site_series, struct_stg)
 
 # Find the best masking layer to use in the predict_landscape algorithm
-mask_layers <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
-    cat(paste0("Counting NA values in ", names(covariates[[i]]),
-               " [", i, " of ", nlyr(covariates), "]\n"))
-    new <- subset(covariates, i) * 0
-    data.frame(layer = names(new),
-               data_cells = data.frame(freq(new))$count)
-  } %>% arrange(desc(data_cells))
+mask_layers <- sapply(names(covariates), function(x) {
+  cat(paste0("\rCounting NA values in ", x, " [", 
+             which(x == names(covariates)), 
+             " of ", nlyr(covariates), "]\n"))
+  unname(freq(subset(covariates, x) * 0)[, "count"])}) %>% 
+  data.frame(data_cells = .) %>% 
+  rownames_to_column("layer") %>% 
+  arrange(desc(data_cells))
 
 covariates <- subset(covariates, dplyr::pull(
   dplyr::filter(mask_layers, data_cells >= quantile(data_cells, prob = 0.05)), 
@@ -172,7 +173,7 @@ pres_abs_points <- sapply(c("Corn can", "Rubu spe"), function(x) {
   }, simplify = FALSE, USE.NAMES = TRUE)
 
 # Create list of variable names to be selected 
-var_list <- foreach(i = 1:nrow(perms), .combine = c) %do% {
+var_list <- do.call(c, lapply(1:nrow(perms), function(i) {
   
   # Generate output ID
   id <- paste0(
@@ -225,8 +226,8 @@ var_list <- foreach(i = 1:nrow(perms), .combine = c) %do% {
       variables <- variables[!startsWith(variables, "normal")]
     }
     return(variables)
-  }) %>% magrittr::set_names(id)
-}
+  }) %>% setNames(id)
+}))
 
 ```
 
@@ -235,14 +236,14 @@ var_list <- foreach(i = 1:nrow(perms), .combine = c) %do% {
 ```{r mlr3 Presence probability modelling}
 
 # Create the list of input datasets
-pres_abs <- foreach(i = names(var_list)) %do% {
+pres_abs <- lapply(names(var_list), function(i) {
   lapply(pres_abs_points, function(x) {
     x %>% dplyr::select(any_of(c("Pres", var_list[[i]], "x", "y", "X", "Y"))) %>% 
       drop_na() %>% 
       dplyr::rename_with(toupper, c("X", "x", "Y", "y")
                          [c("X", "x", "Y", "y") %in% names(.)])
-  }) %>% magrittr::set_names(paste0(names(.), i))
-} %>% unlist(recursive = FALSE)
+  }) %>% setNames(paste0(names(.), i))
+}) %>% unlist(recursive = FALSE)
 
 # Write input data
 dir_out <- file.path(output_dir, "pres_abs_predictions")
@@ -283,20 +284,20 @@ for(i in 1:length(pres_abs)) {
           pres_models$learners[[x]]$model$tuning_instance$archive$best()$batch_nr]]$
         prediction()$confusion)
     
-    model_data <- foreach(j = 1:n_iters) %do% {
+    model_data <- lapply(1:n_iters, function(j) {
       test_data <- pres_models$learners[[x]]$archive$benchmark_result$resample_result(j)$
         resampling$instance %>% 
         cbind(batch_nr = j)
-      train_data <- foreach(k = 1:reps, .combine = rbind) %do% { 
-        foreach(l = 1:folds, .combine = rbind) %do% {
+      train_data <- bind_rows(lapply(1:reps, function(k) {
+        bind_rows(lapply(1:folds, function(l) {
           test_rows <- dplyr::filter(test_data, rep == k, fold == l)
           missing <- as.numeric(rownames(pres_abs[[i]])[
             !as.numeric(rownames(pres_abs[[i]])) %in% test_rows$row_id])
           data.frame(row_id = missing, rep = k, fold = l, batch_nr = j)
-        }
-      }
+        }))
+      }))
       return(list(test_data = test_data, train_data = train_data))
-    } %>% magrittr::set_names(paste0(
+    }) %>% setNames(paste0(
       "filter_frac = ", 
       pres_models$learners[[x]]$model$tuning_instance$archive$data()$
         importance.filter.frac))
@@ -379,18 +380,18 @@ for(i in 1:length(pres_abs)) {
 # Using the available cover model results, find the best models for each species
 # First, collect all of that data together and then use an upper percentile or top
 # number of models from the entire collection for a single species
-best_model_sets <- foreach(x = c("Corn can", "Rubu spe"), .combine = rbind) %do% {
+best_model_sets <- bind_rows(lapply(c("Corn can", "Rubu spe"), function(x) {
   
   sp_dirs <- dir(file.path(output_dir, "pres_abs_predictions"), pattern = x, 
                  full.names = TRUE)
   
-  result_list <- foreach(i = sp_dirs, .combine = rbind) %do% {
+  result_list <- bind_rows(lapply(sp_dirs, function(i) {
     
     read.csv(file.path(i, list.files(i, pattern = "_tune_results.csv$"))) %>% 
       dplyr::slice(which.min(classif.ce)) %>% 
       mutate(model = basename(i))
-  } %>% arrange(classif.ce)
-}
+  })) %>% arrange(classif.ce)
+}))
 
 write.csv(best_model_sets, file.path(
   output_dir, "pres_abs_predictions", "model_performance_index.csv"), 

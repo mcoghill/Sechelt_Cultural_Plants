@@ -9,8 +9,8 @@ The purpose of this file is to pull together all of the models run in the previo
 
 ```{r Load Packages, echo=TRUE, results='hide'}
 
-suppressMessages(suppressWarnings({
-  lapply(c("tidyverse", "terra", "foreach"), library, character.only = TRUE)[0]}))
+invisible(suppressPackageStartupMessages(
+  lapply(c("tidyverse", "terra"), library, character.only = TRUE)))
 
 ```
 

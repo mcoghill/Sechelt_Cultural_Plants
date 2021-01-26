@@ -13,9 +13,8 @@ First, libraries are loaded and data directories are defined. A custom function 
 
 ```{r Load Packages, echo=TRUE, results='hide'}
 
-suppressMessages(suppressWarnings({
-  lapply(c("tidyverse", "terra", "sf"), 
-         library, character.only = TRUE)[0]}))
+invisible(suppressPackageStartupMessages(
+  lapply(c("tidyverse", "terra", "sf"), library, character.only = TRUE)))
 
 # Load custom DSMART files
 source("./_functions/dsmart_custom/dsmart.R")
@@ -109,7 +108,8 @@ composition <- read.csv(file.path(dsmart_dir, "inputs", paste0(
   "dsmart_", run, "_composition.csv"))) %>% 
     dplyr::select(-Subzone)
 observations <- read.csv(file.path(dsmart_dir, "inputs", paste0(
-  "dsmart_", run, "_observations.csv")))
+  "dsmart_", run, "_observations.csv"))) %>% 
+  dplyr::select(any_of(c("X", "Y", "MapUnit", "StructuralStage")))
 
 ```
 
@@ -178,7 +178,7 @@ There was a point in time that I tried to do the modelling via the mlr3 package 
 # value needs to be changed to TRUE and "type" in the disaggregate function 
 # needs to be changed to "prob".
 if(use_caret) {
-  library(caret, warn.conflicts = FALSE, verbose = FALSE, quietly = TRUE)
+  invisible(suppressPackageStartupMessages(library(caret)))
   method.model <- "ranger"
   args.model <- list(
     trControl = trainControl(
@@ -198,7 +198,7 @@ if(use_caret) {
     )
   )
 } else {
-  library(C50, warn.conflicts = FALSE, verbose = FALSE, quietly = TRUE)
+  invisible(suppressPackageStartupMessages(library(C50)))
   method.model <- NULL
   args.model <- NULL
 }

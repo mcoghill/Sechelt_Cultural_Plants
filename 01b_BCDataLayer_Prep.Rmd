@@ -9,9 +9,9 @@ The purpose of this script is to download the relevant spatial data for BEC zone
 
 ```{r Load Packages, echo=TRUE, results='hide'}
 
-suppressMessages(suppressWarnings({
+invisible(suppressPackageStartupMessages(
   lapply(c("bcdata", "bcmaps", "tidyverse", "terra", "parallel"), 
-         library, character.only = TRUE)[0]}))
+         library, character.only = TRUE)))
 
 ```
 

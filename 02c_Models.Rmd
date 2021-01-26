@@ -15,9 +15,9 @@ This script uses the mlr3 package (machine learning R) in order to make models. 
 
 ```{r Load Packages, echo=TRUE, results='hide'}
 
-suppressMessages(suppressWarnings({
+invisible(suppressPackageStartupMessages(
   lapply(c("tidyverse", "sf", "terra", "mlr3verse"), 
-         library, character.only = TRUE)[0]}))
+         library, character.only = TRUE)))
 
 # Load custom functions
 source("./_functions/model_gen_mlr3.R")
@@ -178,9 +178,9 @@ mask_layers <- sapply(names(covariates), function(x) {
   cat(paste0("\rCounting NA values in ", x, " [", 
              which(x == names(covariates)), 
              " of ", nlyr(covariates), "]\n"))
-    unname(freq(subset(covariates, x) * 0)[, "count"])}) %>% 
-    data.frame(data_cells = .) %>% 
-    rownames_to_column("layer")
+  unname(freq(subset(covariates, x) * 0)[, "count"])}) %>% 
+  data.frame(data_cells = .) %>% 
+  rownames_to_column("layer")
 
 # Attributed point data - limit to only CORNCAN and RUBUSPE
 pres_abs_points <- sapply(c("CORNCAN", "RUBUSPE"), function(x) {
