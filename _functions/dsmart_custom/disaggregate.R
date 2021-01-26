@@ -142,7 +142,11 @@ disaggregate <- function(
   covariates, polygons, composition, rate = 15, reals = 100, 
   observations = NULL, method.sample = "by_polygon", method.allocate = "weighted", 
   method.model = NULL, args.model = NULL, strata = NULL, outputdir = getwd(), 
-  stub = NULL, factors = NULL, type = "raw", predict = TRUE) {
+  stub = NULL, factors = NULL, type = "raw", mask = NULL, predict = TRUE) {
+  
+  # Requires the following packages:
+  sapply(c("tidyverse", "stars", "terra"), 
+         require, character.only = TRUE)[0]
   
   # Source external functions used in this script
   source("./_functions/dsmart_custom/helpers.R")
@@ -208,7 +212,7 @@ disaggregate <- function(
     } else {
       args.model$trControl$classProbs <- FALSE
     }
-  }
+  } else require(C50)
   
   # Set stub to "" if NULL
   if(is.null(stub)) {
@@ -264,7 +268,7 @@ disaggregate <- function(
   
   # Since we only really need the first column of the polygons SpatialPolygonsDataFrame,
   # drop all its other attributes and rename the first column to "poly"
-  polygons <- polygons[, 1] %>% magrittr::set_names("poly")
+  polygons <- polygons[, 1] %>% stats::setNames("poly")
   
   # Make sure that there are no missing values in map unit composition
   polys_to_remove <- composition %>% stats::complete.cases() %>% 
@@ -305,7 +309,7 @@ disaggregate <- function(
   }
   
   # Make sure that there are no missing values in samples
-  samples <- samples %>% complete.cases() %>% dplyr::filter(samples, .)
+  samples <- tidyr::drop_na(samples)
   
   # If there are observations, get their covariates
   if(!(is.null(observations))) {
@@ -417,7 +421,7 @@ disaggregate <- function(
         # and save it to raster.
         r1 <- predict_landscape(
           model, covariates, tilesize = 500,
-          outDir = file.path(outputdir, "tiles"), type = type) 
+          outDir = file.path(outputdir, "tiles"), type = type, mask = mask) 
         
         # If levels were dropped from soil_class in order to use the train function,
         # the prediction raster must be reclassified in order to ensure that the
@@ -444,12 +448,8 @@ disaggregate <- function(
           # function, the SpatRaster can be used as it is.
           r1 <- predict_landscape(
             model, covariates, tilesize = 500,
-            outDir = file.path(outputdir, "tiles"), type = "prob")
-          
-          # When "type" for predict_landscape is "prob", the output is a file 
-          # list for each soil_class probability
-          r1 <- rast(grep("pred.*..tif$", r1, value = TRUE, invert = TRUE)) %>% 
-            writeRaster(file.path(
+            outDir = file.path(outputdir, "tiles"), type = "prob", mask = mask)
+          r1 <- writeRaster(r1, file.path(
               outputdir, subdir, "realisations",
               paste0(stub, "realisation_", formatC(j, width = nchar(reals), 
                                                    format = "d", flag = "0"), ".tif")),
@@ -461,21 +461,21 @@ disaggregate <- function(
           # inserted in the SpatRaster. First, the SpatRaster is predicted as above.
           tmp1 <- predict_landscape(
             model, covariates, tilesize = 500,
-            outDir = file.path(outputdir, "tiles"), type = "prob")
+            outDir = file.path(outputdir, "tiles"), type = "prob", mask = mask)
           
           # Then, a raster with 0's is calculated (the missing levels have 0 
           # probability for the realisation in question)
-          tmp2 <- (terra::rast(tmp1[1]) * 0) %>% 
+          tmp2 <- (subset(tmp1, 1) * 0) %>% 
             writeRaster(tempfile(pattern = "spat_", fileext = ".tif"))
           
           # The rasters are then all arranged into a single SpatRaster
-          r1 <- foreach(i = 1:nrow(lookup), .combine = c) %do% {
+          r1 <- do.call(c, lapply(1:nrow(lookup), function(i) {
             if(i %in% rclt[, 2]) {
-              rast(tmp1[which(rclt[, 2] == i)])
+              subset(tmp1, which(rclt[, 2] == i))
             } else {
               tmp2
             }
-          } %>% magrittr::set_names(lookup$name) %>% 
+          })) %>% stats::setNames(lookup$name) %>% 
             writeRaster(file.path(
               outputdir, subdir, "realisations",
               paste0(stub, "realisation_", formatC(j, width = nchar(reals),

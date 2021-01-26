@@ -23,11 +23,11 @@ predict_landscape <- function(
   covariates, 
   tilesize = 500,
   outDir = file.path(getwd(), "predicted_tiles"),
-  type = "raw") {
+  type = "raw", mask = NULL) {
   
   source('./_functions/tile_index.R')
   
-  lapply(c("tidyverse", "stars", "GSIF", "foreach", "terra"), 
+  lapply(c("tidyverse", "stars", "terra"), 
          require, character.only = TRUE)
   
   if(missing(model) || class(model) != "train") 
@@ -36,6 +36,24 @@ predict_landscape <- function(
   if(missing(model) || (!class(covariates) %in% "SpatRaster"))
     stop("A SpatRaster object of the raster covariates is required to run predictions.
        Additionally, the layers should be the same as the model variables.")
+  
+  if(is.null(mask)) {
+    mask <- sapply(names(covariates), function(x) {
+      cat(paste0("\rCounting NA values in ", x, " [", 
+                 which(x == names(covariates)), 
+                 " of ", nlyr(covariates), "]\n"))
+      unname(freq(subset(covariates, x) * 0)[, "count"])}) %>% 
+      data.frame(data_cells = .) %>% 
+      rownames_to_column("layer") %>% 
+      dplyr::slice_max(data_cells, with_ties = FALSE) %>% 
+      dplyr::pull(layer)
+  }
+  
+  # Create a polygon of the masking layer
+  mask_poly <- terra::as.polygons(subset(covariates, mask) * 0) %>% 
+    as("Spatial") %>% 
+    sf::st_as_sfc() %>% 
+    sf::st_make_valid()
   
   # Create directories to store results in
   dir.create(outDir, recursive = TRUE, showWarnings = FALSE)
@@ -48,39 +66,29 @@ predict_landscape <- function(
     cov_names <- names(covariates)
     covariates <- terra::writeRaster(
       covariates, filename = tempfile(pattern = names(covariates), fileext = ".tif")) %>% 
-      magrittr::set_names(cov_names)
+      stats::setNames(cov_names)
     cov <- sources(covariates)[, "source"]
   }
   
-  # Count NA values in rasters data to determine best layer to use for masking
-  mask_layer <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
-    cat(paste0("\rCounting NA values in ", names(covariates[[i]]), 
-               " [", i, " of ", nlyr(covariates), "]\n"))
-    new <- subset(covariates, i) * 0
-    data.frame(layer = names(new), 
-               data_cells = data.frame(freq(new))$count)
-  } %>% mutate(data_cells = ifelse(data_cells == ncell(new), 0, data_cells)) %>% 
-    dplyr::slice(which.max(data_cells))
-  
-  # Generate tile index
-  tiles <- tile_index(cov[1], tilesize)
+  # Generate tile index and intersect with polygon to generate area for sampling
+  tiles <- tile_index(covariates, tilesize) %>% 
+    sf::st_intersection(mask_poly)
   
   # Set up progress messaging
   # Get total area of all tiles
-  a <- 0
   ta <- sum(as.numeric(sf::st_area(tiles)))
   
   # Create index of which tiles have data in them
   tiles_keep <- NULL
   
   # Begin loop through tiles
-  tile_files <- foreach(i = 1:nrow(tiles), .combine = c) %do% {
+  tile_files <- sapply(1:nrow(tiles), function(i) {
     
     # Subset a tile
     t <- tiles[i, ]
     
     # Get total area of processed area + new tile area
-    a <- a + as.numeric(sf::st_area(t))
+    a <- sum(as.numeric(sf::st_area(tiles[i:1, ])))
     cat(paste("\nWorking on tile", i, "of", nrow(tiles), "\n"))
     
     # Do a test run on a single layer, if any variable is all NA then return to
@@ -89,7 +97,8 @@ predict_landscape <- function(
       cov[1], RasterIO = list(nXOff  = t$offset.x[1] + 1, 
                               nYOff  = t$offset.y[1] + 1,
                               nXSize = t$region.dim.x[1],
-                              nYSize = t$region.dim.y[1]))
+                              nYSize = t$region.dim.y[1]),
+      proxy = FALSE)
     
     if(!any(sapply(r, function(x) all(is.na(x))))) {
       # Load all tile data from each raster, if any variable is all NA then
@@ -110,7 +119,7 @@ predict_landscape <- function(
           lapply("[[", 1) %>%
           stars::st_as_stars(dimensions = stars::st_dimensions(r), 
                              coordinates = st_coordinates(r))}) %>% 
-        magrittr::set_names(names(covariates))
+        stats::setNames(names(covariates))
       
       cat("done!\n")
       
@@ -123,7 +132,7 @@ predict_landscape <- function(
       
     } else {
       # If tile has data in all variables, then add this to the "keep" index
-      tiles_keep <- c(tiles_keep, i)
+      tiles_keep <<- c(tiles_keep, i)
       
       # Convert tile to sf dataframe, only keep rows that are not all NA, 
       # and replace any NA values with 0
@@ -140,13 +149,14 @@ predict_landscape <- function(
       #   replace(is.na(.), 0)
 
       # Carry out model prediction and format depending on predict type
-      cat("\r...Predicting outcomes...\n")
+      cat("\r...Predicting outcomes...")
       if(type != "prob") {
-        pred <- predict(model, st_drop_geometry(rsf))
+        pred <- predict(model, sf::st_drop_geometry(rsf))
       } else {
-        pred <- cbind(predict(model, st_drop_geometry(rsf), type = type), 
-                      pred = predict(model, st_drop_geometry(rsf)))
+        pred <- cbind(predict(model, sf::st_drop_geometry(rsf), type = type), 
+                      pred = predict(model, sf::st_drop_geometry(rsf)))
       }
+      cat("done!\n")
       
       # Geo-link predicted values
       r_out <- sf::st_sf(pred, sf::st_geometry(rsf))
@@ -181,13 +191,13 @@ predict_landscape <- function(
       cat("\r...Exporting raster tiles...\n")
       
       # Save tile (each pred item saved)
-      out_files <- foreach(j = 1:length(keep), .combine = c) %do% {
+      out_files <- sapply(1:length(keep), function(j) {
         dir.create(file.path(outDir, keep[j]), showWarnings = FALSE)
         write_dir <- file.path(outDir, keep[j], paste0(keep[j], "_", i, ".tif"))
         if(file.exists(write_dir)) unlink(write_dir)
         out <- stars::st_rasterize(r_out[j], template = r[1], file = write_dir)
         return(write_dir)
-      }
+      })
     }
     
     # Report progress
@@ -195,7 +205,7 @@ predict_landscape <- function(
                format(Sys.time(), "%X %b %d %Y"), "\n"))
     return(out_files)
       
-    }
+  }) %>% as.character()
   
   cat("\nAll predicted tiles generated\n")
   
@@ -207,47 +217,36 @@ predict_landscape <- function(
   def_ops <- capture.output(terraOptions())
   terraOptions(progress = 0)
   
-  pred_out <- foreach(k = unique(dirname(tile_files)), .combine = c) %do% {
+  pred_out <- do.call(c, lapply(unique(dirname(tile_files)), function(k) {
     
     cat(paste("\rMosaicking", basename(k), "tiles", "\n"))
     
     # In order to properly mask the layer, the CRS and extents need to match 
     # perfectly, hence the resampling step
-    resamp_method <- if(basename(k) == "pred") {
-      "near"
-    } else "bilinear"
+    resamp_method <- ifelse(basename(k) == "pred", "near", "bilinear")
     
     r_tiles <- list.files(
       k, pattern = paste0("^", basename(k), "_", tiles_keep, ".tif$", collapse = "|"),
       full.names = TRUE)
     
-    if(length(r_tiles) > 1) {
-      # Mosaic, resample, mask and save as temp file
-      mos <- foreach(i = r_tiles, .final = function(x) do.call(terra::merge, x)) %do% {
-        rast(i)
-      } %>% 
-        terra::resample(subset(covariates, mask_layer$layer), method = resamp_method) %>% 
-        magrittr::set_names(basename(k)) %>% 
-        terra::mask(subset(covariates, mask_layer$layer), 
-                    filename = tempfile(pattern = basename(k), fileext = ".tif"), 
-                    overwrite = TRUE)
-    } else {
-      mos <- rast(r_tiles) %>% 
-        terra::resample(subset(covariates, mask_layer$layer), method = resamp_method) %>% 
-        magrittr::set_names(basename(k)) %>% 
-        terra::mask(subset(covariates, mask_layer$layer), 
-                    filename = tempfile(pattern = basename(k), fileext = ".tif"), 
-                    overwrite = TRUE)
-    }
+    # Mosaic, resample, mask and save as temp file
+    mos <- {if(length(r_tiles) > 1) {
+      do.call(merge, lapply(r_tiles, terra::rast))
+    } else terra::rast(r_tiles)} %>% 
+      terra::resample(subset(covariates, mask), method = resamp_method) %>% 
+      stats::setNames(basename(k)) %>% 
+      terra::mask(subset(covariates, mask), 
+                  filename = tempfile(pattern = basename(k), fileext = ".tif"), 
+                  overwrite = TRUE)
     
     # Depending on prediction type, output either a single SpatRaster layer or
     # a list of files
-    if(length(keep) == 1) {
-      return(mos)
-    } else {
-      return(terra::sources(mos)[, "source"])
-    }
-  }
+    # if(length(keep) == 1) {
+    #   return(mos)
+    # } else {
+    #   return(terra::sources(mos)[, "source"])
+    # }
+  }))
   
   # Reapply default progress bar options
   terraOptions(progress = readr::parse_number(grep("progress", def_ops, value = TRUE)))

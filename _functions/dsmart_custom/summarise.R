@@ -72,6 +72,10 @@ summarise <- function(
   n.realisations = ifelse(is.list(realisations), length(realisations), terra::nlyr(realisations)), 
   nprob = 3, outputdir = getwd(), stub = NULL, type = "raw") {
   
+  # Requires the following packages:
+  sapply(c("tidyverse", "terra"), 
+         require, character.only = TRUE)[0]
+  
   # Create list to store output
   output <- base::list()
   
@@ -160,7 +164,7 @@ summarise <- function(
     # Compute counts
     counts <- terra::app(realisations, tabulate, nbins = nrow(lookup)) %>% 
       terra::mask(mask_layer) %>% 
-      magrittr::set_names(lookup$name)
+      stats::setNames(lookup$name)
     
     # Compute probabilities and write probabilities to raster files
     probs <- (counts / n.realisations) %>% 
@@ -181,15 +185,13 @@ summarise <- function(
         paste0(stub, "prob_", names(realisations[[1]]), ".tif")), 
         overwrite = TRUE)
     } else {
-      probs <- foreach(i = 1:nrow(lookup), .final = function(x) do.call(c, x)) %do% {
-        rlist <- foreach(j = 1:n.realisations, .final = function(y) do.call(c, y)) %do% {
-          return(realisations[[j]][[i]])
-        }
+      probs <- do.call(c, lapply(1:nrow(lookup), function(i) {
+        rlist <- do.call(c, lapply(realisations, "[[", i))
         return(terra::app(rlist, fun = "mean", na.rm = TRUE, filename = file.path(
           outputdir, subdir, "probabilities", 
           paste0(stub, "prob_", lookup$name[which(lookup$code == i)], ".tif")), 
           overwrite = TRUE))
-      }
+      }))
     }
   }
   
@@ -211,7 +213,7 @@ summarise <- function(
   # Write ith-most-probable soil class raster to file
   ordered.indices <- ordered.indices %>% 
     terra::mask(mask_layer) %>% 
-    magrittr::set_names(paste0(stub, "mostprob_", 
+    stats::setNames(paste0(stub, "mostprob_", 
                                formatC(1:nprob, width = nchar(nrow(lookup)), 
                                        format = "d", flag = "0"), "_class")) %>% 
     terra::writeRaster(filename = file.path(
@@ -224,7 +226,7 @@ summarise <- function(
   ordered.probs <- terra::app(probs, sort, decreasing = TRUE, 
                               na.last = TRUE)[[1:max(2, nprob)]] %>% 
     terra::mask(mask_layer) %>% 
-    magrittr::set_names(
+    stats::setNames(
       paste0(stub, "mostprob_", formatC(1:max(2, nprob), width = nchar(nrow(lookup)), 
                                         format = "d", flag = "0"), "_probs"))
   

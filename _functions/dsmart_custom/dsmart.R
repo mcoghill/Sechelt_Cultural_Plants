@@ -128,7 +128,11 @@ dsmart <- function(
   covariates, polygons, composition, rate = 15, reals = 100, 
   observations = NULL, method.sample = "by_polygon", method.allocate = "weighted", 
   method.model = NULL, args.model = NULL, strata = NULL, nprob = 3, 
-  outputdir = getwd(), stub = NULL, factors = NULL, type = "raw") {
+  outputdir = getwd(), stub = NULL, factors = NULL, type = "raw", mask = NULL) {
+  
+  # Requires the following packages:
+  sapply(c("tidyverse", "terra"), 
+         require, character.only = TRUE)[0]
   
   # Source external functions used in this script
   source("./_functions/dsmart_custom/disaggregate.R")
@@ -179,7 +183,7 @@ dsmart <- function(
     observations = observations, method.sample = method.sample, 
     method.allocate = method.allocate, method.model = method.model, 
     args.model = args.model, strata = strata, outputdir = outputdir, 
-    stub = stub, factors = factors, type = type)
+    stub = stub, factors = factors, type = type, mask = mask)
   
   # If raw class predictions are used, load realisations to SpatRaster
   if(type != "prob") {
