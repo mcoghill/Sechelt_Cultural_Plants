@@ -14,7 +14,7 @@ First, libraries are loaded and data directories are defined. A custom function 
 ```{r Load Packages, echo=TRUE, results='hide'}
 
 suppressMessages(suppressWarnings({
-  lapply(c("tidyverse", "terra", "sf", "foreach", "caret"), 
+  lapply(c("tidyverse", "terra", "sf"), 
          library, character.only = TRUE)[0]}))
 
 # Load custom DSMART files
@@ -28,7 +28,7 @@ Next, file paths are defined. There are two major branches: First, what resoluti
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 4
+map_res <- 10
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
@@ -58,13 +58,15 @@ covariates <- terra::rast(
 
 # Preliminary check of covariate data to eliminate any outlying rasters
 # containing less data than normal
-cov_check <- foreach(i = 1:nlyr(covariates), .combine = rbind) %do% {
-  new <- subset(covariates, i) * 0
-  data.frame(layer = names(new), 
-             data_cells = data.frame(freq(new))$count)
-} %>% dplyr::filter(data_cells >= 0.95 * median(.$data_cells))
-if(nrow(cov_check) != nlyr(covariates)) 
-  covariates <- subset(covariates, cov_check$layer)
+cov_check <- sapply(names(covariates), function(x) {
+  cat(paste0("\rCounting NA values in ", x, " [", 
+             which(x == names(covariates)), 
+             " of ", nlyr(covariates), "]\n"))
+  unname(freq(subset(covariates, x) * 0)[, "count"])}) %>% 
+  data.frame(data_cells = .) %>% 
+  rownames_to_column("layer") %>% 
+  dplyr::filter(data_cells >= 0.95 * median(.$data_cells))
+covariates <- subset(covariates, cov_check$layer)
 
 # Load the polygons and associated observations
 polygons <- terra::vect(file.path(dsmart_dir, "inputs", paste0(
@@ -121,9 +123,12 @@ if(run == "site_ser") {
   dir.create(file.path(dsmart_dir, "simple"), showWarnings = FALSE)
   
   # Rasterize first calls only
+  cov_lyr <- dplyr::slice_max(cov_check, data_cells, with_ties = FALSE) %>% 
+    dplyr::pull(layer)
+  cov_sub <- subset(covariates, cov_lyr)
   tem <- terra::vect(file.path(dsmart_dir, "inputs", paste0("dsmart_", run, "_polys.gpkg")))
   tem$MapUnit1_num <- as.numeric(as.factor(tem$MapUnit1))
-  tem_rast <- terra::rasterize(tem, covariates[[1]], field = "MapUnit1_num", 
+  tem_rast <- terra::rasterize(tem, cov_sub, field = "MapUnit1_num", 
                                filename = file.path(dsmart_dir, "simple", "site_series_simple.tif"), 
                                overwrite = TRUE)
   
@@ -136,7 +141,7 @@ if(run == "site_ser") {
   
   # Generate probabilities based on composition
   ss_calls <- unique(composition$MapUnit)
-  composition_remake <- foreach(i = unique(composition$POLY_NO), .combine = rbind) %do% {
+  composition_remake <- dplyr::bind_rows(lapply(unique(composition$POLY_NO), function(i) {
     composition %>% dplyr::filter(POLY_NO == i) %>% 
       dplyr::select(POLY_NO, MapUnit, proportion) %>% 
       rbind(data.frame(
@@ -144,20 +149,20 @@ if(run == "site_ser") {
         MapUnit = ss_calls[!ss_calls %in% .$MapUnit],
         proportion = 0
       ))
-  }
+  }))
   
   tem_remake <- values(tem) %>% 
     dplyr::select(POLY_NO) %>% 
     merge(composition_remake) %>% 
     mutate(proportion = proportion / 100) %>% 
     merge(tem, .)
-  
-  tem_props <- foreach(i = unique(tem_remake$MapUnit), .combine = c) %do% {
+    
+  tem_props <- do.call(c, lapply(unique(tem_remake$MapUnit), function(i) {
     tem_remake[tem_remake$MapUnit == i] %>% 
-      magrittr::set_names(c(names(.)[names(.) != "proportion"], paste0("probability_", i))) %>% 
-      rasterize(covariates[[1]], field = paste0("probability_", i), overwrite = TRUE, 
+      stats::setNames(c(names(.)[names(.) != "proportion"], paste0("probability_", i))) %>% 
+      rasterize(cov_sub, field = paste0("probability_", i), overwrite = TRUE, 
                 filename = file.path(dsmart_dir, "simple", paste0("probability_", i, ".tif")))
-  }
+  }))
 }
 
 ```
@@ -173,6 +178,7 @@ There was a point in time that I tried to do the modelling via the mlr3 package 
 # value needs to be changed to TRUE and "type" in the disaggregate function 
 # needs to be changed to "prob".
 if(use_caret) {
+  library(caret, warn.conflicts = FALSE, verbose = FALSE, quietly = TRUE)
   method.model <- "ranger"
   args.model <- list(
     trControl = trainControl(
@@ -192,6 +198,7 @@ if(use_caret) {
     )
   )
 } else {
+  library(C50, warn.conflicts = FALSE, verbose = FALSE, quietly = TRUE)
   method.model <- NULL
   args.model <- NULL
 }
@@ -232,13 +239,15 @@ dsm <- try(dsmart(
   outputdir = dsmart_dir, 
   factors = factors,
   type = "prob", 
-  nprob = 1))
+  nprob = 1, 
+  mask = dplyr::slice_max(cov_check, data_cells, with_ties = FALSE) %>% 
+    dplyr::pull(layer)))
 
 # Save the file to a better location
 out <- rast(list.files(dsm$summarise$locations$mostprobable, 
                        pattern = "mostprob_01_class|mostprob_1_class", 
                        full.names = TRUE)) %>% 
-  magrittr::set_names(paste0(run, "_dsmart")) %>% 
+  stats::setNames(paste0(run, "_dsmart")) %>% 
   writeRaster(filename = file.path(dsmart_dir, paste0(run, "_dsmart.tif")), 
               overwrite = TRUE, wopt = list(datatype = "INT2S"))
 
