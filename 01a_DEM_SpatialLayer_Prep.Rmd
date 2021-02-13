@@ -6,7 +6,7 @@ output: html_document
 ---
 
 # Introduction
-This document describes the steps required to prepare spatial layers to be used in machine-learning based predictive ecosystem map method. The code used here is largely pawned from PEM project coding, but with adjustments made to suit this project more accurately.
+This document describes the steps required to prepare raster spatial layers to be used in machine-learning based predictive ecosystem map method. The code used here is largely pawned from PEM project coding, but with adjustments made to suit this project more accurately.
 
 This method is scripted in R, but uses other open source packages, predominantly [SAGA:](https://sourceforge.net/projects/saga-gis/). 
 
@@ -26,7 +26,7 @@ Before getting started, the first thing to do is to load the required packages. 
 ```{r Load Packages, echo=TRUE, results='hide'}
 
 invisible(suppressPackageStartupMessages(
-  lapply(c("tidyverse", "terra"), library, character.only = TRUE)))
+  lapply(c("tidyverse", "terra", "bcmaps"), library, character.only = TRUE)))
 
 source(file.path('_functions', 'get_saga.R'))
 source(file.path("_functions", "derive_terrain.R"))
@@ -45,110 +45,34 @@ saga_ver <- unlist(regmatches(saga_ver, regexec("Version:\\s*(.*?)\\s*\\(", saga
 ```
 
 ### 2) Define file paths and folders
-In this next chunk, you enter the only input data required for this sheet to function, the rest is (mostly) automated! Simply input the name of the AOI folder, and a projection code.
+In this next chunk, you enter the only input data required for this sheet to function, the rest is (mostly) automated! Simply input the name of the AOI folder, and a projection code. Folders will be created for the terrain and climate layer outputs from R.
 
 ```{r Set directories}
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 epsg <- 3005
+cov_res <- c(4, 10, 25)
 
 raw_dir <- file.path(AOI_dir, "_original_files")
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
 cov_1m <- file.path(covariate_dir, "1m")
 dir.create(cov_1m, recursive = TRUE, showWarnings = FALSE)
 
+# Create ClimateBC output directory (for .asc files, not the final location)
+clim_bc_dir <- file.path(file.path(AOI_dir, "0_raw_inputs", "ClimateBC_Layers"))
+dir.create(clim_bc_dir, recursive = TRUE, showWarnings = FALSE)
+
 ```
 
 ### 3) Transform raw rasters
-In the next chunk, we want to specify where the raw files are located. For the Sechelt project, there were two output LiDAR files: a CHM and a DEM, both at resolutions of (almost) 1m and using a UTM based CRS. Like most projects in BC, I opted to use the BC Albers (EPSG: 3005) CRS. A few steps were required to carry out the desired functionality using the new and powerful terra package. Certain workarounds have been used in order to make certain functions work, though most of the functions required here are fleshed out by the package creator. The terra package is a replacement for the raster package and the benefits are all to do with processing speed and efficiency by harnessing C++ computing. In order to transform the rasters to the BC Albers projection, the following steps needed to be followed:
+Here, we begin raw processing. Likely, we won't be dealing with resolutions less than 2m, but if it does this code needs to be re-evaluated.
 
-1. The extents (bounding boxes) of both of the raw DEM and CHM files were different from each other. A new bounding box containing the extents of both files was first created, and then that bounding box was transformed to the BC Albers CRS. 
-2. The raw files were individually transformed to the projection and extent of the BC Albers bounding box. This ensured that they shared the exact same grid.
-3. The individually transformed files were then trimmed to remove outside NA values. There is a built in function for this in terra (trim, used later on); however, at the time of writing this, (September 2020), there was an issue with this function when the 1m grids were being used, so instead a workaround was implemented by finding which rows and columns had data in them, then finding the coordinates of those and trimming to those coordinates
-4. Now that the transformed rasters were individually trimmed, the extents had to once again be combined to get the largest (smallest) bounding box encompassing both of them. The extents of each file were expanded and they were then able to be stacked.
+The raw DEM and CHM have very slightly different extents and resolutions, so initially they cannot be stacked together. Rather, they are put together in a list item "raw", and their common extents are defined (i.e.: largest bounding area). This area is used as an extent to download raw TRIM data from using the `bcmaps` package. The raw DEM is then Lat/Long transformed to desired resolutions for use in ClimateBC. Those variables are saved as .asc files which then get their line endings (end of line, EOL) defined for Windows CR LF, required by ClimateBC (used to have to do this in Notepad++ before finding solution).
 
-```{r Specify 1m Raster}
+Finally, the common extent of the DEM and CHM are transformed to BC Albers and the resolution is defined. The raw DEM and CHM are projected to that extent, trimmed to remove edges of NA values, and then written to the output folder.
 
-# Load files
-raw_files <- c(file.path(raw_dir, "dem", "w001001.adf"),
-               file.path(raw_dir, "chm", "w001001.adf"))
-
-# I want to use the terra package for this since it has the ability to be 
-# functionized over any number of input layers so long as their CRS's are all
-# the same. Normally, I would have stacked these in a single "rast" function, 
-# however, the extents do not match between the files, hence the list placement
-# of each file
-raw <- lapply(raw_files, function(x) {
-  rast(x) %>% magrittr::set_names(basename(dirname(x)))}) %>% 
-  magrittr::set_names(basename(dirname(raw_files)))
-
-# Get the spatial area of each file. From those, the largest possible spatial 
-# extent is created. This assumes that the raw files have the same CRS's
-new_ext <- ext(c(xmin = min(sapply(raw, xmin)), xmax = max(sapply(raw, xmax)), 
-                 ymin = min(sapply(raw, ymin)), ymax = max(sapply(raw, ymax))))
-
-# Give a new extent to project rasters to by projecting the extent and defining
-# the resolution we want the raster to be at
-new_proj <- project(rast(new_ext, crs = crs(raw[[1]])), 
-                    paste0("epsg:", epsg))
-res(new_proj) <- 1
-
-# Project rasters to new extent and resolution, and trim NA areas
-lidar <- lapply(raw, function(x) {
-  proj <- terra::project(x, new_proj)
-  
-  # Now trim the extra edges. terra package trim function was stalling using
-  # the 1m raster, not sure why that was, so I created my own way to do so 
-  # below.
-  
-  # Need to do col and rowsums omitting NA values. If a whole row is NA when 
-  # this option is applied, the result is 0. For this reason, all valid raster
-  # values need to be changed to values above 0 (i.e.: 1), then it's a simple
-  # matter of finding the rows/columns that don't have sums of 0 - those are 
-  # the minimum and maximum row and column numbers that will be used to index
-  # the minumum and maxiumum x and y coordinates.
-  
-  # This way creates only one tempfile instead of 2, but col and rowsum 
-  # functions need to be carried out in raster package since they are not 
-  # currently available in terra
-  inter <- raster::raster(terra::lapp(proj, function(x) ((x * 0) + 1)))
-  colvals <- raster::colSums(inter, na.rm = TRUE)
-  rowvals <- raster::rowSums(inter, na.rm = TRUE)
-  
-  # We don't care what the sums of the rows are, just that the values > 0 
-  # will indicate what rows/cols have data. The first colsum value is used to 
-  # find the xmin coordinate whereas the last colsum value is used to find xmax.
-  # This is reversed for finding y coordinates.
-  proj_ext <- terra::ext(c(
-    xmin = terra::xFromCol(proj, head(which(colvals > 0) - 1, n = 1)),
-    xmax = terra::xFromCol(proj, tail(which(colvals > 0), n = 1)),
-    ymin = terra::yFromRow(proj, tail(which(rowvals > 0) + 1, n = 1)),
-    ymax = terra::yFromRow(proj, head(which(rowvals > 0), n = 1))))
-  
-  # Crop original file to new extent, saved as temp file
-  crop <- terra::crop(proj, proj_ext)})
-
-# Using the list of rasters, find the smallest extent that all of the rasters
-# will fit into
-new_ext <- ext(
-  c(xmin = min(sapply(lidar, xmin)), xmax = max(sapply(lidar, xmax)), 
-    ymin = min(sapply(lidar, ymin)), ymax = max(sapply(lidar, ymax))))
-
-# Using the above extent, expand the rasters, write them out, and then load them
-# back into R as a single SpatRaster object.
-lidar <- lapply(names(lidar), function(x) {
-  expand(lidar[[x]], new_ext, overwrite = TRUE,
-         filename = file.path(AOI_dir, "_original_files", x, paste0(x, ".tif")))
-}) %>% do.call(c, .)
-
-# Cleanup temp files
-suppressWarnings(tmpFiles(old = TRUE, remove = TRUE))
-
-```
-
-### 4) Derive lower resolution DEM and CHM files
-This next chunk is a function which will start the pre-processing of a 1m resolution DEM into your desired DEM resolutions. Originally, a complicated method of creating these lower resolution files was devised by Lucas Jarron and Nicholas Coops from UBC; however, I believe that it is unnecessary to do that and you will get just as fine information from a simple resampling method. Regardless, the old method involved the following SAGA GIS tools:
+It should be noted that there was a previous method that involved many steps for downscaling a raw DEM involving the following SAGA tools:
 
 * Focal statistics (smoothing a DEM over a given size window)
 * Create grid system (creates an empty raster grid for data to be placed into later on)
@@ -157,184 +81,203 @@ This next chunk is a function which will start the pre-processing of a 1m resolu
 * Points to grid (Places values from the points into the empty grid)
 * Crop to data (Removes extra NA values from the edges of the raster)
 
-Resampling takes into account the neighbouring cells, so I don't see why it can't be used to downscale the DEM and CHM here.
+Normal resampling takes into account the neighbouring cells, so I don't see why it can't be used to downscale the DEM and CHM here.
 
-```{r Derive Lower Resolutions}
+This chunk takes ~25 minutes to run
 
-for(r in c(1, 4, 5, 10, 25)) {
-  dir_out <- file.path(covariate_dir, paste0(r, "m"))
-  dir.create(dir_out, showWarnings = FALSE)
-  lidar <- rast(list.files(raw_dir, pattern = ".tif$", 
-                           full.names = TRUE, recursive = TRUE))
-  if(r != 1) {
-    new_ext <- rast(ext(lidar), crs = crs(lidar))
-    res(new_ext) <- r
-    
-    # Note need separate writeraster function to write out multiple files as 
-    # opposed to a single multilayered file
-    lidar <- terra::resample(lidar, new_ext, method = "bilinear") %>% 
-      writeRaster(filename = file.path(dir_out, paste0(names(.), ".tif")), 
-                  overwrite = TRUE)
+```{r Downscale raw rasters}
+
+# Load files
+raw_files <- c(file.path(raw_dir, "dem", "w001001.adf"),
+               file.path(raw_dir, "chm", "w001001.adf"))
+
+# Create rasters of both in list format
+raw <- lapply(raw_files, function(x) {
+  rast(x) %>% setNames(basename(dirname(x)))}) %>% 
+  setNames(basename(dirname(raw_files)))
+
+# Create complete bounding extent
+new_ext <- ext(c(xmin = min(sapply(raw, xmin)), xmax = max(sapply(raw, xmax)), 
+                 ymin = min(sapply(raw, ymin)), ymax = max(sapply(raw, ymax))))
+
+# Get TRIM elevation as well - first, create shape of AOI to download from
+new_ext_sf <- st_bbox(c(
+  xmin = xmin(new_ext), xmax = xmax(new_ext),
+  ymin = ymin(new_ext), ymax = ymax(new_ext)), crs = crs(raw[[1]])) %>% 
+  st_as_sfc()
+
+# Use AOI to download TRIM elevation
+trim_raw <- rast(cded_raster(new_ext_sf)) %>% setNames("dem")
+
+# Transform raw DEM to lat/long, matching trim_raw
+dem_latlng <- project(raw[["dem"]], trim_raw)
+
+# Mask TRIM download to transformed DEM
+trim_latlng <- mask(trim_raw, dem_latlng)
+
+# Reproject TRIM to BC Albers
+trim_bca <- project(trim_latlng, paste0("epsg:", epsg))
+
+# Create a BC Albers projected extent of the DEM
+dem <- raw[["dem"]]
+dem_ext <- rast(ext(dem), crs = crs(dem))
+dem_ext_bca <- project(dem_ext, paste0("epsg:", epsg))
+
+# Flow is a little strange here. BC Albers and UTM both use meters, but slightly
+# off from each other when projected between each. Want to define the final 
+# resolution output as BC Albers, so with the BC Albers extent define the 
+# desired resolution, then project that to Lat/Long. Project DEM to Lat/Long 
+# extent for ClimateBC layers, change NA values to -9999 for ClimateBC, and 
+# write to .asc
+for(i in c(cov_res, "TRIM")) {
+  r <- suppressWarnings(as.numeric(i))
+  if(!is.na(r)) {
+    res(dem_ext_bca) <- r
+    dem_ext_prj <- project(dem_ext_bca, "epsg:4326")
+    dem_prj <- project(dem, dem_ext_prj)
+    p <- paste0(r, "m")
   } else {
-    lidar <- terra::writeRaster(
-      lidar, overwrite = TRUE,
-      filename = file.path(dir_out, paste0(names(lidar), ".tif")))
+    dem_prj <- trim_latlng
+    p <- i
   }
+  dem_prj[is.na(dem_prj)] <- -9999
+  out <- file.path(clim_bc_dir, paste0("dem_", p, ".asc"))
+  writeRaster(dem_prj, out, overwrite = TRUE, wopt = list(NAflag = -9999))
   
+  # Redefine Windows end of line (EOL) options for ClimateBC
+  txt <- readLines(out)
+  f <- file(out, open = "wb")
+  cat(txt, file = f, sep = "\r\n")
+  close(f)
+  
+  # Cleanup temp files
+  suppressWarnings(tmpFiles(old = TRUE, remove = TRUE))
+}
+
+# Won't use <2m covariates since it is too computationally expensive, so just
+# project raw DEM and CHM files to BC Albers extents at defined resolutions rather
+# than first creating a 1m transformed raw DEM - not worth it. Also, this makes
+# processing quite a bit faster.
+for(i in c(cov_res, "TRIM")) {
+  r <- suppressWarnings(as.numeric(i))
+  if(!is.na(r)) {
+    if(r >= 2) {
+      dir_out <- file.path(covariate_dir, paste0(r, "m"))
+      dir.create(dir_out, showWarnings = FALSE)
+      
+      lidar_ext <- project(rast(new_ext, crs = crs(raw[[1]])), paste0("epsg:", epsg))
+      res(lidar_ext) <- r
+      lidar_low <- rast(lapply(raw, terra::project, lidar_ext)) %>% 
+        trim() %>% 
+        writeRaster(filename = file.path(dir_out, paste0(names(.), ".tif")), 
+                    overwrite = TRUE)
+    } else {
+      message("<2m raster generation not supported")
+    }
+  } else {
+    dir_out <- file.path(covariate_dir, i)
+    dir.create(dir_out, showWarnings = FALSE)
+    lidar_low <- trim(trim_bca, overwrite = TRUE,
+                      filename = file.path(dir_out, paste0(names(trim_bca), ".tif")))
+  }
   # Cleanup temp files
   suppressWarnings(tmpFiles(old = TRUE, remove = TRUE))
 }
 
 ```
 
-### 5) Download TRIM and derive terrain attributes
-At one point, the value of TRIM was brought into question - do we even need LiDAR? (yes we do, but this helps drive home a point on comparison methods). We needed 2 TRIM tiles in order to create the DEM from it. Those are downloaded, transformed, and clipped using the shape of the 1m DEM raster.
+### 4) Derive terrain attributes
+SAGA GIS has a CLI that can be interfaced with R to create a chain function to derive multiple terrain attributes at once. This chunk harnesses that in a simple function and all that is required are file paths to base DEM's and the path to SAGA GIS.
 
-Finally, a large function (written in the _functions/derive_terrain.R file) is run to create ~19 different covariate layers describing different terrain attributes. This uses SAGA GIS toolchains in order to process everything. The rasters are saved to the same folder as the DEM and CHM.
+This chunk should take < 1 hour to run.
 
 ```{r Derive terrain attributes}
 
-# One of the things brought up in the beginning was to do a comparison to TRIM
-# TRIM is about 25m resolution, so we can clip it using the derived 25m DEM to
-# do exact comparisons
-# Download TRIM using these links: 
-# https://www2.gov.bc.ca/assets/gov/data/geographic/topography/250kgrid.pdf
-# https://pub.data.gov.bc.ca/datasets/175624/
-dl_dir <- file.path(raw_dir, "TRIM")
-trim_dir <- file.path(covariate_dir, "TRIM")
-
-if(!dir.exists(dl_dir) || !dir.exists(trim_dir)) {
-  dir.create(dl_dir, showWarnings = FALSE)
-  dir.create(trim_dir, showWarnings = FALSE)
-  dem_1 <- raster::raster(file.path(covariate_dir, "1m", "dem.tif"))
-  
-  # URL's to download tiles for Sechelt
-  urls <- c("https://pub.data.gov.bc.ca/datasets/175624/92f/092f09_e.dem.zip", 
-            "https://pub.data.gov.bc.ca/datasets/175624/92g/092g12_w.dem.zip")
-  
-  # Merge the files and convert to a raster object
-  trim <- lapply(urls, function(x) {
-    download.file(url = x, destfile = file.path(dl_dir, basename(x)))
-    z <- unzip(file.path(dl_dir, basename(x)), overwrite = TRUE, 
-               exdir = file.path(dl_dir))
-    unlink(file.path(dl_dir, basename(x)))
-    return(rast(z))
-  }) %>% Reduce(function(x, y) merge(x, y), .) %>% magrittr::set_names("dem")
-  
-  # raster package handles weird resolutions better and more accurately. Use
-  # to project the merged raster to the new extent
-  trim_proj <- raster::projectExtent(raster::raster(trim), crs(dem_1))
-  
-  # Use the largest of the resolutions returned (close to 25m here)
-  res(trim_proj) <- max(res(trim_proj))
-  
-  # Convert back to terra object to project TRIM raster to
-  trim_proj <- rast(trim_proj)
-  
-  # Resample 1m DEM to resolution of TRIM. This will become the cropping extent
-  # and masking layer used later
-  dem_1 <- rast(file.path(covariate_dir, "1m", "dem.tif"))
-  dem_1_ext <- rast(ext(dem_1), crs = crs(dem_1))
-  res(dem_1_ext) <- res(trim_proj)
-  trim_mask <- resample(dem_1, dem_1_ext)
-    
-  # Crop and mask layer, save it to the TRIM folder
-  trim_bca <- mask(
-    project(trim, trim_mask, mask = TRUE), trim_mask, 
-    filename = file.path(trim_dir, "dem.tif"), overwrite = TRUE)
-  
-  # Cleanup temp files
-  suppressWarnings(tmpFiles(old = TRUE, remove = TRUE))
-  
-}
-
-dem_files <- grep("1m", list.files(covariate_dir, pattern = "dem.tif$", 
-                                   full.names = TRUE, recursive = TRUE), 
-                  value = TRUE, invert = TRUE)
+# Don't use DEM's that are < 1m
+all_dem <- list.files(covariate_dir, pattern = "dem.tif$", full.names = TRUE, recursive = TRUE)
+dem_files <- unlist(lapply(all_dem, function(x) {
+  r <- rast(x)
+  if(xres(r) >= 2) sources(r)[, "source"] else NULL }))
 
 covariates <- lapply(dem_files, function(x) 
   dem_derived_layers(x, saga_cmd = saga_cmd)) %>% 
-  magrittr::set_names(basename(dirname(dem_files)))
+  setNames(basename(dirname(dem_files)))
 
 ```
 
-### 6) ClimateBC layers
-Additionally, we need to produce some raster layers from the ClimateBC program: http://climatebc.ca/
-The program takes as an input a DEM provided as a .asc file in the 4326 projection. Unfortunately, the program has no CLI and I'm not familiar with how to create one from a given program, so as a user you will need to build those layers yourself in the program and then come back here to the code and run the processing to reproject the layers back to your desired EPSG.
+### 5) ClimateBC layers
+After generating the layers from ClimateBC, project the .asc files back to BC Albers to match the base DEM's. Certain file checks are involved and this function actually ends up taking quite a while to run. Checks include that the file is valid (i.e.: min/max values can be loaded, and there are > 20 unique values in the raster). Additionally, certain files require a division by 10 to match what they actually represent. This is because all of the rasters output integer values from ClimateBC, so for example MAT (Mean Annual Temperature) will report a cell value of 165 which actually means 16.5. After these checks, the NA values of -9999 are replaced with NaN to match the base DEMs, and are finally written out as .tif files.
+
+This chunk takes ~2.5-3 hours to run.
 
 ```{r ClimateBC rasters}
 
-# Create DEM files for use with ClimateBC program:
-clim_bc_dir <- file.path(file.path(AOI_dir, "0_raw_inputs", "ClimateBC_Layers"))
-dir.create(clim_bc_dir, recursive = TRUE, showWarnings = FALSE)
-
-# Flow is a bit weird - first, raster package is used to load DEM files. The 
-# extents of those rasters is projected to lat/long, and the minimum resolution
-# value from that is used to define the resolution for the whole pixel (this 
-# is necessary because the projection causes unequl resolution values). Objects
-# are then converted to terra objects for projection to lat/long. Any elevation 
-# below 0 is changed to NA. Next, the raster package is used to change NA values  
-# to -9999, again necessary for generating ClimateBC layers. Finally, the files 
-# are written to .asc files. This type of file is not implemented (yet) in the
-# terra package. This is a fairly quick function to run.
-for(i in dem_files) {
-  dem_bca <- raster::raster(i)
-  dem_prj <- raster::projectExtent(dem_bca, crs("+init=epsg:4326"))
-  res(dem_prj) <- min(res(dem_prj))
-  dem_bca <- rast(i)
-  dem_prj <- project(dem_bca, rast(dem_prj))
-  dem_prj[dem_prj < 0] <- NA
-  dem_prj <- raster::raster(dem_prj)
-  raster::NAvalue(dem_prj) <- -9999
-  raster::writeRaster(
-    dem_prj, overwrite = TRUE, prj = TRUE, NAflag = -9999,
-    filename = file.path(
-      clim_bc_dir, paste0("dem_", basename(dirname(i)), ".asc")))
-  
-  # Cleanup temp files
-  suppressWarnings(tmpFiles(old = TRUE, remove = TRUE))
-}
-
-# Create climate layers for normal annual & seasonal 1961-1990, same for
-# 1991-2010, for each resolution using the ClimateBC program. When that finishes, 
-# come back here for renaming and saving the variables to their final location.
-# ______________________________________________________________________________
-# ______________________________________________________________________________
-# ______________________________________________________________________________
-
 # Folders indicate resolutions, subfolders are the data attribute
-clim_res <- list.dirs(clim_bc_dir, full.names = TRUE, recursive = FALSE)
+clim_res <- grep("dem", list.dirs(clim_bc_dir, full.names = TRUE, recursive = FALSE),
+                 value = TRUE)
 
 for(i in clim_res) {
   clim_sub <- list.dirs(i, recursive = FALSE)
   res <- gsub("dem_", "", basename(i))
   dem <- rast(file.path(covariate_dir, res, "dem.tif"))
   for(j in clim_sub) {
-    # Add CRS information and save as tif files
-    # terra cannot reproject when CRS is in memory, it has to be in storage. The
-    # clever way is to save them to the same spot as .tif files, but could also
-    # be written as temp files elsewhere
-    clim_layers <- rast(list.files(j, full.names = TRUE, pattern = ".asc$"), 
-                        crs = "epsg:4326") %>% 
-      writeRaster(tempfile(pattern = "spat_", fileext = ".tif"))
+    # Invalid/broken layers don't have minmax values set upon reading into R
+    clim_layers <- rast(
+      unlist(lapply(list.files(j, full.names = TRUE, pattern = ".asc$"), function(x) {
+        d <- describe(x, options = "mm")
+        if(any(grepl("Min/Max=", d))) x else NULL })))
     
-    # Remove layers from processing that are invalid (min values greater than 
-    # max values and rasters that are all equal)
-    clim_layers_valid <- as.data.frame(t(minmax(clim_layers))) %>% 
-      rownames_to_column("id") %>% 
-      dplyr::filter(rmin < rmax)
+    # Require calculation on certain grids
+    recalc <- subset(
+      clim_layers, grep("Tave|Tmax|Tmin|Rad|AHM|EMT|EXT|MAR|MAT|MCMT|MWMT|SHM|TD",
+                        names(clim_layers))) / 10
     
-    clim_layers <- subset(clim_layers, clim_layers_valid$id)
+    # Replace recalculated grids into clim_layers
+    clim_layers <- c(
+      subset(clim_layers, grep(paste0(names(recalc), collapse = "|"),
+                               names(clim_layers), invert = TRUE)),
+      recalc)
+    
+    # Count the unique values in each layer and remove layers with too few
+    # unique cell values (set to 20)
+    clim_layers_valid <- data.frame(freq(clim_layers, digits = NA)) %>% 
+      group_by(layer) %>% 
+      summarise(count = n(), .groups = "drop") %>%
+      dplyr::mutate(layer = names(clim_layers)[layer]) %>% 
+      dplyr::filter(count > 20)
+    
+    clim_layers <- subset(clim_layers, clim_layers_valid$layer)
+    clim_layers[clim_layers == -9999] <- NaN
     
     # Do the reprojection now
-    p <- project(clim_layers, dem, mask = TRUE) %>% 
-      magrittr::set_names(tolower(paste0(basename(j), "_", names(.)))) %>% 
+    p <- project(clim_layers, dem) %>% 
+      mask(dem) %>% 
+      setNames(tolower(paste0(basename(j), "_", names(.)))) %>% 
       writeRaster(filename = file.path(covariate_dir, res, 
                               paste0(names(.), ".tif")), overwrite = TRUE)
     
     # Cleanup temp files
-    suppressWarnings(tmpFiles(old = TRUE, remove = TRUE))
+    suppressWarnings(tmpFiles(orphan = TRUE, old = TRUE, remove = TRUE))
   }
 }
+
+```
+
+The chunk below contains some old code for getting TRIM elevation in case the `bcmaps` function ever stops working.
+
+```{r old code}
+
+#   # URL's to download tiles for Sechelt
+#   urls <- c("https://pub.data.gov.bc.ca/datasets/175624/92f/092f09_e.dem.zip", 
+#             "https://pub.data.gov.bc.ca/datasets/175624/92g/092g12_w.dem.zip")
+#   
+#   # Merge the files and convert to a raster object
+#   trim <- lapply(urls, function(x) {
+#     download.file(url = x, destfile = file.path(dl_dir, basename(x)))
+#     z <- unzip(file.path(dl_dir, basename(x)), overwrite = TRUE, 
+#                exdir = file.path(dl_dir))
+#     unlink(file.path(dl_dir, basename(x)))
+#     return(rast(z))
+#   }) %>% Reduce(function(x, y) merge(x, y), .) %>% setNames("dem")
 
 ```
