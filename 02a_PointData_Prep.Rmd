@@ -621,11 +621,11 @@ st_write(vri_bgc, file.path(shapes_dir, "bgc_vri.gpkg"),
 # vegetated table
 vri_veg_only <- dplyr::select(vri, starts_with(c(
   "POLYGON_ID", "MAP_ID", "BCLCS", "LAND_COVER_CLASS", "EST_COVERAGE_PCT", 
-  "SPECIES_PCT", "PROJ_AGE", "BEC"))) %>% 
+  "SPECIES_PCT", "PROJ_AGE", "PROJ_HEIGHT", "BEC"))) %>% 
   dplyr::filter(BCLCS_LEVEL_1 == "V")
 vri_no_veg <- dplyr::select(vri, starts_with(c(
   "POLYGON_ID", "MAP_ID", "BCLCS", "LAND_COVER_CLASS", "EST_COVERAGE_PCT", 
-  "SPECIES_PCT", "PROJ_AGE", "BEC"))) %>% 
+  "SPECIES_PCT", "PROJ_AGE", "PROJ_HEIGHT", "BEC"))) %>% 
   dplyr::filter(BCLCS_LEVEL_1 != "V")
 vri_trees <- dplyr::filter(vri_veg_only, BCLCS_LEVEL_2 == "T")
 vri_no_trees <- dplyr::filter(vri_veg_only, BCLCS_LEVEL_2 != "T")
@@ -731,7 +731,19 @@ vri_avg <- dplyr::mutate(vri_trees,
     !is.na(PROJ_AGE_2), 
     ((SPECIES_PCT_1 * PROJ_AGE_1) + (SPECIES_PCT_2 * PROJ_AGE_2)) / 
       (SPECIES_PCT_1 + SPECIES_PCT_2), 
-    PROJ_AGE_1))
+    PROJ_AGE_1),
+  ht_avg = ifelse(
+    !is.na(PROJ_HEIGHT_2),
+    ((SPECIES_PCT_1 * PROJ_HEIGHT_1) + (SPECIES_PCT_2 * PROJ_HEIGHT_2)) / 
+      (SPECIES_PCT_1 + SPECIES_PCT_2), 
+    PROJ_HEIGHT_1))
+
+# Add less than 15 year old and less than 10m tall stands to the 3b calls
+ss_3b <- rbind(
+  ss_3b,
+  dplyr::filter(vri_avg, age_avg < 15, ht_avg < 10) %>% 
+    dplyr::select(-c(age_avg, ht_avg)) %>% 
+    dplyr::mutate(ss1 = "3b", ss2 = NA, ss3 = NA))
 
 # Basing all decisions on average stand age...might not be overly accurate, but
 # closest approximation given the data currently at hand. Structural stage 4
@@ -739,9 +751,11 @@ vri_avg <- dplyr::mutate(vri_trees,
 # subzone), and 7 gets greater than 250 years. I cannot find an accurate way to 
 # decipher between structural stages 7a and 7b from VRI data, so they are lumped 
 # together here.
-ss_4 <- dplyr::filter(vri_avg, age_avg < 20) %>% 
+ss_4 <- rbind(
+  dplyr::filter(vri_avg, age_avg < 15, ht_avg >= 10),
+  dplyr::filter(vri_avg, age_avg >= 15, age_avg < 30)) %>% 
   dplyr::mutate(ss1 = "4", ss2 = NA, ss3 = NA)
-ss_5 <- dplyr::filter(vri_avg, age_avg >= 20, age_avg < 80) %>% 
+ss_5 <- dplyr::filter(vri_avg, age_avg >= 30, age_avg < 80) %>% 
   dplyr::mutate(
     ss1 = "5", 
     ss2 = ifelse(LAND_COVER_CLASS_CD_2 == "SL", "3a", LAND_COVER_CLASS_CD_2),
