@@ -64,11 +64,13 @@ In order to get accurate polygon edges for each raster resolution, they need to 
 ```{r Raster to polygon}
 
 # Load DEM files
-dem_files <- as.list(list.files(cov_dir, pattern = "dem.tif$", 
-                        full.names = TRUE, recursive = TRUE)) %>% 
-  magrittr::set_names(sapply(., function(x) basename(dirname(x))))
+all_dem <- list.files(cov_dir, pattern = "dem.tif$", full.names = TRUE, recursive = TRUE)
+dem_files <- lapply(all_dem, function(x) {
+  r <- rast(x)
+  if(xres(r) >= 2) sources(r)[, "source"] else NULL }) %>% compact() %>% 
+  setNames(sapply(., function(x) basename(dirname(x))))
 
-aoi_shapes <- lapply(dem_files, function(i) {
+aoi_shapes <- bind_rows(lapply(dem_files, function(i) {
   cat("\rCreating the", basename(dirname(i)), "AOI polygon\n")
   # Create directory for saving DEM shapes
   shp_subdir <- file.path(shp_dir, basename(dirname(i)))
@@ -80,14 +82,20 @@ aoi_shapes <- lapply(dem_files, function(i) {
   # Convert DEM raster to polygon, remove holes but keep the largest hole
   dem_shp_all <- terra::as.polygons(dem, trunc = TRUE, dissolve = TRUE, values = TRUE) 
   
-  # Small disjointed polygons have 5 points. Filter those, create an sf polygon,
-  # buffer them slightly, and extract each of the bounding boxes
-  dem_small <- terra::geom(dem_shp_all, df = TRUE) %>% 
+  # Small disjointed polygons have fewer points than the main polygon. Find the
+  # small polygons, buffer them, and merge them back into the main polygon
+  dem_small_grps <- terra::geom(dem_shp_all, df = TRUE) %>% 
     group_by(geom, part, hole) %>% 
-    dplyr::filter(n() <= 5, hole < 1) %>% 
+    summarise(grps = n(), .groups = "drop") %>% 
+    dplyr::filter(hole < 1) %>% 
+    dplyr::filter(grps < max(grps))
+  
+  dem_small <- terra::geom(dem_shp_all, df = TRUE) %>% 
+    dplyr::filter(geom %in% dem_small_grps$geom, 
+                  part %in% dem_small_grps$part, hole < 1) %>% 
     {if(nrow(.) > 0) {
       sf::st_as_sf(., coords = c("x", "y"), crs = crs(dem)) %>% 
-        summarise(do_union = TRUE, .groups = "drop") %>% 
+        summarise(do_union = TRUE) %>% 
         sf::st_cast("POLYGON") %>% 
         {if(!sf::st_is_valid(.)) {
           sf::st_make_valid(.)
@@ -110,7 +118,7 @@ aoi_shapes <- lapply(dem_files, function(i) {
     } else NULL}
   
   return(dem_shp)
-}) %>% do.call(rbind, .) %>% tibble::remove_rownames()
+}))
 
 ```
 
@@ -366,8 +374,7 @@ After the function runs, the outputs are saved into the respective folders that 
 
 ```{r Run and export}
 
-# Run the function in a loop for multiple input AOI's (function will default
-# out_dir designation to the folder of in_aoi if in_aoi is a file path)
+# Run the function for multiple input AOI's 
 bc_shapes <- get_bc_shapes(aoi_shapes, "poly_id")
 
 # Diagnostics for proper feature types and geometry validity, takes a short moment
