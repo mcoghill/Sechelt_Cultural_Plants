@@ -609,7 +609,7 @@ dem_derived_layers <- function(
     data.frame(out_files = rem[[x]]$out_files, 
                out_names = rem[[x]]$out_names)}) %>% do.call(rbind, .)
   
-  out <- terra::rast(out_list$out_files) %>% magrittr::set_names(out_list$out_names)
+  out <- terra::rast(out_list$out_files) %>% setNames(out_list$out_names)
   crs(out) <- terra::crs(reference)
   out <- terra::writeRaster(out, overwrite = TRUE, 
                             filename = file.path(out_dir, paste0(names(out), ".tif")))
