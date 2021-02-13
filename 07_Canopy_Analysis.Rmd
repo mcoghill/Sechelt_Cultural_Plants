@@ -197,12 +197,29 @@ With the canopy gaps identified it's time to load in the collected Rubuspe point
 
 ```{r Load point data}
 
+# Load polygons if not freshly generated:
+if(!exists("gaps"))
+  gaps <- st_read(file.path(output_dir, "canopy_gaps2.gpkg"), quiet = TRUE)
+
 # Read in attributed point data
 pres_abs <- st_read(file.path(input_dir, "pres_abs.gpkg"), layer = "Rubu spe",
                     quiet = TRUE) %>%
   dplyr::select(Pres) %>% 
-  dplyr::mutate(across("Pres", as.factor),
-                inside = st_intersects(., chm_polys_sf, sparse = FALSE))
+  dplyr::mutate(
+    across("Pres", as.factor),
+    inside = apply(., 1, function(x) 
+      any(st_intersects(x[[attr(., "sf_column")]], gaps, sparse = FALSE))))
+
+pres_abs2 <- st_read(file.path(input_dir, "pres_abs.gpkg"), layer = "Rubu spe",
+                    quiet = TRUE) %>% 
+  dplyr::filter(!Pres) %>% 
+  dplyr::mutate(Pres = apply(., 1, function(x) 
+    any(st_intersects(x[[attr(., "sf_column")]], gaps, sparse = FALSE)))) %>% 
+  rbind(
+    st_read(file.path(input_dir, "pres_abs.gpkg"), layer = "Rubu spe",
+            quiet = TRUE) %>% 
+      dplyr::filter(Pres)
+  )
 
 ```
 
