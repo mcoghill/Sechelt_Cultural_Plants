@@ -13,7 +13,7 @@ This will use the same scripting setup as the other modelling scripts, just more
 ```{r Load Packages}
 
 invisible(suppressPackageStartupMessages(
-  lapply(c("tidyverse", "tools", "terra", "sf", "mlr3verse", "corrplot"), 
+  lapply(c("tidyverse", "terra", "sf", "mlr3verse", "corrplot"), 
          library, character.only = TRUE)))
 
 # Load custom scripts
@@ -164,8 +164,8 @@ for(j in names(covariates)) {
     # Create models for each dataset. Each model is a 10-fold spatial cross validation
     # repeated 5 times.
     pres_models <- model_gen_mlr3(traindat = pres_abs_flt[i], target = "Pres", 
-                                  filter_correlation = TRUE, feature_selection = "rfe", 
-                                  type = "prob")
+                                  filter_correlation = TRUE, corr_cutoff = 0.95,
+                                  feature_selection = "rfe", type = "prob")
     
     # Extract and write performance metrics
     pres_performance <- sapply(names(pres_models$learners), function(x) {
@@ -176,8 +176,8 @@ for(j in names(covariates)) {
       
       cor_matrix <- pres_models$cor_matrix[[x]]
       
-      tune_results <- pres_models$learners[[x]]$archive$data() %>% 
-        dplyr::select(-c(uhash, x_domain, timestamp)) %>% 
+      tune_results <- pres_models$learners[[x]]$archive$data %>% 
+        dplyr::select(-c(uhash, x_domain, timestamp, importance)) %>% 
         dplyr::arrange(classif.ce)
       
       confusion <- as.data.frame(
@@ -229,7 +229,7 @@ for(j in names(covariates)) {
         return(list(test_data = test_data, train_data = train_data))
       }) %>% setNames(paste0(
         "batch_nr = ", 
-        pres_models$learners[[x]]$model$fselect_instance$archive$data()$
+        pres_models$learners[[x]]$model$fselect_instance$archive$data$
           batch_nr))
       
       train_data <- do.call(rbind, lapply(model_data, "[[", "train_data")) %>% 
@@ -267,7 +267,7 @@ for(j in names(covariates)) {
                 row.names = TRUE)
       
       # Save correlation image
-      cor_out <- function() {
+      cor_out <- function(cor_matrix) {
         pal <- colorRampPalette(c("green", "white", "red")) (20)
         png(file.path(dir_out, paste0(x, "_pres_abs_pearson_correlation.jpg")),
             height = 960, width = 960)
@@ -276,7 +276,7 @@ for(j in names(covariates)) {
         dev.off()
         return(invisible())
       }
-      cor_out()
+      cor_out(cor_matrix)
       
       return(list(
         tune_results = tune_results,
