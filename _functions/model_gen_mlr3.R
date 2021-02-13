@@ -21,6 +21,7 @@ model_gen_mlr3 <- function(
   traindat, 
   target, 
   filter_correlation = FALSE,
+  corr_cutoff = 0.9,
   feature_selection = "filter", 
   type = "response", 
   folds = 10, repeats = 5) {
@@ -44,7 +45,7 @@ model_gen_mlr3 <- function(
     stop("'target' argument is not a character vector. Additionally, 'target' should
          be of length 1 and should be the same for each listed dataframe.")
   
-  if(feature_selection == "rfe") {
+  if(feature_selection %in% c("rfe", "none")) {
     if(!("mlr3fselect" %in% installed.packages()[, "Package"]))
       install.packages("mlr3fselect")
     
@@ -148,7 +149,7 @@ model_gen_mlr3 <- function(
       cor$calculate(x)
       x <- x$select(
         as.data.table(cor) %>% 
-          dplyr::filter(score >= 0.1) %>% 
+          dplyr::filter(score >= (1 - corr_cutoff)) %>% 
           dplyr::pull(feature))
       return(x)
     })
@@ -242,18 +243,25 @@ model_gen_mlr3 <- function(
     
   } else if (feature_selection == "none") {
     
-    design <- benchmark_grid(tasks = tasks, learners = lrn, 
-                             resamplings = resampling_outer)
+    f_select <- fs("rfe", min_features = length(tasks[[1]]$feature_names)) 
+    trm <- trm("evals", n_evals = 1)
+    feature_sel <- AutoFSelector$new(
+      learner = lrn,
+      resampling = resampling_outer,
+      measure = msr(measures),
+      terminator = trm,
+      fselector = f_select,
+      store_models = TRUE
+    )
+    
+    design <- benchmark_grid(tasks = tasks, learners = feature_sel, 
+                             resamplings = rsmp("holdout", ratio = 1))
     
   }
   
   bmr <- benchmark(design, store_models = TRUE)
   all_results <- lapply(1:bmr$n_resample_results, function(x) {
-    if(feature_selection == "none") {
-      bmr$resample_result(x)
-    } else {
       bmr$resample_result(x)$learners[[1]]
-    }
   })
   names(all_results) <- names(traindat)
   
