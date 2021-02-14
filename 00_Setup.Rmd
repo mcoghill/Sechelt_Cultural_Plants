@@ -113,7 +113,7 @@ if(!rstudioapi::isAvailable()) {
 
 # List of packages used by all scripts
 ls <- c("tidyverse", "raster", "sf", "terra", "tools", "bcdata", 
-        "bcmaps", "RStoolbox", "rgee", "googledrive", 
+        "bcmaps", "RStoolbox", "rgee", "geojsonio", "googledrive", 
         "stringi", "stars", "svSocket", "RODBC", "caret", "ranger",
         "MLmetrics", "mlr3verse", "mlr3fselect", "mlr3spatiotempcv", "corrplot")
 
