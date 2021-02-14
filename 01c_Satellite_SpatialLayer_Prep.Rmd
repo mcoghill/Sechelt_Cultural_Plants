@@ -33,17 +33,24 @@ AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 
 # Define covariate input folders
 cov_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
-cov_res <- grep("1m$", list.dirs(cov_dir, recursive = FALSE), invert = TRUE, value = TRUE)
+all_dem <- list.files(cov_dir, pattern = "dem.tif$", full.names = TRUE, recursive = TRUE)
+cov_res <- dirname(unlist(lapply(all_dem, function(x) {
+  r <- rast(x)
+  if(xres(r) >= 2) sources(r)[, "source"] else NULL })))
+
 dem_list <- sapply(cov_res, list.files, pattern = "dem.tif", full.names = TRUE,
                    USE.NAMES = FALSE)
 
-# Define AOI shape to use - defined by largest BBOX area
+# Define AOI shape to use - defined by merged AOI area for largest extent
 shp_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
-shp_res <- list.dirs(shp_dir, recursive = FALSE)
+shp_res <- dir(shp_dir, pattern = paste0(basename(cov_res), collapse = "$|"), 
+               recursive = FALSE, full.names = TRUE)
 shp_list <- sapply(shp_res, list.files, pattern = "aoi.gpkg", full.names = TRUE,
                    USE.NAMES = FALSE)
-shp <- shp_list[which.max(sapply(shp_list, function(x) 
-  st_read(x, quiet = TRUE) %>% sf::st_bbox() %>% st_as_sfc() %>% st_area()))]
+shp <- bind_rows(lapply(shp_list, st_read, quiet = TRUE)) %>% 
+  summarise(do_union = TRUE) %>% 
+  st_bbox() %>% 
+  st_as_sfc()
 
 # Define path for file processing (doesn't have to exist)
 raw_dir <- file.path(AOI_dir, "0_raw_inputs", "satellite_layers")
@@ -188,6 +195,7 @@ get_satellite_indices <- function(aoi, date_ranges, dsn = NULL) {
       coefs = list(swir2ccc = max(0, minValue(satellite_stack$B11)), 
                    swir2coc = min(1, maxValue(satellite_stack$B11))))
     
+    # Workaround for proper name setting
     ind_names <- names(satellite_indices)
     tci_names <- names(tci)
     satellite_indices <- rast(satellite_indices) %>% setNames(ind_names)
@@ -208,9 +216,12 @@ get_satellite_indices <- function(aoi, date_ranges, dsn = NULL) {
     ee_clean_container(quiet = TRUE)
     tci <- writeRaster(tci, file.path(ind_subdir, "true_color.tif"), overwrite = TRUE)
     out <- writeRaster(indices_flt, f_names, overwrite = TRUE)
+    raster::removeTmpFiles(h = 0)
+    return(out)
     
   }) %>% setNames(date_ranges[, 1])
   
+  return(gee_run)
 }
 
 ```
@@ -220,10 +231,7 @@ Finally, we just need to run the function. The candidate AOI is buffered by 250m
 ```{r Run functions}
 
 # Create a buffered bounding box of the AOI
-AOI_bbox <- st_read(shp, quiet = TRUE) %>%
-  st_bbox() %>%
-  st_as_sfc() %>%
-  st_buffer(250)
+AOI_bbox <- st_buffer(shp, 250)
 
 # Provide a data frame of dates to collect data between. The longer the data
 # frame, the longer it will take to process and download your dataset.
@@ -249,7 +257,7 @@ sentinel_indices <- lapply(sentinel_dirs, function(x)
   setNames(basename(sentinel_dirs))
 
 # Remove progress bars for below reprojection
-def_ops <- capture.output(terraOptions())
+def_ops <- terra:::spatOptions()$progress
 terraOptions(progress = 0)
 
 # Using the raw satellite indices, reproject them, mask, and save them out.
@@ -268,11 +276,13 @@ sentinel_reproject <- lapply(sentinel_indices, function(x) {
       writeRaster(filename = file.path(dirname(y), tolower(
         paste0("sentinel2_", names(.), "_", subdir, ".tif"))),
         overwrite = TRUE)
+    suppressWarnings(tmpFiles(remove = TRUE))
+    return(out)
   }) %>% setNames(basename(dirname(dem_list)))
 })
 
 # Reset progress bars
-terraOptions(progress = readr::parse_number(grep("progress", def_ops, value = TRUE)))
+terraOptions(progress = def_ops)
 
 ```
 
@@ -305,9 +315,9 @@ mndwi <- lapply(dem_list, function(i) {
     st_write(
       water_sf, delete_dsn = TRUE, quiet = TRUE, 
       dsn = file.path(AOI_dir, "0_raw_inputs", "base_layers", 
-                      basename(dirname(i)), "water_mndwi.gpkg")
-      )
-  }
+                      basename(dirname(i)), "water_mndwi.gpkg"))
+    return(water_sf)
+  } else return(NULL)
 })
 
 ```
