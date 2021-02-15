@@ -145,7 +145,7 @@ get_satellite_indices <- function(aoi, date_ranges, dsn = NULL) {
     dl_subdir <- file.path(dl_dir, date_ranges[i, 1])
     ind_subdir <- file.path(ind_dir, date_ranges[i, 1])
     
-    dir.create(ind_subdir, showWarnings = FALSE)
+    dir.create(dl_subdir, showWarnings = FALSE)
     dir.create(ind_subdir, showWarnings = FALSE)
     
     dataset <- sen$
@@ -202,11 +202,10 @@ get_satellite_indices <- function(aoi, date_ranges, dsn = NULL) {
     tci <- rast(tci) %>% setNames(tci_names)
     
     # Remove layers that have missing data
-    layer_check <- sapply(ind_names, function(x) {
-      unname(freq(subset(satellite_indices, x) * 0)[, "count"])}) %>% 
-      data.frame(data_cells = .) %>% 
-      rownames_to_column("layer") %>% 
-      dplyr::filter(data_cells >= 0.95 * median(.$data_cells))
+    layer_check <- data.frame(freq(satellite_indices, value = NA)) %>% 
+      dplyr::mutate(layer = names(satellite_indices[layer]), 
+                    count = ncell(satellite_indices) - count) %>% 
+      dplyr::filter(count > 0.95 * median(count))
     
     indices_flt <- subset(satellite_indices, layer_check$layer)
     f_names <- file.path(ind_subdir, paste0(names(indices_flt), ".tif"))
@@ -247,39 +246,33 @@ sentinel_indices <- get_satellite_indices(
   date_ranges = seasons_df,
   dsn = raw_dir)
 
-# If the function already ran and you just want to write out the reprojected 
-# results, run this piece here
+# The function above outputs a list format. Create a single SpatRaster of all
+# of the satellite indices
 sentinel_dirs <- list.dirs(file.path(raw_dir, "2_indices"), recursive = FALSE)
-sentinel_indices <- lapply(sentinel_dirs, function(x) 
+sentinel_indices <- rast(lapply(sentinel_dirs, function(x) {
   rast(grep("true_color.tif", 
             list.files(x, pattern = ".tif$", full.names = TRUE), 
-            invert = TRUE, value = TRUE))) %>% 
-  setNames(basename(sentinel_dirs))
+            invert = TRUE, value = TRUE)) %>% 
+    setNames(tolower(paste0("sentinel2_", names(.), "_", basename(x))))}))
 
 # Remove progress bars for below reprojection
 def_ops <- terra:::spatOptions()$progress
 terraOptions(progress = 0)
 
 # Using the raw satellite indices, reproject them, mask, and save them out.
-# Note: This takes quite a while
-sentinel_reproject <- lapply(sentinel_indices, function(x) {
-  subdir <- basename(dirname(sources(x)[1, "source"]))
-  cat("\nReprojecting", subdir, "indices at ")
-  lapply(dem_list, function(y) {
-    out_dir <- basename(dirname(y))
-    if(y == dem_list[length(dem_list)]) {
-      cat(paste0("and ", out_dir))
-    } else cat(paste0(out_dir, ", "))
-    dem <- rast(y)
-    out <- terra::project(x, dem) %>% 
-      mask(dem) %>% 
-      writeRaster(filename = file.path(dirname(y), tolower(
-        paste0("sentinel2_", names(.), "_", subdir, ".tif"))),
-        overwrite = TRUE)
-    suppressWarnings(tmpFiles(remove = TRUE))
-    return(out)
-  }) %>% setNames(basename(dirname(dem_list)))
-})
+# Note: This takes quite a while for 4m resolution, maybe better to do it by
+# layer? Not sure, not tested.
+sentinel_reproject <- lapply(dem_list, function(x) {
+  out_dir <- dirname(x)
+  cat("\nReprojecting satellite indices to", basename(out_dir))
+  dem <- rast(x)
+  out <- terra::project(sentinel_indices, dem) %>% 
+    mask(dem) %>% 
+    writeRaster(filename = file.path(out_dir, paste0(names(.), ".tif")),
+      overwrite = TRUE)
+  suppressWarnings(tmpFiles(remove = TRUE))
+  return(out)
+}) %>% setNames(basename(dirname(dem_list)))
 
 # Reset progress bars
 terraOptions(progress = def_ops)
