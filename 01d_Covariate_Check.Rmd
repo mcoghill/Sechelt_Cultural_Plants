@@ -1,0 +1,55 @@
+---
+title: "01d_Covariate_Check"
+author: "Matt"
+date: "2/15/2021"
+output: html_document
+---
+
+This script is intended to be very short, but also effective. It should be used before any further processing to delete any covariates that don't meet a minimum standard of data points (i.e.: doesn't have too many NA cells compared to the rest of the covariates). If the other scripts have been run to this point, other checks on specific datasets should have already occurred. This should include:
+
+* For climate data, making sure there is enough variety of data to limit the rasters that have issues with "stepping" (before reprojecting)
+* For satellite data, a similar standard should have been applied to the raw satellite indices (before reprojecting)
+
+Overall, this appears to remove 2 layers from each resolution (sentinel2_ndrei1_winter, and sentinel2_ndrei2_winter). This can all be accomplished in a single chunk. After this, there should be no need to run further covariate checks in any further function, saving a fair amount of time and coding during processing.
+
+```{r}
+ # Load libraries
+invisible(suppressPackageStartupMessages(
+  lapply(c("tidyverse", "terra"), library, character.only = TRUE)))
+
+# Load directories
+AOI <- "Sechelt"
+AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
+covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
+cov_res <- c(4, 10, 25, "TRIM")
+
+# Perform checks for each resolution
+check <- lapply(cov_res, function(x) {
+  res_def <- suppressWarnings(as.numeric(x))
+  covariate_subdir <- if(!is.na(res_def)) paste0(res_def, "m") else x
+  all_covs <- list.files(file.path(covariate_dir, covariate_subdir), 
+                         pattern = ".tif$", full.names = TRUE)
+  
+  # Load covariates and enforce proper naming
+  covariates <- rast(all_covs) %>% 
+    setNames(gsub(".tif$", "", basename(all_covs)))
+  
+  # Count NA Values in each layer, then calculate the number of valid cells by
+  # subtracting the total number of raster cells from NA cells. Remove layers
+  # that have less than 0.99 * median number of raster cells
+  cov_check <- data.frame(freq(covariates, value = NA)) %>% 
+    dplyr::mutate(layer = names(covariates[layer]), 
+                  count = ncell(covariates) - count) %>% 
+    dplyr::filter(count > 0.99 * median(count))
+  
+  if(nrow(cov_check) != nlyr(covariates)) {
+    lyr_rm <- names(covariates)[!names(covariates) %in% cov_check$layer]
+    lyr_kp <- names(covariates)[names(covariates) %in% cov_check$layer]
+    path_rm <- sources(subset(covariates, lyr_rm))[, "source"]
+    covariates <- subset(covariates, lyr_kp)
+    unlink(path_rm)
+  }
+  return(covariates)
+})
+
+```
