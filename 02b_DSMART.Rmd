@@ -221,7 +221,7 @@ Finally, we need to run the algorithm. This version of DSMART has implementation
 
 - Study area size of 122.507 km^2
 - Pixel size of 4 m^2
-- Using ~ 100 covariate raster datasets
+- Using ~ 70 covariate raster datasets
 
 Unless there are thousands of observations, the number of observations will not likely have an influence on the processing speed here. Beyond that, the way that DSMART works is as follows:
 
