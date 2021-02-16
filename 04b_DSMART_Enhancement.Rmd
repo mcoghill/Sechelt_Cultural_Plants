@@ -33,21 +33,6 @@ map_res_id <- c(
   paste0(suppressWarnings(map_res[!is.na(as.numeric(map_res))]), "m"),
   suppressWarnings(map_res[is.na(as.numeric(map_res))]))
 
-
-
-
-res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
-
-shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
-covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates", res_dir)
-old_pto <- file.path(AOI_dir, "1_map_inputs", "field_data", "processed_2019", res_dir)
-pto <- file.path(AOI_dir, "1_map_inputs", "field_data", "processed_2020", res_dir)
-old_dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2019", res_dir, run)
-dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2020", res_dir, run)
-input_dir <- file.path(dsmart_dir, "inputs")
-dir.create(dsmart_dir, showWarnings = FALSE, recursive = TRUE)
-dir.create(input_dir, showWarnings = FALSE, recursive = TRUE)
-
 ```
 
 Next, load the data specified from the run options above. The covariates chosen are as follows:
