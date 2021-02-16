@@ -114,7 +114,7 @@ if(!rstudioapi::isAvailable()) {
 # List of packages used by all scripts
 ls <- c("tidyverse", "raster", "sf", "terra", "tools", "bcdata", 
         "bcmaps", "RStoolbox", "rgee", "geojsonio", "googledrive", 
-        "stringi", "stars", "svSocket", "RODBC", "caret", "ranger",
+        "stringi", "stars", "svSocket", "RODBC", "C50", "caret", "ranger",
         "MLmetrics", "mlr3verse", "mlr3fselect", "mlr3spatiotempcv", "corrplot")
 
 new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
