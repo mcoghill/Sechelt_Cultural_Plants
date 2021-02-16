@@ -368,11 +368,9 @@ It's pretty much a melted data frame from the polygon data, though I've adjusted
 ```{r DSMART TEM processing}
 
 # Load TEM polygons and remove columns where all values are NA
-dsm_proc <- lapply(map_res, function(z) {
-  res_def <- suppressWarnings(as.numeric(z))
-  res_dir <- if(!is.na(res_def)) paste0(res_def, "m") else z
-  shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
-  dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2019", res_dir)
+dsm_proc <- sapply(map_res_id, function(z) {
+  shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", z)
+  dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2019", z)
   
   tem_sf <- st_read(file.path(shapes_dir, "tem.gpkg"), quiet = TRUE) %>% 
     Filter(function(x) !all(is.na(x)), .)
@@ -520,7 +518,7 @@ dsm_proc <- lapply(map_res, function(z) {
         file.path(dso, paste0(x, ".csv")), row.names = FALSE)))
   
   # Write output as processed points in separate folder
-  proc_dir <- file.path(field_data_dir, "processed_2019", res_dir)
+  proc_dir <- file.path(field_data_dir, "processed_2019", z)
   dir.create(proc_dir, showWarnings = FALSE, recursive = TRUE)
   dsmart_site_ser_observations_sf <- dsmart_site_ser_observations %>% 
     st_as_sf(coords = c("X", "Y")) %>% 
@@ -533,7 +531,7 @@ dsm_proc <- lapply(map_res, function(z) {
     dsmart_site_ser_observations = dsmart_site_ser_observations_sf,
     dsmart_strata = dsmart_strata
   ))
-}) %>% setNames(map_res_id)
+}, simplify = FALSE, USE.NAMES = TRUE)
 
 ```
 
@@ -547,16 +545,14 @@ The three data sources (TEM excel spreadsheet, TEM mdb, and 2019 point data) are
 
 ```{r Pres/Abs and Cover Merge}
 
-pres_abs_cover <- lapply(map_res, function(z) {
-  res_def <- suppressWarnings(as.numeric(z))
-  res_dir <- if(!is.na(res_def)) paste0(res_def, "m") else z
-  covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates", res_dir)
-  shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
+pres_abs_cover <- sapply(map_res_id, function(z) {
+  covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates", z)
+  shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", z)
   
   aoi_sf <- st_read(file.path(shapes_dir, "aoi.gpkg"), quiet = TRUE) %>% 
     st_geometry() %>% st_make_valid()
   
-  pto <- file.path(field_data_dir, "processed_2019", res_dir)
+  pto <- file.path(field_data_dir, "processed_2019", z)
   dir.create(pto, recursive = TRUE, showWarnings = FALSE)
   
   # Create the raster stack (terra package) which will be used for data extraction
@@ -603,7 +599,7 @@ pres_abs_cover <- lapply(map_res, function(z) {
     return(out_att)
   }, simplify = FALSE, USE.NAMES = TRUE)
   return(list(pres_abs = pres_abs, cover = cover))
-}) %>% setNames(map_res_id)
+}, simplify = FALSE, USE.NAMES = TRUE)
 
 ```
 
@@ -615,14 +611,12 @@ The land cover classifications use the BCLCS codes in 5 different layers to deta
 
 ```{r Structural stage prep}
 
-str_stg <- lapply(map_res, function(z) {
-  res_def <- suppressWarnings(as.numeric(z))
-  res_dir <- if(!is.na(res_def)) paste0(res_def, "m") else z
-  shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", res_dir)
-  dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2019", res_dir)
-  covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates", res_dir)
+str_stg <- sapply(map_res_id, function(z) {
+  shapes_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers", z)
+  dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2019", z)
+  covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates", z)
   
-  pto <- file.path(field_data_dir, "processed_2019", res_dir)
+  pto <- file.path(field_data_dir, "processed_2019", z)
   dir.create(pto, recursive = TRUE, showWarnings = FALSE)
   
   covariates <- terra::rast(list.files(covariate_dir, full.names = TRUE, pattern = ".tif$"))
@@ -893,7 +887,7 @@ str_stg <- lapply(map_res, function(z) {
   st_write(struct_stg, file.path(pto, "struct_stg_pts.gpkg"), 
            delete_layer = TRUE, quiet = TRUE)
   return(struct_stg)
-}) %>% setNames(map_res_id)
+}, simplify = FALSE, USE.NAMES = TRUE)
 
 ```
 
