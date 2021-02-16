@@ -23,11 +23,13 @@ AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 covariate_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
 cov_res <- c(4, 10, 25, "TRIM")
 
+cov_res_id <- c(
+  paste0(suppressWarnings(cov_res[!is.na(as.numeric(cov_res))]), "m"),
+  suppressWarnings(cov_res[is.na(as.numeric(cov_res))]))
+
 # Perform checks for each resolution
-check <- lapply(cov_res, function(x) {
-  res_def <- suppressWarnings(as.numeric(x))
-  covariate_subdir <- if(!is.na(res_def)) paste0(res_def, "m") else x
-  all_covs <- list.files(file.path(covariate_dir, covariate_subdir), 
+check <- sapply(cov_res_id, function(x) {
+  all_covs <- list.files(file.path(covariate_dir, x), 
                          pattern = ".tif$", full.names = TRUE)
   
   # Load covariates and enforce proper naming
@@ -50,6 +52,6 @@ check <- lapply(cov_res, function(x) {
     unlink(path_rm)
   }
   return(covariates)
-})
+}, simplify = FALSE, USE.NAMES = TRUE)
 
 ```
