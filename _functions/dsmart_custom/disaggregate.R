@@ -225,14 +225,10 @@ disaggregate <- function(
   
   # Get masking layer if not specified already
   if(is.null(mask)) {
-    mask <- sapply(names(covariates), function(x) {
-      cat(paste0("\rCounting NA values in ", x, " [", 
-                 which(x == names(covariates)), 
-                 " of ", nlyr(covariates), "]\n"))
-      unname(freq(subset(covariates, x) * 0)[, "count"])}) %>% 
-      data.frame(data_cells = .) %>% 
-      rownames_to_column("layer") %>% 
-      dplyr::slice_max(data_cells, with_ties = FALSE) %>% 
+    mask <- data.frame(freq(covariates, value = NA)) %>% 
+      dplyr::mutate(layer = names(covariates)[layer],
+                    count = ncell(covariates) - count) %>% 
+      dplyr::slice_max(count, with_ties = FALSE) %>% 
       dplyr::pull(layer)
   }
   
