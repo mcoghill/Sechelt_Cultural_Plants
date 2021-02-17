@@ -204,7 +204,7 @@ predict_landscape <- function(
   
   # Don't want to display a bunch of progress bars here, so turn that off for
   # the time being
-  def_ops <- capture.output(terraOptions())
+  def_ops <- terra:::spatOptions()$progress
   terraOptions(progress = 0)
   
   pred_out <- do.call(c, lapply(unique(dirname(tile_files)), function(k) {
@@ -213,7 +213,13 @@ predict_landscape <- function(
     
     # In order to properly mask the layer, the CRS and extents need to match 
     # perfectly, hence the resampling step
-    resamp_method <- ifelse(basename(k) == "pred", "near", "bilinear")
+    if(basename(k) == "pred") {
+      resamp_method <- "near"
+      wopt <- list(datatype = "INT2S")
+    } else {
+      resamp_method <- "bilinear"
+      wopt <- list(datatype = "FLT4S")
+    }
     
     r_tiles <- list.files(
       k, pattern = paste0("^", basename(k), "_", tiles_keep, ".tif$", collapse = "|"),
@@ -221,17 +227,17 @@ predict_landscape <- function(
     
     # Mosaic, resample, mask and save as temp file
     mos <- {if(length(r_tiles) > 1) {
-      do.call(merge, lapply(r_tiles, terra::rast))
+      do.call(mosaic, lapply(r_tiles, terra::rast))
     } else terra::rast(r_tiles)} %>% 
-      terra::resample(subset(covariates, mask), method = resamp_method) %>% 
+      # terra::resample(subset(covariates, mask), method = resamp_method) %>% 
       stats::setNames(basename(k)) %>% 
       terra::mask(subset(covariates, mask), 
                   filename = tempfile(pattern = basename(k), fileext = ".tif"), 
-                  overwrite = TRUE)
+                  overwrite = TRUE, wopt = wopt)
   }))
   
   # Reapply default progress bar options
-  terraOptions(progress = readr::parse_number(grep("progress", def_ops, value = TRUE)))
+  terraOptions(progress = def_ops)
   
   return(pred_out)
   
