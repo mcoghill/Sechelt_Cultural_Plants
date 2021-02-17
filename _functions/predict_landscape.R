@@ -37,7 +37,7 @@ predict_landscape <- function(
     stop("A SpatRaster object of the raster covariates is required to run predictions.
        Additionally, the layers should be the same as the model variables.")
   
-  if(is.null(mask)) mask <- 1
+  if(is.null(mask)) mask <- 1L
   
   # Create a polygon of the masking layer
   mask_poly <- terra::as.polygons(subset(covariates, mask) * 0) %>% 
@@ -231,9 +231,11 @@ predict_landscape <- function(
     } else terra::rast(r_tiles)} %>% 
       # terra::resample(subset(covariates, mask), method = resamp_method) %>% 
       stats::setNames(basename(k)) %>% 
-      terra::mask(subset(covariates, mask), 
-                  filename = tempfile(pattern = basename(k), fileext = ".tif"), 
-                  overwrite = TRUE, wopt = wopt)
+      # terra::mask(subset(covariates, mask), 
+      #             filename = tempfile(pattern = basename(k), fileext = ".tif"), 
+      #             overwrite = TRUE, wopt = wopt)
+      terra::writeRaster(tempfile(pattern = basename(k), fileext = ".tif"),
+                         overwrite = TRUE, wopt = wopt)
   }))
   
   # Reapply default progress bar options
