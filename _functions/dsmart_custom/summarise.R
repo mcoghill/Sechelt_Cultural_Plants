@@ -149,7 +149,7 @@ summarise <- function(
   
   # Don't want to display a bunch of progress bars here, so turn that off for
   # the time being
-  def_ops <- capture.output(terraOptions())
+  def_ops <- terra:::spatOptions()$progress
   terraOptions(progress = 0)
   
   # Make sure lookup table column names are correct
@@ -262,7 +262,7 @@ summarise <- function(
   output$timing$finish <- Sys.time()
   
   # Reapply default progress bar options
-  terraOptions(progress = readr::parse_number(grep("progress", def_ops, value = TRUE)))
+  terraOptions(progress = def_ops)
   
   # Return output
   return(output)
