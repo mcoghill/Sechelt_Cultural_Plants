@@ -28,7 +28,6 @@ Next, file paths are defined. There are two major branches: First, what resoluti
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
 map_res <- c(4, 10, 25, "TRIM")
-res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 include_bgc <- FALSE
 use_caret <- TRUE
@@ -262,7 +261,7 @@ dsm <- sapply(map_res_id, function(z) {
 out <- sapply(map_res_id, function(x) {
   dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2019", x, run)
   
-  rast(list.files(dsm[[map_res]]$summarise$locations$mostprobable, 
+  rast(list.files(dsm[[x]]$summarise$locations$mostprobable, 
                   pattern = "mostprob_01_class|mostprob_1_class", 
                   full.names = TRUE)) %>% 
     setNames(paste0(run, "_dsmart")) %>% 

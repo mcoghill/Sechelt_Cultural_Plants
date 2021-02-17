@@ -265,7 +265,7 @@ dsm <- sapply(map_res_id, function(z) {
 out <- sapply(map_res_id, function(x) {
   dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2020", x, run)
   
-  rast(list.files(dsm[[map_res]]$summarise$locations$mostprobable, 
+  rast(list.files(dsm[[x]]$summarise$locations$mostprobable, 
                   pattern = "mostprob_01_class|mostprob_1_class", 
                   full.names = TRUE)) %>% 
     setNames(paste0(run, "_dsmart")) %>% 
