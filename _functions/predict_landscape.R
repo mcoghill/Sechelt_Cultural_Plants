@@ -226,13 +226,13 @@ predict_landscape <- function(
     # Mosaic, resample, mask and save as temp file
     mos <- {if(length(r_tiles) > 1) {
       l <- lapply(r_tiles, terra::rast)
-      l$filename <- tempfile(pattern = basename(k), fileext = ".tif")
+      l$filename <- tempfile(pattern = "spat", fileext = ".tif")
       l$wopt <- wopt
       do.call(merge, c(l, overwrite = TRUE)) # Don't use mosaic, merge better here
     } else {
       terra::rast(r_tiles) %>% 
         stats::setNames(basename(k)) %>% 
-        terra::writeRaster(tempfile(pattern = basename(k), fileext = ".tif"),
+        terra::writeRaster(tempfile(pattern = "spat", fileext = ".tif"),
                            overwrite = TRUE, wopt = wopt)
     }}}))
   
