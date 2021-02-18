@@ -185,11 +185,15 @@ summarise <- function(
         overwrite = TRUE)
     } else {
       probs <- rast(lapply(1:nrow(lookup), function(i) {
-        rlist <- rast(lapply(realisations, "[[", i))
-        return(terra::app(rlist, fun = "mean", na.rm = TRUE, filename = file.path(
-          outputdir, subdir, "probabilities", 
-          paste0(stub, "prob_", lookup$name[which(lookup$code == i)], ".tif")), 
-          overwrite = TRUE))
+        rlist <- mean(rast(lapply(realisations, "[[", i)), na.rm = TRUE) %>% 
+          terra::writeRaster(file.path(
+            outputdir, subdir, "probabilities", 
+            paste0(stub, "prob_", lookup$name[which(lookup$code == i)], ".tif")),
+            overwrite = TRUE, wopt = list(names = lookup$name[which(lookup$code == i)]))
+        # return(terra::app(rlist, fun = "mean", na.rm = TRUE, filename = file.path(
+        #   outputdir, subdir, "probabilities", 
+        #   paste0(stub, "prob_", lookup$name[which(lookup$code == i)], ".tif")), 
+        #   overwrite = TRUE))
       })) %>% stats::setNames(lookup$name)
     }
   }
