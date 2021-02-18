@@ -23,7 +23,7 @@ predict_landscape <- function(
   covariates, 
   tilesize = 500,
   outDir = file.path(getwd(), "predicted_tiles"),
-  type = "raw", mask = NULL) {
+  type = "raw") {
   
   source('./_functions/tile_index.R')
   
@@ -37,10 +37,8 @@ predict_landscape <- function(
     stop("A SpatRaster object of the raster covariates is required to run predictions.
        Additionally, the layers should be the same as the model variables.")
   
-  if(is.null(mask)) mask <- 1L
-  
   # Create a polygon of the masking layer
-  mask_poly <- terra::as.polygons(subset(covariates, mask) * 0) %>% 
+  mask_poly <- terra::as.polygons(subset(covariates, 1L) * 0) %>% 
     as("Spatial") %>% 
     sf::st_as_sfc() %>% 
     sf::st_make_valid()
@@ -207,7 +205,7 @@ predict_landscape <- function(
   def_ops <- terra:::spatOptions()$progress
   terraOptions(progress = 0)
   
-  pred_out <- do.call(c, lapply(unique(dirname(tile_files)), function(k) {
+  pred_out <- rast(lapply(unique(dirname(tile_files)), function(k) {
     
     cat(paste("\rMosaicking", basename(k), "tiles", "\n"))
     
@@ -215,10 +213,10 @@ predict_landscape <- function(
     # perfectly, hence the resampling step
     if(basename(k) == "pred") {
       resamp_method <- "near"
-      wopt <- list(datatype = "INT2S")
+      wopt <- list(datatype = "INT2S", names = basename(k))
     } else {
       resamp_method <- "bilinear"
-      wopt <- list(datatype = "FLT4S")
+      wopt <- list(datatype = "FLT4S", names = basename(k))
     }
     
     r_tiles <- list.files(
@@ -227,16 +225,16 @@ predict_landscape <- function(
     
     # Mosaic, resample, mask and save as temp file
     mos <- {if(length(r_tiles) > 1) {
-      do.call(mosaic, lapply(r_tiles, terra::rast))
-    } else terra::rast(r_tiles)} %>% 
-      # terra::resample(subset(covariates, mask), method = resamp_method) %>% 
-      stats::setNames(basename(k)) %>% 
-      # terra::mask(subset(covariates, mask), 
-      #             filename = tempfile(pattern = basename(k), fileext = ".tif"), 
-      #             overwrite = TRUE, wopt = wopt)
-      terra::writeRaster(tempfile(pattern = basename(k), fileext = ".tif"),
-                         overwrite = TRUE, wopt = wopt)
-  }))
+      l <- lapply(r_tiles, terra::rast)
+      l$filename <- tempfile(pattern = basename(k), fileext = ".tif")
+      l$wopt <- wopt
+      do.call(merge, c(l, overwrite = TRUE)) # Don't use mosaic, merge better here
+    } else {
+      terra::rast(r_tiles) %>% 
+        stats::setNames(basename(k)) %>% 
+        terra::writeRaster(tempfile(pattern = basename(k), fileext = ".tif"),
+                           overwrite = TRUE, wopt = wopt)
+    }}}))
   
   # Reapply default progress bar options
   terraOptions(progress = def_ops)

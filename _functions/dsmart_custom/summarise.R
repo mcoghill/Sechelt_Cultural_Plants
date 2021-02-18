@@ -140,9 +140,6 @@ summarise <- function(
   dir.create(file.path(outputdir, subdir), showWarnings = FALSE)
   dir.create(file.path(outputdir, subdir, "probabilities"), showWarnings = FALSE)
   dir.create(file.path(outputdir, subdir, "mostprobable"), showWarnings = FALSE)
-  dir.create(file.path(outputdir, subdir, "temp"), showWarnings = FALSE)
-  dir.create(file.path(outputdir, subdir, "temp", "probabilities"), showWarnings = FALSE)
-  dir.create(file.path(outputdir, subdir, "temp", "mostprobable"), showWarnings = FALSE)
   
   # Save output locations
   output$locations <- base::list(
@@ -161,36 +158,36 @@ summarise <- function(
   # If raw predictions are used, calculate class probabilities by counting.
   cat("\nComputing class probabilities from realisations")
   if(type != "prob") {
-    # Define layer for masking output NA areas
-    mask_layer <- realisations[[1]]
     
     # Compute counts
-    counts <- terra::app(realisations, tabulate, nbins = nrow(lookup)) %>% 
-      stats::setNames(lookup$name)
+    counts <- terra::app(realisations, function(x) {
+      if(is.na(sum(x))) {
+        rep(NA, nrow(lookup))
+      } else {
+        tabulate(x, nbins = nrow(lookup))
+      }
+    }, wopt = list(names = lookup$name))
     
     # Compute probabilities and write probabilities to raster files
     probs <- (counts / n.realisations) %>% 
       terra::writeRaster(filename = file.path(
-        outputdir, subdir, "temp", "probabilities", 
+        outputdir, subdir, "probabilities", 
         paste0(stub, "prob_", names(.), ".tif")), 
         overwrite = TRUE)
   } else {
     # If probabilistic predictions are used, calculate class probabilities by 
     # averaging the predicted probabilities across the realisations.
-    
-    # Define layer for masking output NA areas
-    mask_layer <- realisations[[1]][[1]]
     if(length(realisations) == 1 | n.realisations == 1) {
       # If only one realisation is used, no averaging is needed.
       probs <- terra::writeRaster(realisations[[1]], filename = file.path(
-        outputdir, subdir, "temp", "probabilities", 
+        outputdir, subdir, "probabilities", 
         paste0(stub, "prob_", names(realisations[[1]]), ".tif")), 
         overwrite = TRUE)
     } else {
       probs <- rast(lapply(1:nrow(lookup), function(i) {
         rlist <- rast(lapply(realisations, "[[", i))
         return(terra::app(rlist, fun = "mean", na.rm = TRUE, filename = file.path(
-          outputdir, subdir, "temp", "probabilities", 
+          outputdir, subdir, "probabilities", 
           paste0(stub, "prob_", lookup$name[which(lookup$code == i)], ".tif")), 
           overwrite = TRUE))
       })) %>% stats::setNames(lookup$name)
@@ -199,48 +196,57 @@ summarise <- function(
   
   # Compute the class indices of the n-most-probable soil classes
   cat("\nGenerating most probable classification rasters")
+  ind.names <- paste0(stub, "mostprob_", 
+                      formatC(1:nlyr(probs), width = nchar(nrow(lookup)), 
+                              format = "d", flag = "0"), "_class")
   ordered.indices <- if(type != "prob") {
     # If raw class predictions are used, use "counts" for indicing.
-    # If nprob = 1, terra::modal performs the same function faster
-    if(nprob > 1) {
-      terra::app(counts, function(x) {
-        order(x, decreasing = TRUE, na.last = TRUE)[1:nprob]})
-    } else {
-      terra::modal(realisations, ties = "first", na.rm = TRUE)
-    }
+    terra::app(counts, function(x) {
+      if(is.na(sum(x))) {
+        rep(NA, nlyr(probs))
+      } else {
+        order(x, decreasing = TRUE, na.last = TRUE)
+      }
+    }, wopt = list(names = ind.names, datatype = "INT2S"))[[1:nprob]]
   } else {
     # If probabilistic predictions are used, use "probs" for indicing.
     terra::app(probs, function(x) {
-      order(x, decreasing = TRUE, na.last = TRUE)[1:nprob]})
+      if(is.na(sum(x))) {
+        rep(NA, nlyr(probs))
+      } else {
+        order(x, decreasing = TRUE, na.last = TRUE)
+      }
+    }, wopt = list(names = ind.names, datatype = "INT2S"))[[1:nprob]]
   } 
   
   # Write ith-most-probable soil class raster to file. Ordering will fill areas
   # that are supposed to be NA, so mask NA areas with the mask layer
-  ordered.indices <- ordered.indices %>% 
-    stats::setNames(paste0(stub, "mostprob_", 
-                           formatC(1:nprob, width = nchar(nrow(lookup)), 
-                                   format = "d", flag = "0"), "_class")) %>% 
-    terra::writeRaster(filename = file.path(
-      outputdir, subdir, "temp", "mostprobable", 
-      paste0(names(.), ".tif")), 
-      overwrite = TRUE, wopt = list(datatype = "INT2S"))
+  ordered.indices <- terra::writeRaster(
+    ordered.indices, filename = file.path(
+      outputdir, subdir, "mostprobable", 
+      paste0(ind.names[1:nprob], ".tif")), 
+    overwrite = TRUE, wopt = list(datatype = "INT2S"))
   
   # Compute the class probabilities of the n-most-probable soil classes
   cat("\nCalculating probabilities of classification rasters being accurate")
+  prob.names <- paste0(stub, "mostprob_", formatC(
+    1:nlyr(probs), width = nchar(nrow(lookup)), format = "d", flag = "0"), 
+    "_probs")
   ordered.probs <- terra::app(probs, function(x) {
-    sort(x, decreasing = TRUE, na.last = TRUE)[1:max(2, nprob)]}) %>% 
-    # terra::mask(mask_layer) %>%
-    stats::setNames(
-      paste0(stub, "mostprob_", formatC(1:max(2, nprob), width = nchar(nrow(lookup)), 
-                                        format = "d", flag = "0"), "_probs"))
+    if(is.na(sum(x))) {
+      rep(NA, nlyr(probs))
+    } else {
+      sort(x, decreasing = TRUE, na.last = TRUE)
+    }
+  }, wopt = list(names = prob.names))[[1:max(2, nprob)]]
   
   # Compute the confusion index on the class probabilities
   cat("\nGenerating confusion index raster from the class probabilities")
-  confusion <- terra::app(ordered.probs, function(x) {
-    (1 - (x[[1]] - x[[2]]))
-  }, filename = file.path(outputdir, subdir, "temp", "mostprobable", 
-                          paste0(stub, "confusion.tif")), overwrite = TRUE) %>% 
-    setNames("confusion")
+  confusion <- (1 - (ordered.probs[[1]] - ordered.probs[[2]])) %>% 
+    terra::writeRaster(
+      filename = file.path(outputdir, subdir, "mostprobable", 
+                           paste0(stub, "confusion.tif")), overwrite = TRUE,
+      wopt = list(names = "confusion"))
   
   # Compute Shannon's entropy on the class probabilities
   # See rationale in section 2.5 of Kempen et al. (2009) "Updating the 1:50,000
@@ -249,50 +255,17 @@ summarise <- function(
   shannon <- terra::app(ordered.probs, function(x) {
     -sum(x * (log(x, base = length(x))), na.rm = TRUE)},
     filename = file.path(
-      outputdir, subdir, "temp", "mostprobable", 
-      paste0(stub, "shannon.tif")), overwrite = TRUE) %>% 
-    setNames("shannon")
+      outputdir, subdir, "mostprobable", 
+      paste0(stub, "shannon.tif")), overwrite = TRUE, 
+    wopt = list(names = "shannon"))
   
   # Write ith-most-probable soil class probability raster to file
   cat("\nWriting probability raster(s)")
-  ordered.probs <- terra::subset(ordered.probs, 1:nprob) %>% 
-    terra::writeRaster(filename = file.path(
-      outputdir, subdir, "temp", "mostprobable", 
-      paste0(names(.), ".tif")), 
-      overwrite = TRUE)
-  
-  # Perform masking to remove areas outside the AOI
-  probs <- rast(lapply(1:nlyr(probs), function(x) {
-    terra::mask(probs[[x]], mask_layer, filename = file.path(
-      outputdir, subdir, "probabilities", 
-      paste0(stub, "prob_", names(probs[[x]]), ".tif")), 
-      overwrite = TRUE)
-  }))
-  ordered.indices <- rast(lapply(1:nlyr(ordered.indices), function(x) {
-    terra::mask(ordered.indices[[x]], mask_layer, filename = file.path(
+  ordered.probs <- terra::writeRaster(
+    ordered.probs[[1:nprob]], filename = file.path(
       outputdir, subdir, "mostprobable", 
-      paste0(names(ordered.indices[[x]]), ".tif")), 
-      overwrite = TRUE, wopt = list(datatype = "INT2S"))
-  }))
-  ordered.probs <- rast(lapply(1:nlyr(ordered.probs), function(x) {
-    terra::mask(ordered.probs[[x]], mask_layer, filename = file.path(
-      outputdir, subdir, "mostprobable", 
-      paste0(names(ordered.probs[[x]]), ".tif")), 
-      overwrite = TRUE)
-  }))
-  shannon <- rast(lapply(1:nlyr(shannon), function(x) {
-    terra::mask(shannon[[x]], mask_layer, filename = file.path(
-      outputdir, subdir, "mostprobable", 
-      paste0(names(shannon[[x]]), ".tif")), 
-      overwrite = TRUE)
-  }))
-  confusion <- rast(lapply(1:nlyr(confusion), function(x) {
-    terra::mask(confusion[[x]], mask_layer, filename = file.path(
-      outputdir, subdir, "mostprobable", 
-      paste0(names(confusion[[x]]), ".tif")), 
-      overwrite = TRUE)
-  }))
-  unlink(file.path(outputdir, subdir, "temp"), recursive = TRUE)
+      paste0(prob.names[1:nprob], ".tif")), 
+    overwrite = TRUE)
   
   # Remove temporary files from system
   suppressWarnings(terra::tmpFiles(old = TRUE, remove = TRUE))
