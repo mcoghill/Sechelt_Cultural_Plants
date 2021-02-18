@@ -206,6 +206,9 @@ dsmart <- function(
   # Save finish time
   output$timing$finish <- Sys.time()
   
+  # Cleanup temp files
+  terra::tmpFiles(old = TRUE, remove = TRUE)
+  
   # Return output
   return(output)
 }
