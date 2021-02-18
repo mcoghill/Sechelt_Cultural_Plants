@@ -187,13 +187,13 @@ summarise <- function(
         paste0(stub, "prob_", names(realisations[[1]]), ".tif")), 
         overwrite = TRUE)
     } else {
-      probs <- do.call(c, lapply(1:nrow(lookup), function(i) {
-        rlist <- do.call(c, lapply(realisations, "[[", i))
+      probs <- rast(lapply(1:nrow(lookup), function(i) {
+        rlist <- rast(lapply(realisations, "[[", i))
         return(terra::app(rlist, fun = "mean", na.rm = TRUE, filename = file.path(
           outputdir, subdir, "temp", "probabilities", 
           paste0(stub, "prob_", lookup$name[which(lookup$code == i)], ".tif")), 
           overwrite = TRUE))
-      }))
+      })) %>% stats::setNames(lookup$name)
     }
   }
   
@@ -203,13 +203,15 @@ summarise <- function(
     # If raw class predictions are used, use "counts" for indicing.
     # If nprob = 1, terra::modal performs the same function faster
     if(nprob > 1) {
-      terra::app(counts, order, decreasing = TRUE, na.last = TRUE)[[1:nprob]]
+      terra::app(counts, function(x) {
+        order(x, decreasing = TRUE, na.last = TRUE)[1:nprob]})
     } else {
       terra::modal(realisations, ties = "first", na.rm = TRUE)
     }
   } else {
     # If probabilistic predictions are used, use "probs" for indicing.
-    terra::app(probs, order, decreasing = TRUE, na.last = TRUE)[[1:nprob]]
+    terra::app(probs, function(x) {
+      order(x, decreasing = TRUE, na.last = TRUE)[1:nprob]})
   } 
   
   # Write ith-most-probable soil class raster to file. Ordering will fill areas
@@ -225,8 +227,8 @@ summarise <- function(
   
   # Compute the class probabilities of the n-most-probable soil classes
   cat("\nCalculating probabilities of classification rasters being accurate")
-  ordered.probs <- terra::app(probs, sort, decreasing = TRUE, 
-                              na.last = TRUE)[[1:max(2, nprob)]] %>% 
+  ordered.probs <- terra::app(probs, function(x) {
+    sort(x, decreasing = TRUE, na.last = TRUE)[1:max(2, nprob)]}) %>% 
     # terra::mask(mask_layer) %>%
     stats::setNames(
       paste0(stub, "mostprob_", formatC(1:max(2, nprob), width = nchar(nrow(lookup)), 
