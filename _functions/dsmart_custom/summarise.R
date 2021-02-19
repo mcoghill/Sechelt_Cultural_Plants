@@ -257,11 +257,20 @@ summarise <- function(
   # Dutch soil map"
   cat("\nGenerating Shannon diversity raster (entropy) from the class probabilities")
   shannon <- terra::app(ordered.probs, function(x) {
-    -sum(x * (log(x, base = length(x))), na.rm = TRUE)},
-    filename = file.path(
+    -sum(x * (log(x, base = length(x))), na.rm = TRUE)}) %>% 
+    terra::mask(confusion, filename = file.path(
       outputdir, subdir, "mostprobable", 
       paste0(stub, "shannon.tif")), overwrite = TRUE, 
     wopt = list(names = "shannon"))
+  
+  # This will hopefully work in a newer "terra" version, will be faster:
+  # shannon <- -sum(
+  #   ordered.probs * (log(ordered.probs, base = nlyr(ordered.probs))), 
+  #   na.rm = TRUE) %>% 
+  #   terra::writeRaster(file.path(
+  #     outputdir, subdir, "mostprobable", 
+  #     paste0(stub, "shannon.tif")), overwrite = TRUE, 
+  #     wopt = list(names = "shannon"))
   
   # Write ith-most-probable soil class probability raster to file
   cat("\nWriting probability raster(s)")
