@@ -104,9 +104,6 @@ cov_fun <- function() {
     invert = TRUE, value = TRUE))
   
   # Climate Raster covariates only
-  # climate_covariates = rast(grep(file.path(covariate_dir, c_pattern),
-  #                                list.files(covariate_dir, full.names = TRUE), 
-  #                                value = TRUE, perl = TRUE)),
   climate_covariates <- rast(list.files(covariate_dir, pattern = c_pattern, 
                                        full.names = TRUE))
   
@@ -155,16 +152,9 @@ invisible(lapply(names(pres_abs), function(x) {
 
 ```
 
-
+Perform modelling for each covariate group. Within each group, there are 2 different types of models run: A normal cross validated model and a spatially cross validated model. Results are compared at the end for the decision of the best model to use in map prediction.
 
 ```{r mlr3 Presence probability modelling}
-
-# To save a bit of memory and in order to see results as they are generated, 
-# iterate through the list of input data to model and predict
-
-# debugging
-# j <- names(covariates)[4]
-# i <- 1
 
 models <- sapply(names(covariates), function(j) {
   
@@ -207,23 +197,15 @@ models <- sapply(names(covariates), function(j) {
                                   positive = "TRUE", rfe = FALSE,
                                   id = names(pres_abs_flt)[i], covariates = covariates_flt,
                                   outDir = dir_out)
-    # 
-    # covs <- subset(covariates_flt, names(pres_model$variable.importance))
-    # wopt <- list(names = "TRUE")
-    # pred <- terra::predict(
-    #   covs, pres_model, na.rm = TRUE,
-    #   fun = function(model, ...) predict(model, verbose = FALSE, ...)$predictions,
-    #   index = 1L,
-    #   filename = file.path(dir_out, paste0(wopt$names, ".tif")), overwrite = TRUE,
-    #   wopt = wopt)
+    
   }) %>% setNames(names(pres_abs_flt))
 }, simplify = FALSE, USE.NAMES = TRUE)
 
 ```
 
-Now it's just a matter of tabulating the results of each model run
+Using the files created with the model metrics, evaluate which model is best from the mean scores and then run map predictions for each covariate group. I make use of the `terra` package here to do predictions, since it keeps things consistent; however, I notice that with high resolution data, making predictions on a single layer is very taxing on a computer and sometimes causes R to crash. Fret not - if that is the case, you don't need to perform the modelling step again. Just run the sections above the modelling chunk and come back here and filter the results to only the rows that require further prediction. It seems that often times, just having a fresh session works to solve that issue. A possible fix is to perform the predictions in `raster`, but there are extra steps involved with that which make the process less intuitive (i.e.: setting covariate names and setting CRS info after prediction, then converting back to a `SpatRaster` object.)
 
-```{r Results}
+```{r Results and map prediction}
 
 sp <- names(pres_abs)
 cov_grps <- names(covariates)
@@ -243,7 +225,8 @@ for(i in sp) {
                          paste0(i, "_results.csv")), row.names = FALSE))
 }
 
-# results <- results[c(10, 12), ]
+# This can help filter the results if your R session crashed
+# results <- results[c(7:nrow(results)), ]
 
 # Run map predictions for best results
 terraOptions(memfrac = 0.1)
@@ -270,26 +253,6 @@ best_preds <- rast(lapply(1:nrow(results), function(x) {
   #   index = 1L), crs = crs(covariates[[cov_grp]])) %>%
   #   writeRaster(file.path(out, "TRUE.tif"), overwrite = TRUE, wopt = list(names = "TRUE"))
 }))
-
-# all_preds <- lapply(sp, function(x) {
-#   lapply(cov_grps, function(y) {
-#     mod_runs <- list.dirs(file.path(output_dir, "pres_abs_predictions", x, y), recursive = FALSE)
-#     lapply(mod_runs, function(z) {
-#       f <- file.path(z, "best_model.rds")
-#       if(file.exists(f)) {
-#         model <- readRDS(f)
-#         covs <- subset(covariates[[y]], names(model$variable.importance))
-#         wopt <- list(names = "TRUE")
-#         pred <- terra::predict(
-#           covs, model, na.rm = TRUE,
-#           fun = function(model, ...) predict(model, verbose = FALSE, ...)$predictions,
-#           index = 1L,
-#           filename = file.path(z, paste0(wopt$names, ".tif")), overwrite = TRUE,
-#           wopt = wopt)
-#       } else NULL
-#     })
-#   })
-# })
 
 ```
 
