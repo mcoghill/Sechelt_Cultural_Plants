@@ -13,12 +13,11 @@ This will use the same scripting setup as the other modelling scripts, just more
 ```{r Load Packages}
 
 invisible(suppressPackageStartupMessages(
-  lapply(c("tidyverse", "terra", "sf", "mlr3verse", "corrplot"), 
+  lapply(c("tidyverse", "terra", "sf", "mlr3verse", "corrplot", "ranger"), 
          library, character.only = TRUE)))
 
 # Load custom scripts
-source("./_functions/model_gen_mlr3.R")
-source("./_functions/predict_landscape_mlr3.R")
+source("./_functions/model_gen_mlr3_binary_simple.R")
 
 ```
 
@@ -28,7 +27,7 @@ Next, define the locations and options for where files are located and how to co
 
 AOI <- "Sechelt"
 AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
-map_res <- 10
+map_res <- 4
 res_dir <- ifelse(is.numeric(map_res), paste0(map_res, "m"), map_res)
 
 input_dir <- file.path(
@@ -53,55 +52,79 @@ Next, load the data and define processing options. This is modified from the 04c
 ```{r Load data}
 
 s_pattern <- "sentinel2.*.2019.tif$"
-c_pattern <- "normal(?!.*(_at.tif|_sm.tif|_sp.tif|_wt.tif))"
+# c_pattern <- "normal(?!.*(_at.tif|_sm.tif|_sp.tif|_wt.tif))"
+c_pattern <- "normal_1981_2010y.*..tif"
 
-covariates <- list(
-  # Terrain Raster covariates only
-  terrain_covariates = rast(grep(pattern = "normal|sentinel2|chm", list.files(
-    covariate_dir, full.names = TRUE, pattern = ".tif$"), 
-    invert = TRUE, value = TRUE)),
-  
-  # Climate Raster covariates only
-  climate_covariates = rast(grep(file.path(covariate_dir, c_pattern),
-                                 list.files(covariate_dir, full.names = TRUE), 
-                                 value = TRUE, perl = TRUE)),
-  
-  # Satellite indices
-  satellite_covariates = rast(grep(file.path(covariate_dir, s_pattern), 
-                                   list.files(covariate_dir, full.names = TRUE), 
-                                   value = TRUE, perl = TRUE)),
+cov_fun <- function() { 
   
   # DSMART layers
-  site_ser_dsmart_probs = rast(list.files(
+  site_ser_dsmart_probs <- rast(list.files(
     file.path(dsmart_site_ser_dir, "output", "probabilities"), full.names = TRUE)) %>% 
-    setNames(paste0("dsmart_site_ser_probability_", names(.))),
+    setNames(paste0("dsmart_site_ser_probability_", names(.)))
   
-  site_ser_dsmart_class = rast(file.path(dsmart_site_ser_dir, "site_ser_dsmart.tif")) %>% 
-    setNames("dsmart_site_ser_class"),
+  site_ser_dsmart_class <- rast(file.path(dsmart_site_ser_dir, "site_ser_dsmart.tif")) %>% 
+    setNames("dsmart_site_ser_class") %>% 
+    as.factor()
+  
+  dsmart_class_labels <- data.frame(levels = levels(site_ser_dsmart_class)[[1]]$levels,
+                                    code = levels(site_ser_dsmart_class)[[1]]$labels)
+  
+  dsmart_class_lut <- read.table(file.path(dsmart_site_ser_dir, "output", "lookup.txt"), 
+                                 sep = ",", header = TRUE) %>% 
+    merge(dsmart_class_labels) %>% 
+    dplyr::select(levels, name)
+  
+  levels(site_ser_dsmart_class) <- dsmart_class_lut
   
   # Simple site series layers
-  site_ser_simple_probs = rast(grep(
+  site_ser_simple_probs <- rast(grep(
     "site_series_simple.tif", 
     list.files(file.path(dsmart_site_ser_dir, "simple"), full.names = TRUE, pattern = ".tif$"),
     invert = TRUE, value = TRUE)) %>% 
-    setNames(paste0("simple_site_ser_", names(.))),
+    setNames(paste0("simple_site_ser_", names(.)))
   
-  site_ser_simple_class = rast(file.path(dsmart_site_ser_dir, "simple", "site_series_simple.tif")) %>% 
-    setNames("simple_site_ser_class")
-)
-
-# Find the best masking layer to use in the predict_landscape algorithm
-# Also filter out grossly incorrect rasters
-mask_layers <- lapply(covariates, function(x) {
-  sapply(names(x), function(y) {
-    cat(paste0("\rCounting NA values in ", y, " [", which(names(x) == y), 
-               " of ", nlyr(x), "]\n"))
-    unname(freq(subset(x, y) * 0)[, "count"])}) %>% 
-    data.frame(data_cells = .) %>% 
-    rownames_to_column("layer")}) %>% 
-  do.call(rbind, .) %>% 
-  arrange(desc(data_cells)) %>% 
-  remove_rownames()
+  site_ser_simple_class <- rast(file.path(dsmart_site_ser_dir, "simple", "site_series_simple.tif")) %>% 
+    setNames("simple_site_ser_class") %>% 
+    as.factor()
+  
+  simple_class_labels <- data.frame(levels = levels(site_ser_simple_class)[[1]]$levels,
+                                    code = levels(site_ser_simple_class)[[1]]$labels)
+  
+  simple_class_lut <- read.table(file.path(dsmart_site_ser_dir, "simple", 
+                                           "site_ser_simple_lookup.txt"), 
+                                 sep = ",", header = TRUE) %>% 
+    merge(simple_class_labels) %>% 
+    dplyr::select(levels, name)
+  
+  levels(site_ser_simple_class) <- simple_class_lut
+  
+  # Terrain Raster covariates only
+  terrain_covariates <- rast(grep(pattern = "normal|sentinel2|chm", list.files(
+    covariate_dir, full.names = TRUE, pattern = ".tif$"), 
+    invert = TRUE, value = TRUE))
+  
+  # Climate Raster covariates only
+  # climate_covariates = rast(grep(file.path(covariate_dir, c_pattern),
+  #                                list.files(covariate_dir, full.names = TRUE), 
+  #                                value = TRUE, perl = TRUE)),
+  climate_covariates <- rast(list.files(covariate_dir, pattern = c_pattern, 
+                                       full.names = TRUE))
+  
+  # Satellite indices
+  satellite_covariates <- rast(grep(file.path(covariate_dir, s_pattern), 
+                                   list.files(covariate_dir, full.names = TRUE), 
+                                   value = TRUE, perl = TRUE))
+  
+  return(list(terrain_covariates = terrain_covariates, 
+              climate_covariates = climate_covariates,
+              satellite_covariates = satellite_covariates, 
+              site_ser_dsmart_probs = site_ser_dsmart_probs,
+              site_ser_dsmart_class = site_ser_dsmart_class,
+              site_ser_simple_probs = site_ser_simple_probs,
+              site_ser_simple_class = site_ser_simple_class))
+  
+}
+covariates <- cov_fun()
 
 cov_atts <- unlist(sapply(covariates, names), use.names = FALSE)
 
@@ -139,7 +162,11 @@ invisible(lapply(names(pres_abs), function(x) {
 # To save a bit of memory and in order to see results as they are generated, 
 # iterate through the list of input data to model and predict
 
-for(j in names(covariates)) {
+# debugging
+# j <- names(covariates)[4]
+# i <- 1
+
+models <- sapply(names(covariates), function(j) {
   
   # Select the covariate group to use
   covariates_flt <- covariates[[j]]
@@ -156,169 +183,41 @@ for(j in names(covariates)) {
     covariates_flt, names(pres_abs_flt[[1]])[
       !names(pres_abs_flt[[1]]) %in% c("Pres", attr(pres_abs_flt[[1]], "sf_column"))])
   
-  for(i in 1:length(pres_abs_flt)) {
+  sp_models <- lapply(1:length(pres_abs_flt), function(i) {
     
     dir_out <- file.path(output_dir, "pres_abs_predictions", names(pres_abs_flt[i]), j)
     dir.create(dir_out, showWarnings = FALSE, recursive = TRUE)
     
     # Create models for each dataset. Each model is a 10-fold spatial cross validation
     # repeated 5 times.
-    pres_models <- model_gen_mlr3(traindat = pres_abs_flt[i], target = "Pres", 
+    # traindat = pres_abs_flt[[i]]
+    # target = "Pres"
+    # filter_correlation = TRUE
+    # corr_cutoff = 0.95
+    # positive = "TRUE"
+    # id = names(pres_abs_flt)[i]
+    # covariates = covariates_flt
+    # outDir = dir_out
+    # folds = 10
+    # repeats = 5
+    # rfe = FALSE
+    
+    pres_model <- model_gen_mlr3_binary_simple(traindat = pres_abs_flt[[i]], target = "Pres",
                                   filter_correlation = TRUE, corr_cutoff = 0.95,
-                                  feature_selection = "rfe", type = "prob")
-    
-    # Extract and write performance metrics
-    pres_performance <- sapply(names(pres_models$learners), function(x) {
-      
-      folds <- pres_models$learners[[x]]$instance_args$resampling$param_set$values$folds
-      reps <- pres_models$learners[[x]]$instance_args$resampling$param_set$values$repeats
-      n_iters <- pres_models$learners[[x]]$archive$benchmark_result$n_resample_results
-      
-      cor_matrix <- pres_models$cor_matrix[[x]]
-      
-      tune_results <- pres_models$learners[[x]]$archive$data %>% 
-        dplyr::select(-c(uhash, x_domain, timestamp, importance)) %>% 
-        dplyr::arrange(classif.ce)
-      
-      confusion <- as.data.frame(
-        pres_models$learners[[x]]$model$fselect_instance$archive$benchmark_result$
-          resample_results$resample_result[[
-            pres_models$learners[[x]]$model$fselect_instance$archive$best()$batch_nr]]$
-          prediction()$confusion)
-      
-      metrics <- data.frame(
-        metric = c("Accuracy", "Error", "Sensitivity", "Specificty"),
-        result = c(
-          (dplyr::filter(confusion, response == truth) %>% 
-             dplyr::pull(Freq) %>% sum()) / 
-            sum(confusion$Freq),
-          (dplyr::filter(confusion, response != truth) %>% 
-             dplyr::pull(Freq) %>% sum()) / 
-            sum(confusion$Freq),
-          (dplyr::filter(confusion, response == TRUE & truth == TRUE) %>% 
-             dplyr::pull(Freq)) / 
-            sum(
-              (dplyr::filter(confusion, response == TRUE & truth == TRUE) %>% 
-                 dplyr::pull(Freq)),
-              (dplyr::filter(confusion, response == TRUE & truth == FALSE) %>% 
-                 dplyr::pull(Freq))
-            ),
-          (dplyr::filter(confusion, response == FALSE & truth == FALSE) %>% 
-             dplyr::pull(Freq)) / 
-            sum(
-              (dplyr::filter(confusion, response == FALSE & truth == TRUE) %>% 
-                 dplyr::pull(Freq)),
-              (dplyr::filter(confusion, response == FALSE & truth == FALSE) %>% 
-                 dplyr::pull(Freq))
-            )
-        )
-      )
-      
-      model_data <- lapply(1:n_iters, function(j) {
-        test_data <- pres_models$learners[[x]]$archive$benchmark_result$resample_result(j)$
-          resampling$instance %>% 
-          cbind(batch_nr = j)
-        train_data <- do.call(rbind, lapply(1:reps, function(k) {
-          do.call(rbind, lapply(1:folds, function(l) {
-            test_rows <- dplyr::filter(test_data, rep == k, fold == l)
-            missing <- as.numeric(rownames(pres_abs_flt[[i]])[
-              !as.numeric(rownames(pres_abs_flt[[i]])) %in% test_rows$row_id])
-            data.frame(row_id = missing, rep = k, fold = l, batch_nr = j)
-          }))
-        }))
-        return(list(test_data = test_data, train_data = train_data))
-      }) %>% setNames(paste0(
-        "batch_nr = ", 
-        pres_models$learners[[x]]$model$fselect_instance$archive$data$
-          batch_nr))
-      
-      train_data <- do.call(rbind, lapply(model_data, "[[", "train_data")) %>% 
-        magrittr::set_rownames(NULL)
-      test_data <- do.call(rbind, lapply(model_data, "[[", "test_data")) %>% 
-        magrittr::set_rownames(NULL)
-      
-      imp <- data.frame(importance = pres_models$learners[[x]]$learner$model$
-                          variable.importance) %>% 
-        rownames_to_column("layer") %>% 
-        arrange(desc(importance))
-      
-      out <- utils::capture.output(pres_models$learners[[x]]$learner$model)
-      best_model <- pres_models$learners[[x]]$learner$model
-      
-      write.csv(tune_results, file = file.path(dir_out, paste0(x, "_pres_abs_tune_results.csv")),
-                row.names = FALSE)
-      cat(out, file = file.path(dir_out, paste0(x, "_pres_abs_model.txt")), sep = "\n")
-      save(best_model, file = file.path(dir_out, paste0(x, "_pres_abs_model.RData")))
-      write.csv(test_data, file = file.path(
-        dir_out, paste0(x, "_pres_abs_model_resampling_test_data.csv")), 
-        row.names = FALSE)
-      write.csv(train_data, file = file.path(
-        dir_out, paste0(x, "_pres_abs_model_resampling_train_data.csv")), 
-        row.names = FALSE)
-      write.csv(confusion, file = file.path(dir_out, paste0(x, "_pres_abs_confusion.csv")), 
-                row.names = FALSE)
-      write.csv(imp, file.path(dir_out, paste0(x, "_pres_abs_var_importance.csv")), 
-                row.names = FALSE)
-      write.csv(pres_abs_flt[i][[x]], file.path(dir_out, paste0(x, "_pres_abs_input_data.csv")), 
-                row.names = FALSE)
-      write.csv(metrics, file.path(dir_out, paste0(x, "_pres_abs_model_metrics.csv")), 
-                row.names = FALSE)
-      write.csv(cor_matrix, file.path(dir_out, paste0(x, "_pres_abs_correlation_matrix.csv")), 
-                row.names = TRUE)
-      
-      # Save correlation image
-      cor_out <- function(cor_matrix) {
-        pal <- colorRampPalette(c("green", "white", "red")) (20)
-        png(file.path(dir_out, paste0(x, "_pres_abs_pearson_correlation.jpg")),
-            height = 960, width = 960)
-        corrplot(cor_matrix)
-        # heatmap(cor_matrix, col = pal, symm = TRUE)
-        dev.off()
-        return(invisible())
-      }
-      cor_out(cor_matrix)
-      
-      return(list(
-        tune_results = tune_results,
-        metrics = metrics,
-        best_model = best_model, 
-        resampling = test_data,
-        confusion = confusion,
-        importance = imp, 
-        cor_matrix = cor_matrix
-      ))
-      
-    }, simplify = FALSE, USE.NAMES = TRUE)
-    
-    # Run the map predictions
-    pres_abs_predictions <- sapply(names(pres_models$learners), function(x) {
-      
-      cov_sub <- subset(covariates_flt, pres_models$tasks[[x]]$col_roles$feature)
-      
-      # Find the best mask layer to use from the covariates left
-      pred_mask <- mask_layers %>% 
-        dplyr::filter(layer %in% names(cov_sub)) %>% 
-        dplyr::arrange(layer) %>% 
-        dplyr::slice_max(data_cells, n = 1, with_ties = FALSE) %>% 
-        dplyr::pull(layer)
-      
-      out <- predict_landscape_mlr3(
-        learner = pres_models$learners[[x]],
-        task = pres_models$tasks[[x]], 
-        type = "prob",
-        covariates = cov_sub,
-        tilesize = 500, 
-        outDir = tile_dir, 
-        mask_layer = pred_mask)
-      
-      # Write the raster mosaics
-      out <- writeRaster(out, file.path(
-        dir_out, paste0(x, "_", gsub("_.*", "", names(out)), ".tif")),
-        overwrite = TRUE)
-      
-    }, simplify = FALSE, USE.NAMES = TRUE)
-  }
-}
+                                  positive = "TRUE", rfe = FALSE,
+                                  id = names(pres_abs_flt)[i], covariates = covariates_flt,
+                                  outDir = dir_out)
+    # 
+    # covs <- subset(covariates_flt, names(pres_model$variable.importance))
+    # wopt <- list(names = "TRUE")
+    # pred <- terra::predict(
+    #   covs, pres_model, na.rm = TRUE,
+    #   fun = function(model, ...) predict(model, verbose = FALSE, ...)$predictions,
+    #   index = 1L,
+    #   filename = file.path(dir_out, paste0(wopt$names, ".tif")), overwrite = TRUE,
+    #   wopt = wopt)
+  }) %>% setNames(names(pres_abs_flt))
+}, simplify = FALSE, USE.NAMES = TRUE)
 
 ```
 
@@ -326,27 +225,71 @@ Now it's just a matter of tabulating the results of each model run
 
 ```{r Results}
 
-# Using the available model results, find the best models for each species
-best_model_sets <- bind_rows(lapply(c("Corn can", "Rubu spe"), function(x) {
-  sp_dirs <- list.dirs(file.path(output_dir, "pres_abs_predictions", x), recursive = FALSE)
-  result_list <- bind_rows(lapply(sp_dirs, function(y) {
-    r <- read.csv(file.path(y, list.files(y, pattern = "_tune_results.csv$"))) %>% 
-      dplyr::slice(which.min(classif.ce)) %>% 
-      mutate(model = basename(y)) %>% 
-      dplyr::select(model, classif.ce)
-    t <- read.csv(file.path(y, list.files(y, pattern = "_model_metrics.csv$"))) %>% 
-      pivot_wider(names_from = "metric", values_from = "result")
-    r <- cbind(r, t)})) %>% 
-    dplyr::arrange(classif.ce)
-  write.csv(result_list, file.path(
-    output_dir, "pres_abs_predictions", x, paste0("model_performance_", x, "_", res_dir, ".csv")),
-    row.names = FALSE)
-  dplyr::mutate(result_list, species = x)})) %>% 
-  dplyr::relocate(species, model)
+sp <- names(pres_abs)
+cov_grps <- names(covariates)
+results <- bind_rows(lapply(sp, function(x) {
+  bind_rows(lapply(cov_grps, function(y) {
+    read.csv(file.path(output_dir, "pres_abs_predictions", x, y, "run_compare.csv")) %>% 
+      dplyr::slice_max(mean_fbeta, n = max(2, nrow(.) * (1/3))) %>% 
+      dplyr::slice_min(mean_bbrier, with_ties = FALSE) %>% 
+      dplyr::mutate(species = x, cov_group = y, .before = 1)
+  }))
+}))
 
-write.csv(best_model_sets, file.path(
-  output_dir, "pres_abs_predictions", paste0("model_performance_index", "_", res_dir, ".csv")), 
-  row.names = FALSE)
+# Write results
+for(i in sp) {
+  invisible(dplyr::filter(results, species == i) %>%
+    write.csv(file.path(output_dir, "pres_abs_predictions", i,
+                         paste0(i, "_results.csv")), row.names = FALSE))
+}
+
+# results <- results[c(10, 12), ]
+
+# Run map predictions for best results
+terraOptions(memfrac = 0.1)
+best_preds <- rast(lapply(1:nrow(results), function(x) {
+  sp <- results[x, ]$species
+  cov_grp <- results[x, ]$cov_group
+  run <- results[x, ]$task_id
+  out <- file.path(output_dir, "pres_abs_predictions", sp, cov_grp)
+  model <- readRDS(file.path(out, run, "best_model.rds"))
+  covs <- subset(covariates[[cov_grp]], names(model$variable.importance))
+  wopt <- list(names = "TRUE")
+  pred <- terra::predict(
+    covs, model, na.rm = TRUE,
+    fun = function(model, ...) predict(model, verbose = FALSE, ...)$predictions,
+    index = 1L,
+    filename = file.path(out, paste0(wopt$names, ".tif")), overwrite = TRUE,
+    wopt = wopt)
+  # covs <- stack(subset(covariates[[cov_grp]], names(model$variable.importance)))
+  # crs(covs) <- crs(covariates[[cov_grp]])
+  # names(covs) <- names(subset(covariates[[cov_grp]], names(model$variable.importance)))
+  # pred <- rast(raster::predict(
+  #   covs, model, na.rm = TRUE,
+  #   fun = function(model, ...) predict(model, verbose = FALSE, ...)$predictions,
+  #   index = 1L), crs = crs(covariates[[cov_grp]])) %>%
+  #   writeRaster(file.path(out, "TRUE.tif"), overwrite = TRUE, wopt = list(names = "TRUE"))
+}))
+
+# all_preds <- lapply(sp, function(x) {
+#   lapply(cov_grps, function(y) {
+#     mod_runs <- list.dirs(file.path(output_dir, "pres_abs_predictions", x, y), recursive = FALSE)
+#     lapply(mod_runs, function(z) {
+#       f <- file.path(z, "best_model.rds")
+#       if(file.exists(f)) {
+#         model <- readRDS(f)
+#         covs <- subset(covariates[[y]], names(model$variable.importance))
+#         wopt <- list(names = "TRUE")
+#         pred <- terra::predict(
+#           covs, model, na.rm = TRUE,
+#           fun = function(model, ...) predict(model, verbose = FALSE, ...)$predictions,
+#           index = 1L,
+#           filename = file.path(z, paste0(wopt$names, ".tif")), overwrite = TRUE,
+#           wopt = wopt)
+#       } else NULL
+#     })
+#   })
+# })
 
 ```
 
