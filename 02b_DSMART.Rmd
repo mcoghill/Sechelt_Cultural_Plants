@@ -239,7 +239,7 @@ The files used in future modelling include the most probable classification laye
 dsm <- sapply(map_res_id, function(z) {
   dsmart_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2019", z, run)
   
-  try(dsmart(
+  dsmart(
     covariates = dsm_data[[z]][["covariates"]], 
     polygons = dsm_data[[z]][["polygons"]], 
     composition = dsm_data[[z]][["composition"]],
@@ -253,9 +253,8 @@ dsm <- sapply(map_res_id, function(z) {
     outputdir = dsmart_dir, 
     factors = dsm_data[[z]][["factors"]],
     type = "prob", 
-    nprob = 1, 
-    mask = "dem")
-)}, simplify = FALSE, USE.NAMES = TRUE)
+    nprob = 1)
+}, simplify = FALSE, USE.NAMES = TRUE)
 
 # Save the file to a better location
 out <- sapply(map_res_id, function(x) {
