@@ -254,7 +254,7 @@ dem_derived_layers <- function(
         <output id='ASPECT'>aspect</output>
         <output id='C_GENE'>gencurve</output>
         <output id='C_TOTA'>totcurve</output>
-        <option id='METHOD'>6</option>
+        <option id='METHOD'>8</option>
         <option id='UNIT_SLOPE'>0</option>
         <option id='UNIT_ASPECT'>0</option>
     </tool>"
@@ -360,7 +360,7 @@ dem_derived_layers <- function(
       "<tool library='ta_morphometry' tool='1' name='Convergence Index'>
            <input id='ELEVATION'>dem</input>
            <output id='RESULT'>convergence</output>
-           <option id='METHOD'>1</option>
+           <option id='METHOD'>0</option>
            <option id='NEIGHBOURS'>1</option>
        </tool>"
     ),
