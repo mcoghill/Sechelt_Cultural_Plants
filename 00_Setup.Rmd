@@ -112,10 +112,10 @@ if(!rstudioapi::isAvailable()) {
 # rtools on Windows machines. Install rtools here if it isn't already.
 
 # List of packages used by all scripts
-ls <- c("tidyverse", "raster", "sf", "terra", "tools", "bcdata", 
-        "bcmaps", "RStoolbox", "rgee", "geojsonio", "googledrive", 
-        "stringi", "stars", "svSocket", "RODBC", "C50", "caret", "ranger",
-        "MLmetrics", "mlr3verse", "mlr3fselect", "mlr3spatiotempcv", "corrplot")
+ls <- c("tidyverse", "raster", "sf", "terra", "tools", "bcdata", "bcmaps", "rgee", 
+        "RStoolbox", "geojsonio", "googledrive", "stringi", "stars", "svSocket", 
+        "RODBC", "C50", "caret", "ranger", "MLmetrics", "mlr3verse", "mlr3fselect", 
+        "mlr3spatiotempcv", "smotefamily", "corrplot")
 
 new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
 if(length(new_packages)) 
