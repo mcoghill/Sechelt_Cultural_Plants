@@ -39,11 +39,7 @@ dsmart_site_ser_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2020",
 dsmart_struct_stg_dir <- file.path(AOI_dir, "1_map_inputs", "dsmart_2020", 
                                    res_dir, "struct_stg")
 output_dir <- file.path(AOI_dir, "8_map_predictions_simple", res_dir)
-tile_dir <- file.path(output_dir, "tiles")
-
-dir.create(tile_dir, showWarnings = FALSE, recursive = TRUE)
 dir.create(file.path(output_dir, "pres_abs_predictions"), showWarnings = FALSE)
-dir.create(file.path(output_dir, "cover_predictions"), showWarnings = FALSE)
 
 ```
 
